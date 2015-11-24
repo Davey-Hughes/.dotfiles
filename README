@@ -1,0 +1,79 @@
+================================================================================
+                     Davey's oh-my-zsh supplementary files
+================================================================================
+
+                     README last updated November 24, 2015
+
+                Originally made for Arch Linux 2015.11.1, x86_64
+
+                      davidralphhughes@college.harvard.edu
+
+================================================================================
+
+USAGE
+    You must first have ZSH installed; installation and instructions here:
+        https://github.com/robbyrussell/oh-my-zsh
+
+    The easiest way to keep your themes and .zshrc up to date with this
+    repository is to symlink the files from this submodule into the locations
+    they belong. For example:
+
+    cd ~/.oh-my-zsh/oh-my-zsh-supplement && ln -s ./zshrc ~
+
+PROMPT
+    ZSH has support for four main prompts and a rear prompt, titled:
+
+        PROMPT
+        PS2
+        PS3
+        PS4
+        RPROMPT (for rear prompt)
+
+    Only PROMPT, PS2, and RPROMPT are used for this theme. Here is what each
+    prompt contains, from left to right:
+
+        PROMPT <first line>
+            - current directory (with user's home replaced with ~)
+            - <git> repo status; a * denotes uncommitted changes
+            - user
+            - host
+            - tty
+        PROMPT <second line>
+            - shell evaluation depth (id est, starting zsh as a child process of
+              zsh will create a depth of 2)
+            - number of children
+            - history event number
+        PS2 <secondary input>
+            - status of the parser, such as if shell constructs (like 'if' and
+              'for') have been started
+        RPROMPT <rear prompt>
+            - return status of last program
+            - time of day in 24hour 4 digit format
+            - month, day, and year
+
+    The prompt will also detect a few other conditions and change the colors and
+    characters slightly:
+        SSH
+            - color of host changes to red
+        ROOT
+            - square brackets change to #
+            - user, #, and outline characters change to red
+        SHELL DEPTH
+            - if the shell depth is greater than 1, color changes to yellow
+        BACKGROUND PROCESSES
+            - if there is more than 0 children in the background, color changes
+              to yellow
+
+NOTES
+    The original font used in designing this is Consolas, however most monospace
+    fonts with decent unicode support will work.
+
+    Though the RPROMPT is built into ZSH to align left (and disappears if the
+    prompt input extends to the right edge of the screen), getting a two line
+    PROMPT requires calculating the width of the console and subtracting the
+    spaces and subtracting the width of the other elements on the first line.
+    This process was adopted from phil!'s prompt, documented here:
+        http://aperiodic.net/phil/prompt/
+
+    Originally based on bira, gnzh, phil!'s, and nanotech themes
+================================================================================
