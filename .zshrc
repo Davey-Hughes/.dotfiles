@@ -1,5 +1,5 @@
 # Path to your oh-my-zsh installation.
-  export ZSH=/home/ubuntu/.oh-my-zsh
+  export ZSH=/home/davey/.oh-my-zsh
 
 # Set name of the theme to load.
 # Look in ~/.oh-my-zsh/themes/
@@ -86,7 +86,6 @@ source $ZSH/oh-my-zsh.sh
 alias zshconfig="vim ~/.zshrc"
 alias make="make -j"
 alias gdb="gdb -q"
-alias btsync="systemctl --user start btsync.service"
 
 alias :q="echo \"You're not in vim\""
 alias :w="echo \"You're not in vim\""
@@ -98,7 +97,6 @@ HISTSIZE=10000
 SAVEHIST=10000
 setopt appendhistory autocd extendedglob nomatch notify
 unsetopt beep
-bindkey -v
 # End of lines configured by zsh-newuser-install
 # The following lines were added by compinstall
 zstyle :compinstall filename '/home/davey/.zshrc'
