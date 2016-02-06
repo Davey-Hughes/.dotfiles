@@ -200,7 +200,7 @@ $PR_CONT\
 $PR_BLUE)\
 $PR_THEME$PR_HBAR_LINE\
 $PR_THEME$PR_PROMPT_BEGIN \
-'
+$PR_NO_COLOUR'
 
     ###
     # extra stuff for git
