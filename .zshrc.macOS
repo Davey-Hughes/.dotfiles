@@ -100,9 +100,13 @@ alias :wq="echo \"You're not in vim\""
 
 alias vi="mvim -v"
 alias vim="mvim -v"
-alias mvim="mvim $@ > /dev/null 2>&1"
+# alias mvim="mvim $@ > /dev/null 2>&1"
 
 alias wolfram="/Applications/Mathematica.app/Contents/MacOS/WolframKernel"
+
+brewdeps() {
+    brew list | while read cask; do echo -n $fg[blue] $cask $fg[white]; brew deps $cask | awk '{printf(" %s ", $0)}'; echo ""; done
+}
 
 # Lines configured by zsh-newuser-install
 HISTFILE=~/.histfile
