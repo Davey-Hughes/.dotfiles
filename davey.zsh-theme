@@ -28,27 +28,27 @@ function precmd {
     ((TERMWIDTH=$TERMPLACE - $gitsize))
 
     if [[ "$promptsize + $pwdsize + $virenvsize" -gt $TERMWIDTH ]]; then
-	    ((PR_PWDLEN=$TERMWIDTH - $promptsize))
+	    ((PR_PWDLEN=$TERMWIDTH - $promptsize - $virenvsize))
     else
         PR_FILLBAR="\${(l.(($TERMWIDTH - ($promptsize + $pwdsize + $virenvsize)))..${PR_HBAR}.)}"
     fi
 
     ###
     # Get APM info.
-    if which ibam > /dev/null; then
-        PR_APM_RESULT=`ibam --percentbattery`
-    elif which apm > /dev/null; then
-        PR_APM_RESULT=`apm`
-    fi
+    # if which ibam > /dev/null; then
+        # PR_APM_RESULT=`ibam --percentbattery`
+    # elif which apm > /dev/null; then
+        # PR_APM_RESULT=`apm`
+    # fi
 }
 
-setopt extended_glob
-preexec () {
-    if [[ "$TERM" == "screen" ]]; then
-        local CMD=${1[(wr)^(*=*|sudo|-*)]}
-        echo -n "\ek$CMD\e\\"
-    fi
-}
+# setopt extended_glob
+# preexec () {
+    # if [[ "$TERM" == "screen" ]]; then
+        # local CMD=${1[(wr)^(*=*|sudo|-*)]}
+        # echo -n "\ek$CMD\e\\"
+    # fi
+# }
 
 setprompt () {
 
@@ -56,13 +56,13 @@ setprompt () {
 
     ###
     # APM detection
-    if which ibam > /dev/null; then
-        PR_APM='$PR_RED${${PR_APM_RESULT[(f)1]}[(w)-2]}%%(${${PR_APM_RESULT[(f)3]}[(w)-1]})$PR_LIGHT_BLUE:'
-    elif which apm > /dev/null; then
-        PR_APM='$PR_RED${PR_APM_RESULT[(w)5,(w)6]/\% /%%}$PR_LIGHT_BLUE:'
-    else
-        PR_APM=''
-    fi
+    # if which ibam > /dev/null; then
+        # PR_APM='$PR_RED${${PR_APM_RESULT[(f)1]}[(w)-2]}%%(${${PR_APM_RESULT[(f)3]}[(w)-1]})$PR_LIGHT_BLUE:'
+    # elif which apm > /dev/null; then
+        # PR_APM='$PR_RED${PR_APM_RESULT[(w)5,(w)6]/\% /%%}$PR_LIGHT_BLUE:'
+    # else
+        # PR_APM=''
+    # fi
 
     ###
     # See if we can use colors.
