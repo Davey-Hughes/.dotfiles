@@ -17,12 +17,20 @@ function precmd {
     local zero='%([BSUbfksu]|([FB]|){*})'
     local gitsize=${#${(S%%)PR_GIT//$~zero/}}
 
+    # Calculate virtualenv prompt length
+    PR_VIRENVNAME=''
+    local virenvsize=0
+    if [[ $VIRTUAL_ENV ]]; then
+        PR_VIRENVNAME="${VIRENV_PREFIX:=(}${VIRTUAL_ENV:t}${VIRENV_POSTFIX:=) }"
+        virenvsize=${#${(S%%)PR_VIRENVNAME//$~zero/}}
+    fi
+
     ((TERMWIDTH=$TERMPLACE - $gitsize))
 
-    if [[ "$promptsize + $pwdsize" -gt $TERMWIDTH ]]; then
+    if [[ "$promptsize + $pwdsize + $virenvsize" -gt $TERMWIDTH ]]; then
 	    ((PR_PWDLEN=$TERMWIDTH - $promptsize))
     else
-        PR_FILLBAR="\${(l.(($TERMWIDTH - ($promptsize + $pwdsize)))..${PR_HBAR}.)}"
+        PR_FILLBAR="\${(l.(($TERMWIDTH - ($promptsize + $pwdsize + $virenvsize)))..${PR_HBAR}.)}"
     fi
 
     ###
@@ -166,6 +174,7 @@ $PR_BLUE)\
 $PR_WHITE$PR_HBAR\
 $PR_WHITE${(e)PR_FILLBAR}\
 $PR_BLUE$PR_HBAR$PR_HBAR\
+$PR_MAGENTA$PR_VIRENVNAME\
 $PR_NO_COLOUR$PR_GIT\
 $PR_BLUE(\
 $USR_HOST\
@@ -217,4 +226,6 @@ $PR_NO_COLOUR'
     ZSH_THEME_GIT_PROMPT_UNTRACKED="%{$fg[cyan]%} ✭"
 }
 
+# disable default virtualenv prompt
+export VIRTUAL_ENV_DISABLE_PROMPT=1
 setprompt
