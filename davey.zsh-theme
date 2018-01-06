@@ -1,6 +1,19 @@
 # ZSH Theme - davey
 # Based on bira, gnzh, phil!'s, and nanotech
 
+function zle-line-init zle-keymap-select {
+    VI_NORMAL="NORMAL"
+    VI_INSERT=""
+    # VI_LEFT="{"
+    # VI_RIGHT="}"
+    # PR_PROMPT_BEGIN="${${KEYMAP/vicmd/$VI_LEFT}/(main|viins)/$PR_THEME$PR_LEFT_BRACE}"
+    # PR_PROMPT_END="${${KEYMAP/vicmd/$VI_RIGHT}/(main|viins)/$PR_THEME$PR_RIGHT_BRACE}"
+    PR_VI="${${KEYMAP/vicmd/$VI_NORMAL}/(main|viins)/$VI_INSERT}"
+    zle reset-prompt
+}
+
+zle -N zle-keymap-select
+
 function precmd {
 
     local TERMPLACE
@@ -25,12 +38,12 @@ function precmd {
         virenvsize=${#${(S%%)PR_VIRENVNAME//$~zero/}}
     fi
 
-    ((TERMWIDTH=$TERMPLACE - $gitsize))
+    ((TERMWIDTH=$TERMPLACE - $gitsize - $virenvsize))
 
     if [[ "$promptsize + $pwdsize + $virenvsize" -gt $TERMWIDTH ]]; then
-	    ((PR_PWDLEN=$TERMWIDTH - $promptsize - $virenvsize))
+        ((PR_PWDLEN=$TERMWIDTH - $promptsize))
     else
-        PR_FILLBAR="\${(l.(($TERMWIDTH - ($promptsize + $pwdsize + $virenvsize)))..${PR_HBAR}.)}"
+        PR_FILLBAR="\${(l.(($TERMWIDTH - ($promptsize + $pwdsize)))..${PR_HBAR}.)}"
     fi
 
     ###
@@ -89,7 +102,7 @@ setprompt () {
     set -A altchar ${(s..)terminfo[acsc]}
     PR_SET_CHARSET="%{$terminfo[enacs]%}"
     PR_HBAR=' '
-	PR_HBAR_LINE='─'
+    PR_HBAR_LINE='─'
     PR_ULCORNER='╭─'
     PR_LLCORNER='╰─'
     PR_LRCORNER='─╯'
@@ -107,15 +120,15 @@ setprompt () {
     ###
     # Decide if we need to set titlebar text.
     case $TERM in
-	xterm*)
-	    PR_TITLEBAR=$'%{\e]0;%(!.-=*[ROOT]*=- | .)%n@%m:%~ | ${COLUMNS}x${LINES} | %y\a%}'
-	    ;;
-	screen)
-	    PR_TITLEBAR=$'%{\e_screen \005 (\005t) | %(!.-=[ROOT]=- | .)%n@%m:%~ | ${COLUMNS}x${LINES} | %y\e\\%}'
-	    ;;
-	*)
-	    PR_TITLEBAR=''
-	    ;;
+    xterm*)
+        PR_TITLEBAR=$'%{\e]0;%(!.-=*[ROOT]*=- | .)%n@%m:%~ | ${COLUMNS}x${LINES} | %y\a%}'
+        ;;
+    screen)
+        PR_TITLEBAR=$'%{\e_screen \005 (\005t) | %(!.-=[ROOT]=- | .)%n@%m:%~ | ${COLUMNS}x${LINES} | %y\e\\%}'
+        ;;
+    *)
+        PR_TITLEBAR=''
+        ;;
     esac
 
     ###
@@ -154,7 +167,7 @@ setprompt () {
 
     ###
     # various prompt
-    RETURN_CODE="%(?..%F{red}%? ←%f)"
+    RETURN_CODE="%(?..%F{red} %? ←%f)"
     USR_HOST="${PR_USER}%F{cyan}@${PR_HOST}"
     PR_LEFT_BRACE='['
     PR_RIGHT_BRACE=']'
@@ -194,6 +207,7 @@ $PR_NO_COLOUR'
     ###
     # right prompt
     RPROMPT='\
+%F{yellow}$PR_VI\
 $PR_RED$RETURN_CODE \
 $PR_THEME$PR_PROMPT_END \
 $REV_PR \
