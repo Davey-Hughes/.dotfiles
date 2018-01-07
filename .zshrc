@@ -89,6 +89,10 @@ bindkey '^w' backward-kill-word
 # allow ctrl-r to perform backward search in history
 bindkey '^r' history-incremental-search-backward
 
+# use arrows to search up or down
+bindkey '^[[A' up-line-or-search
+bindkey '^[[B' down-line-or-search
+
 # allow ctrl-a and ctrl-e to move to beginning/end of line
 bindkey '^a' beginning-of-line
 bindkey '^e' end-of-line
