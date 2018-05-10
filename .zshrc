@@ -49,7 +49,7 @@ export LANG=en_US.UTF-8
 # For a full list of active aliases, run `alias`.
 
 # source os specific settings
-# source $ZSH/omz-davey/macos.zsh
+source $ZSH/omz-davey/macos.zsh
 
 alias zshconfig="vim ~/.zshrc"
 # alias make="make -j"
@@ -66,6 +66,18 @@ fi
 if ! type "$thefuck" > /dev/null; then
     eval $(thefuck --alias)
 fi
+
+codi() {
+    local syntax="${1:-python}"
+    shift
+    vim -c \
+        "let g:startify_disable_at_vimenter = 1 |\
+        set bt=nofile ls=0 noru nonu nornu |\
+        hi ColorColumn ctermbg=NONE |\
+        hi VertSplit ctermbg=NONE |\
+        hi NonText ctermfg=0 |\
+        Codi $syntax" "$@"
+}
 
 # vim bindings
 bindkey -v
