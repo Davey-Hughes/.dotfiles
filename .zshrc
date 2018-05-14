@@ -49,7 +49,16 @@ export LANG=en_US.UTF-8
 # For a full list of active aliases, run `alias`.
 
 # source os specific settings
-source $ZSH/omz-davey/macos.zsh
+case `uname` in
+      Darwin)
+        source $HOME/.dotfiles/macos.zsh
+      ;;
+      Linux)
+        source $HOME/.dotfiles/ubuntu.zsh
+      ;;
+      FreeBSD)
+      ;;
+esac
 
 alias zshconfig="vim ~/.zshrc"
 # alias make="make -j"
