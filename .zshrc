@@ -114,8 +114,8 @@ bindkey '^r' history-incremental-search-backward
 bindkey '^[[A' up-line-or-search
 bindkey '^[[B' down-line-or-search
 
-bindkey -M vicmd 'k' up-line-or-search
-bindkey -M vicmd 'j' down-line-or-search
+bindkey -M vicmd 'k' up-line-or-beginning-search
+bindkey -M vicmd 'j' down-line-or-beginning-search
 
 # allow ctrl-a and ctrl-e to move to beginning/end of line
 bindkey '^a' beginning-of-line
