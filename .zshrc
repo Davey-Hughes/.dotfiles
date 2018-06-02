@@ -132,6 +132,6 @@ unsetopt beep
 zstyle :compinstall filename '$HOME/.zshrc'
 
 autoload -Uz compinit
-compinit
+compinit -d $HOME/.cache/zsh/zcompdump-$ZSH_VERSION
 
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"

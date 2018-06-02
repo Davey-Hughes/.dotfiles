@@ -1,6 +1,7 @@
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/Users/davey/Documents/macvim/src/MacVim:/Library/TeX/texbin:/usr/local/opt/llvm/bin"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/usr/local/opt/llvm/bin:/bin/flake8:$HOME/go/bin"
 
-alias gcc="gcc-7"
+alias gcc="gcc-8"
+alias g++="g++-8"
 alias wolfram="/Applications/Mathematica.app/Contents/MacOS/WolframKernel"
 
 alias vi="mvim -v -u NONE"
