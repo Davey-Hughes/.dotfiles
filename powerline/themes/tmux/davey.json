@@ -1,0 +1,70 @@
+{
+    "dividers": {
+        "left": {
+            "hard": "\ue0b0 ",
+            "soft": "\ue0b1 "
+        },
+        "right": {
+            "hard": " \ue0b2",
+            "soft": " \ue0b3"
+        }
+    },
+    "segments": {
+        "left": [],
+        "right": [
+            {
+                "args": {
+                    "format": "{state_symbol} {artist} - {title}"
+                },
+                "function": "powerline.segments.common.players.spotify",
+                "name": "player"
+            },
+            {
+                "function": "powerline.segments.common.net.internal_ip",
+                "priority": 50
+            },
+            {
+                "args": {
+                    "query_url": "http://icanhazip.com/"
+                },
+                "function": "powerline.segments.common.net.external_ip",
+                "priority": 50
+            },
+            {
+                "args": {
+                    "gamify": true
+                },
+                "function": "powerline.segments.common.bat.battery",
+                "priority": 50
+            },
+            {
+                "args": {
+                    "icons": {
+                        "blustery": "\u2691",
+                        "cloudy": "\u2601",
+                        "day": "\u3007",
+                        "foggy": "\u2261",
+                        "night": "\u263e",
+                        "not_available": "\ufffd",
+                        "rainy": "\u2614",
+                        "snowy": "\u2745",
+                        "stormy": "\u2608",
+                        "sunny": "\u263c",
+                        "unknown": "\u26a0",
+                        "windy": "\u2634"
+                    }
+                },
+                "function": "powerline.segments.common.wthr.weather",
+                "priority": 50
+            },
+            {
+                "args": {
+                    "format": "%H:%M",
+                    "istime": true
+                },
+                "function": "powerline.segments.common.time.date",
+                "name": "time"
+            }
+        ]
+    }
+}
