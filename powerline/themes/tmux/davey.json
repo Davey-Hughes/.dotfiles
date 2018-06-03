@@ -59,7 +59,7 @@
             },
             {
                 "args": {
-                    "format": "%H:%M",
+                    "format": "%H%M",
                     "istime": true
                 },
                 "function": "powerline.segments.common.time.date",
