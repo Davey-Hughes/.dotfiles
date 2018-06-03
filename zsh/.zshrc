@@ -51,10 +51,10 @@ export LANG=en_US.UTF-8
 # source os specific settings
 case `uname` in
       Darwin)
-        source $HOME/.dotfiles/macos.zsh
+        source $HOME/.dotfiles/zsh/macos.zsh
       ;;
       Linux)
-        source $HOME/.dotfiles/ubuntu.zsh
+        source $HOME/.dotfiles/zsh/ubuntu.zsh
       ;;
       FreeBSD)
       ;;
