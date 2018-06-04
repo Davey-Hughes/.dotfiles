@@ -52,9 +52,11 @@ export LANG=en_US.UTF-8
 case `uname` in
       Darwin)
         source $HOME/.dotfiles/zsh/macos.zsh
+        export TMUXCONFIG="$HOME/.dotfiles/tmux/macos.conf"
       ;;
       Linux)
         source $HOME/.dotfiles/zsh/ubuntu.zsh
+        export TMUXCONFIG="$HOME/.dotfiles/tmux/ubuntu.conf"
       ;;
       FreeBSD)
       ;;
