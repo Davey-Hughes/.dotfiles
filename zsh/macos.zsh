@@ -1,4 +1,4 @@
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/usr/local/opt/llvm/bin:/bin/flake8"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/usr/local/opt/llvm/bin:/bin/flake8:$PATH"
 
 alias gcc="gcc-8"
 alias g++="g++-8"
