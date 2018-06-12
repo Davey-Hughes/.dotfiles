@@ -34,7 +34,7 @@ setopt noclobber
 # allow comments in interactive mode
 setopt interactivecomments
 
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/go/bin"
 export LANG="en_US.UTF-8"
 
 export GOPATH="$HOME/go"
