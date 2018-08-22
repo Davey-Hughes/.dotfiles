@@ -39,20 +39,6 @@
             },
             {
                 "args": {
-                    "icons": {
-                        "blustery": "\u2691",
-                        "cloudy": "\u2601",
-                        "day": "\u3007",
-                        "foggy": "\u2261",
-                        "night": "\u263e",
-                        "not_available": "\ufffd",
-                        "rainy": "\u2614",
-                        "snowy": "\u2745",
-                        "stormy": "\u2608",
-                        "sunny": "\u263c",
-                        "unknown": "\u26a0",
-                        "windy": "\u2634"
-                    }
                 },
                 "function": "powerline.segments.common.wthr.weather",
                 "priority": 50
