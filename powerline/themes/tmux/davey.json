@@ -13,13 +13,6 @@
         "left": [],
         "right": [
             {
-                "args": {
-                    "format": "{state_symbol} {artist} - {title}"
-                },
-                "function": "powerline.segments.common.players.spotify",
-                "name": "player"
-            },
-            {
                 "function": "powerline.segments.common.net.internal_ip",
                 "priority": 50
             },
@@ -49,7 +42,8 @@
                     "istime": true
                 },
                 "function": "powerline.segments.common.time.date",
-                "name": "time"
+                "name": "time",
+                "priority": 50
             }
         ]
     }
