@@ -92,6 +92,9 @@ codi() {
         Codi $syntax" "$@"
 }
 
+# fzf
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
 # vim bindings
 bindkey -v
 export KEYTIMEOUT=1
