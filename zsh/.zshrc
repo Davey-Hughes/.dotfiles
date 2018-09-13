@@ -57,8 +57,14 @@ case `uname` in
         export TMUXCONFIG="$HOME/.dotfiles/tmux/macos.conf"
       ;;
       Linux)
-        source $HOME/.dotfiles/zsh/ubuntu.zsh
-        export TMUXCONFIG="$HOME/.dotfiles/tmux/ubuntu.conf"
+        version=$(cat /proc/version)
+        if [[ $version =~ "arch" ]]; then
+            source $HOME/.dotfiles/zsh/arch.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/tmux/arch.conf"
+        else
+            source $HOME/.dotfiles/zsh/ubuntu.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/tmux/ubuntu.conf"
+        fi
       ;;
       FreeBSD)
       ;;
@@ -140,5 +146,3 @@ zstyle :compinstall filename '$HOME/.zshrc'
 
 autoload -Uz compinit
 compinit -d $HOME/.cache/zsh/zcompdump-$ZSH_VERSION
-
-test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
