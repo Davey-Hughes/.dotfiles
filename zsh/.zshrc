@@ -78,13 +78,13 @@ alias :q="echo \"You're not in vim\""
 alias :w="echo \"You're not in vim\""
 alias :wq="echo \"You're not in vim\""
 
-# if ! type "$direnv" > /dev/null; then
-#     eval "$(direnv hook zsh)"
-# fi
+if (( $+commands[direnv] )); then
+    eval "$(direnv hook zsh)"
+fi
 
-# if ! type "$thefuck" > /dev/null; then
-#     eval $(thefuck --alias)
-# fi
+if (( $+commands[thefuck] )); then
+    eval $(thefuck --alias)
+fi
 
 codi() {
     local syntax="${1:-python}"
