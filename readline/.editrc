@@ -1,3 +1,5 @@
+# editline configuration
+
 # use vi mode
 bind -v
 
@@ -5,5 +7,5 @@ bind -v
 bind -a "k" ed-prev-history
 bind -a "j" ed-next-history
 
-# tab completion
-bind \t rl_complete
+# tab completion for lldb (maybe not the best way to handle this)
+bind "\t" lldb-complete
