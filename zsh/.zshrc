@@ -134,14 +134,13 @@ bindkey -M vicmd 'j' down-line-or-beginning-search
 bindkey '^a' beginning-of-line
 bindkey '^e' end-of-line
 
-# Lines configured by zsh-newuser-install
+# history
 HISTFILE=~/.histfile
 HISTSIZE=10000
 SAVEHIST=10000
 setopt appendhistory autocd extendedglob nomatch notify
 unsetopt beep
-# End of lines configured by zsh-newuser-install
-# The following lines were added by compinstall
+
 zstyle :compinstall filename '$HOME/.zshrc'
 
 autoload -Uz compinit
