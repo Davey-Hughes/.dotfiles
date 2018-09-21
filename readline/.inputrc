@@ -1,0 +1,34 @@
+# any program that uses the GNU Readline library for input (gdb, bash, ...)
+# will obey the settings from this .inputrc
+
+# use vi instead of emacs
+set editing-mode vi
+
+# show all potential completions when pressing tab
+set show-all-if-ambiguous
+
+# ignore case
+set completion-ignore-case
+
+# menu completion displays the common prefix of the list of possible
+# completions (which may be empty) before cycling through the list
+set menu-complete-display-prefix on
+
+# don't wait after pressing escape
+set keyseq-timeout 0
+
+# keybinds for when in command mode
+set keymap vi-command
+
+# search backwards in history with jk
+"k": history-search-backward
+"j": history-search-forward
+
+# keybinds for when in insert mode
+set keymap vi-insert
+
+# cycle though potential completions
+TAB: menu-complete
+
+# shift tab cycle through potential completions backwards
+"\e[Z": menu-complete-backward
