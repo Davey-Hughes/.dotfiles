@@ -1,0 +1,9 @@
+# use vi mode
+bind -v
+
+# use jk in normal mode to do history completion
+bind -a "k" ed-prev-history
+bind -a "j" ed-next-history
+
+# tab completion
+bind \t rl_complete
