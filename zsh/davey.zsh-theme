@@ -25,7 +25,7 @@ function precmd {
     PR_PWDLEN=""
     PR_GIT=$(git_prompt_info)
 
-    local promptsize=${#${(%):---(%n@%m:%l)---()--}}
+    local promptsize=${#${(%):---(%n@%M:%l)---()--}}
     local pwdsize=${#${(%):-%~}}
     local zero='%([BSUbfksu]|([FB]|){*})'
     local gitsize=${#${(S%%)PR_GIT//$~zero/}}
@@ -45,37 +45,11 @@ function precmd {
     else
         PR_FILLBAR="\${(l.(($TERMWIDTH - ($promptsize + $pwdsize)))..${PR_HBAR}.)}"
     fi
-
-    ###
-    # Get APM info.
-    # if which ibam > /dev/null; then
-        # PR_APM_RESULT=`ibam --percentbattery`
-    # elif which apm > /dev/null; then
-        # PR_APM_RESULT=`apm`
-    # fi
 }
-
-# setopt extended_glob
-# preexec () {
-    # if [[ "$TERM" == "screen" ]]; then
-        # local CMD=${1[(wr)^(*=*|sudo|-*)]}
-        # echo -n "\ek$CMD\e\\"
-    # fi
-# }
 
 setprompt () {
 
     setopt prompt_subst
-
-    ###
-    # APM detection
-    # if which ibam > /dev/null; then
-        # PR_APM='$PR_RED${${PR_APM_RESULT[(f)1]}[(w)-2]}%%(${${PR_APM_RESULT[(f)3]}[(w)-1]})$PR_LIGHT_BLUE:'
-    # elif which apm > /dev/null; then
-        # PR_APM='$PR_RED${PR_APM_RESULT[(w)5,(w)6]/\% /%%}$PR_LIGHT_BLUE:'
-    # else
-        # PR_APM=''
-    # fi
 
     ###
     # See if we can use colors.
