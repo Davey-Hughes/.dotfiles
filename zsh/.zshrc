@@ -61,6 +61,9 @@ case `uname` in
         if [[ $version =~ "arch" ]]; then
             source $HOME/.dotfiles/zsh/arch.zsh
             export TMUXCONFIG="$HOME/.dotfiles/tmux/arch.conf"
+        elif [[ $version =~ "Red Hat" ]]; then
+            source $HOME/.dotfiles/zsh/rhel.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/tmux/rhel.conf"
         else
             source $HOME/.dotfiles/zsh/ubuntu.zsh
             export TMUXCONFIG="$HOME/.dotfiles/tmux/ubuntu.conf"
