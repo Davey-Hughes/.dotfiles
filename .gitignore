@@ -1,3 +1,10 @@
 powerline/brazil
 powerline/coc
 powerline/configstore/*
+powerline/Amazon
+powerline/cr
+powerline/htop
+powerline/ninja-dev-sync.json
+tmux/plugins/*
+
+!tmux/plugins/tpm/*
