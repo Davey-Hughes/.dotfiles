@@ -8,4 +8,4 @@ bind -a "k" ed-prev-history
 bind -a "j" ed-next-history
 
 # tab completion for lldb (maybe not the best way to handle this)
-bind "\t" lldb-complete
+# bind "\t" lldb-complete
