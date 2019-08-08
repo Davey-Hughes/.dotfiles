@@ -16,3 +16,4 @@ ln -s $DOTFDIR/postgres/.psqlrc $HOME
 ln -s $DOTFDIR/.git_template $HOME
 ln -s $DOTFDIR/powerline $HOME/.config/
 ln -s $DOTFDIR/zsh/davey/davey.zsh-theme $HOME/.oh-my-zsh/themes
+ln -s $DOTFDIR/intellij/.ideavimrc $HOME/.ideavimrc
