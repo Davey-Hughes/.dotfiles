@@ -1,11 +1,12 @@
 export PATH="/bin:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/usr/local/opt/llvm/bin:/bin/flake8:/usr/local/opt/coreutils/libexec/gnubin:/usr/local/opt/llvm/bin/:$PATH"
 
-alias gcc="gcc-8"
-alias g++="g++-8"
+alias gcc="gcc-9"
+alias g++="g++-9"
 alias wolfram="/Applications/Mathematica.app/Contents/MacOS/WolframKernel"
 
-alias vi="mvim -v -u NONE"
-alias vim="mvim -v"
+alias vi="vim -u NONE"
+# alias vi="mvim -v -u NONE"
+# alias vim="mvim -v"
 # alias mvim="mvim $@ > /dev/null 2>&1"
 
 brewdeps() {
