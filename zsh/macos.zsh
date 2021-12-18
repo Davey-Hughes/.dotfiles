@@ -1,7 +1,7 @@
 export PATH="/bin:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/usr/local/opt/llvm/bin:/bin/flake8:/usr/local/opt/coreutils/libexec/gnubin:/usr/local/opt/llvm/bin/:$PATH"
 
-alias gcc="gcc-9"
-alias g++="g++-9"
+alias gcc="gcc-11"
+alias g++="g++-11"
 alias wolfram="/Applications/Mathematica.app/Contents/MacOS/WolframKernel"
 
 alias vi="vim -u NONE"
@@ -15,4 +15,4 @@ brewdeps() {
 
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
 
-export PATH="$HOME/bin:$HOME/.toolbox/bin:$PATH"
+export PATH="$HOME/bin:$HOME/.toolbox/bin:$HOME/.cargo/bin/:$PATH"

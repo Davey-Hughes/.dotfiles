@@ -1,10 +1,10 @@
-powerline/brazil
 powerline/coc
 powerline/configstore/*
-powerline/Amazon
 powerline/cr
 powerline/htop
 powerline/ninja-dev-sync.json
+powerline/powerline
 tmux/plugins/*
+tmux/resurrect/
 
 !tmux/plugins/tpm/*
