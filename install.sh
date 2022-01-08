@@ -5,7 +5,8 @@ DOTFDIR=$HOME/.dotfiles
 
 cd $HOME;
 
-mkdir $HOME/.tmux
+mkdir -p $HOME/.tmux
+mkdir -p $HOME/.config
 
 ln -s $DOTFDIR/tmux/plugins $HOME/.tmux
 ln -s $DOTFDIR/zsh/.zshrc $HOME
