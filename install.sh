@@ -24,3 +24,10 @@ ln -s $DOTFDIR/alacritty $HOME/.config
 # git settings
 git config --global init.templatedir '~/.git_template'
 git config --global alias.ctags '!.git/hooks/ctags'
+
+# WSL
+CDRIVE=/mnt/c
+
+if [[ `uname -r` =~ "WSL2" ]]; then
+  cp $DOTFDIR/windowsTerminal/settings.json $CDRIVE/Users/davey/AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState
+fi

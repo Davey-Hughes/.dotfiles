@@ -40,6 +40,8 @@ setopt HIST_IGNORE_ALL_DUPS
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/go/bin"
 export LANG="en_US.UTF-8"
 
+export EDITOR='vim'
+
 export GOPATH="$HOME/go"
 
 source $ZSH/oh-my-zsh.sh
@@ -67,6 +69,9 @@ case `uname` in
         elif [[ $version =~ "Red Hat" ]]; then
             source $HOME/.dotfiles/zsh/rhel.zsh
             export TMUXCONFIG="$HOME/.dotfiles/tmux/rhel.conf"
+        elif [[ $version =~ "WSL2" ]]; then
+            source $HOME/.dotfiles/zsh/wsl.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/tmux/wsl.conf"
         else
             source $HOME/.dotfiles/zsh/ubuntu.zsh
             export TMUXCONFIG="$HOME/.dotfiles/tmux/ubuntu.conf"
