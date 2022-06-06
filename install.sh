@@ -18,6 +18,8 @@ ln -s $DOTFDIR/.git_template $HOME
 ln -s $DOTFDIR/powerline $HOME/.config/
 ln -s $DOTFDIR/zsh/davey/davey.zsh-theme $HOME/.oh-my-zsh/themes
 ln -s $DOTFDIR/intellij/.ideavimrc $HOME/.ideavimrc
+ln -s $DOTFDIR/kitty $HOME/.config
+ln -s $DOTFDIR/alacritty $HOME/.config
 
 # git settings
 git config --global init.templatedir '~/.git_template'

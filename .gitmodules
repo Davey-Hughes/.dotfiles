@@ -1,3 +1,6 @@
 [submodule "tmux/plugins/tpm"]
 	path = tmux/plugins/tpm
 	url = https://github.com/tmux-plugins/tpm.git
+[submodule "kitty/kitty-themes"]
+	path = kitty/kitty-themes
+	url = https://github.com/dexpota/kitty-themes.git
