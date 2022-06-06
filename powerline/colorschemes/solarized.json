@@ -12,27 +12,27 @@
         },
         "background:divider": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "battery": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "battery_empty": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base3"
         },
         "battery_full": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:red"
         },
         "battery_gradient": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "branch": {
@@ -85,7 +85,7 @@
         },
         "external_ip": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "hostname": {
@@ -119,31 +119,31 @@
         },
         "internal_ip": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "network_load": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "network_load:divider": "network_load",
         "network_load_gradient": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "green_yellow_orange_red"
         },
         "network_load_recv_gradient": "network_load_gradient",
         "network_load_sent_gradient": "network_load_gradient",
         "player": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "stash": "branch_dirty",
         "system_load": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "time": {
@@ -160,7 +160,7 @@
         },
         "uptime": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "user": {
@@ -182,12 +182,12 @@
         },
         "weather": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:base1"
         },
         "weather_temp_gradient": {
             "attrs": [],
-            "bg": "solarized:base03",
+            "bg": "solarized:base02",
             "fg": "solarized:red"
         }
     },
