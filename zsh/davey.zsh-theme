@@ -4,10 +4,6 @@
 function zle-line-init zle-keymap-select {
     VI_NORMAL="NORMAL"
     VI_INSERT=""
-    # VI_LEFT="{"
-    # VI_RIGHT="}"
-    # PR_PROMPT_BEGIN="${${KEYMAP/vicmd/$VI_LEFT}/(main|viins)/$PR_THEME$PR_LEFT_BRACE}"
-    # PR_PROMPT_END="${${KEYMAP/vicmd/$VI_RIGHT}/(main|viins)/$PR_THEME$PR_RIGHT_BRACE}"
     PR_VI="${${KEYMAP/vicmd/$VI_NORMAL}/(main|viins)/$VI_INSERT}"
     zle reset-prompt
 }
@@ -51,23 +47,30 @@ setprompt () {
 
     setopt prompt_subst
 
-    ###
-    # See if we can use colors.
-    autoload colors zsh/terminfo
-    if [[ "$terminfo[colors]" -ge 8 ]]; then
-        colors
-    fi
-    for color in RED GREEN YELLOW BLUE MAGENTA CYAN WHITE; do
-        eval PR_$color='%{$terminfo[bold]$fg[${(L)color}]%}'
-        eval PR_LIGHT_$color='%{$fg[${(L)color}]%}'
-        (( count = $count + 1 ))
-    done
+    PR_BLACK='%F{0}'
+    PR_RED='%F{1}'
+    PR_GREEN='%F{2}'
+    PR_YELLOW='%F{3}'
+    PR_BLUE='%F{4}'
+    PR_MAGENTA='%F{5}'
+    PR_CYAN='%F{6}'
+    PR_WHITE='%F{7}'
+
+    PR_BRBLACK='%B%F{8}'
+    PR_BRRED='%B%F{9}'
+    PR_BRGREEN='%B%F{10}'
+    PR_BRYELLOW='%B%F{11}'
+    PR_BRBLUE='%B%F{12}'
+    PR_BRMAGENTA='%B%F{13}'
+    PR_BRCYAN='%B%F{14}'
+    PR_BRWHITE='%B%F{15}'
+
     PR_NO_COLOUR="%{$terminfo[sgr0]%}"
 
     if [[ $UID -ne 0 ]]; then # normal user
-        PR_THEME=$PR_BLUE
+        PR_THEME=$PR_BRBLUE
     else
-        PR_THEME=$PR_RED
+        PR_THEME=$PR_BRRED
     fi
 
     ###
@@ -82,13 +85,8 @@ setprompt () {
     PR_LRCORNER='─╯'
     PR_URCORNER='─╮'
 
-    #PR_ULCORNER='┌'
-    #PR_LLCORNER='└'
-    #PR_LRCORNER='┘'
-    #PR_URCORNER='┐'
-
     PR_PS2='──'
-    PR_CONT='%F{green}%_%f'
+    PR_CONT="$PR_BRGREEN%_%f"
 
 
     ###
@@ -116,17 +114,13 @@ setprompt () {
     ###
     # Check the UID
     if [[ $UID -ne 0 ]]; then # normal user
-      PR_USER='%F{green}%n%f'
-      PR_USER_OP='%F{green}%#%f'
-      #PR_PROMPT='%F{white}%{>%G%}%f '
-      #PR_PROMPT='%F{white}%{➤%G%}%f '
+      PR_USER="$PR_BRGREEN%n%f"
+      PR_USER_OP="$PR_BRGREEN%#%f"
       PR_PROMPT_BEGIN='['
       PR_PROMPT_END=']'
     else # root
-      PR_USER='%F{red}%n%f'
-      PR_USER_OP='%F{red}%#%f'
-      #PR_PROMPT='%F{red}%{>%G%}%f '
-      #PR_PROMPT='%F{red}%{➤%G%}%f '
+      PR_USER='$PR_BRRED%n%f'
+      PR_USER_OP='$PR_BRRED%#%f'
       PR_PROMPT_BEGIN='#'
       PR_PROMPT_END='#'
     fi
@@ -134,19 +128,18 @@ setprompt () {
     ###
     # Check if we are on SSH or not
     if [[ -n "$SSH_CLIENT"  ||  -n "$SSH2_CLIENT" ]]; then
-      PR_HOST='%F{red}%M:%l%f' # SSH
+      PR_HOST="$PR_BRRED%M:%l%f" # SSH
     else
-      PR_HOST='%F{green}%M:%l%f' # no SSH
+      PR_HOST="$PR_BRGREEN%M:%l%f" # no SSH
     fi
 
     ###
     # various prompt
-    RETURN_CODE="%(?..%F{red} %? ←%f)"
-    USR_HOST="${PR_USER}%F{cyan}@${PR_HOST}"
+    RETURN_CODE="%(?..$PR_BRRED %? ←%f)"
+    USR_HOST="${PR_USER}$PR_BRCYAN@${PR_HOST}"
     PR_LEFT_BRACE='['
     PR_RIGHT_BRACE=']'
-    #REV_PR='%F{green}%T%f %F{yellow}%D{%a, %b %d}%f'
-    REV_PR='%F{green}%D{%H%M}%f %F{yellow}%D{%a, %b %d}%f'
+    REV_PR="$PR_BRGREEN%D{%H%M}%f $PR_BRYELLOW%D{%a, %b %d}%f"
     PR_SHLVL='%L'
     PR_HIST_NUM='%!'
     PR_JOBS='%j'
@@ -155,34 +148,34 @@ setprompt () {
     # main prompt
     PROMPT='\
 $PR_THEME$PR_ULCORNER\
-$PR_BLUE(\
-$PR_MAGENTA%$PR_PWDLEN<...<%~%<<\
-$PR_BLUE)\
-$PR_WHITE$PR_HBAR\
-$PR_WHITE${(e)PR_FILLBAR}\
-$PR_BLUE$PR_HBAR$PR_HBAR\
-$PR_MAGENTA$PR_VIRENVNAME\
+$PR_BRBLUE(\
+$PR_BRMAGENTA%$PR_PWDLEN<...<%~%<<\
+$PR_BRBLUE)\
+$PR_BRWHITE$PR_HBAR\
+$PR_BRWHITE${(e)PR_FILLBAR}\
+$PR_BRBLUE$PR_HBAR$PR_HBAR\
+$PR_BRMAGENTA$PR_VIRENVNAME\
 $PR_NO_COLOUR$PR_GIT\
-$PR_BLUE(\
+$PR_BRBLUE(\
 $USR_HOST\
-$PR_BLUE)\
+$PR_BRBLUE)\
 $PR_THEME$PR_URCORNER\
 
 $PR_THEME$PR_LLCORNER\
-$PR_BLUE$PR_LEFT_BRACE\
-%2(L.$PR_YELLOW$PR_SHLVL.$PR_BLUE$PR_SHLVL)\
-$PR_BLUE.\
-%1(j.$PR_YELLOW$PR_JOBS.$PR_BLUE$PR_JOBS)\
-$PR_BLUE:$PR_HIST_NUM\
-$PR_BLUE$PR_RIGHT_BRACE \
+$PR_BRBLUE$PR_LEFT_BRACE\
+%2(L.$PR_BRYELLOW$PR_SHLVL.$PR_BRBLUE$PR_SHLVL)\
+$PR_BRBLUE.\
+%1(j.$PR_BRYELLOW$PR_JOBS.$PR_BRBLUE$PR_JOBS)\
+$PR_BRBLUE:$PR_HIST_NUM\
+$PR_BRBLUE$PR_RIGHT_BRACE \
 $PR_THEME$PR_PROMPT_BEGIN \
 $PR_NO_COLOUR'
 
     ###
     # right prompt
     RPROMPT='\
-%F{yellow}$PR_VI\
-$PR_RED$RETURN_CODE \
+$PR_BRYELLOW$PR_VI\
+$PR_BRRED$RETURN_CODE \
 $PR_THEME$PR_PROMPT_END \
 $REV_PR \
 $PR_THEME$PR_LRCORNER\
@@ -192,26 +185,26 @@ $PR_NO_COLOUR'
     # continued input prompt
     PS2='\
 $PR_THEME$PR_PS2\
-$PR_BLUE(\
+$PR_BRBLUE(\
 $PR_CONT\
-$PR_BLUE)\
+$PR_BRBLUE)\
 $PR_THEME$PR_HBAR_LINE\
 $PR_THEME$PR_PROMPT_BEGIN \
 $PR_NO_COLOUR'
 
     ###
     # extra stuff for git
-    ZSH_THEME_GIT_PROMPT_PREFIX="%F{yellow}‹"
-    ZSH_THEME_GIT_PROMPT_SUFFIX="%F{yellow}› %f"
-    ZSH_THEME_GIT_PROMPT_DIRTY=" %F{red}*%f"
+    ZSH_THEME_GIT_PROMPT_PREFIX="$PR_YELLOW‹"
+    ZSH_THEME_GIT_PROMPT_SUFFIX="$PR_YELLOW› %f"
+    ZSH_THEME_GIT_PROMPT_DIRTY=" $PR_RED*%f"
     ZSH_THEME_GIT_PROMPT_CLEAN=""
 
-    ZSH_THEME_GIT_PROMPT_ADDED="%{$fg[green]%} ✚"
-    ZSH_THEME_GIT_PROMPT_MODIFIED="%{$fg[blue]%} ✹"
-    ZSH_THEME_GIT_PROMPT_DELETED="%{$fg[red]%} ✖"
-    ZSH_THEME_GIT_PROMPT_RENAMED="%{$fg[magenta]%} ➜"
-    ZSH_THEME_GIT_PROMPT_UNMERGED="%{$fg[yellow]%} ═"
-    ZSH_THEME_GIT_PROMPT_UNTRACKED="%{$fg[cyan]%} ✭"
+    ZSH_THEME_GIT_PROMPT_ADDED="$PR_GREEN ✚"
+    ZSH_THEME_GIT_PROMPT_MODIFIED="$PR_BLUE ✹"
+    ZSH_THEME_GIT_PROMPT_DELETED="$PR_RED ✖"
+    ZSH_THEME_GIT_PROMPT_RENAMED="$PR_MAGENTA ➜"
+    ZSH_THEME_GIT_PROMPT_UNMERGED="$PR_YELLOW ═"
+    ZSH_THEME_GIT_PROMPT_UNTRACKED="$PR_CYAN ✭"
 }
 
 # disable default virtualenv prompt
