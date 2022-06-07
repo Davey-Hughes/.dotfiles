@@ -49,7 +49,7 @@
                 "name": "Command Prompt"
             },
             {
-                "colorScheme": "Solarized Dark",
+                "colorScheme": "Solarized Dark Patched",
                 "cursorShape": "filledBox",
                 "experimental.retroTerminalEffect": false,
                 "font": 
@@ -192,6 +192,29 @@
             "selectionBackground": "#FFFFFF",
             "white": "#EEE8D5",
             "yellow": "#B58900"
+        },
+        {
+            "background": "#001E26",
+            "black": "#001E26",
+            "blue": "#2075C7",
+            "brightBlack": "#002731",
+            "brightBlue": "#708183",
+            "brightCyan": "#81908F",
+            "brightGreen": "#465A61",
+            "brightPurple": "#5856B9",
+            "brightRed": "#BD3612",
+            "brightWhite": "#FCF4DC",
+            "brightYellow": "#52676F",
+            "cursorColor": "#FFFFFF",
+            "cyan": "#259185",
+            "foreground": "#839496",
+            "green": "#728905",
+            "name": "Solarized Dark Patched",
+            "purple": "#C61B6E",
+            "red": "#D01B24",
+            "selectionBackground": "#FFFFFF",
+            "white": "#E9E2CB",
+            "yellow": "#A57705"
         },
         {
             "background": "#FDF6E3",
