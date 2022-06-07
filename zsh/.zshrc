@@ -98,6 +98,9 @@ alias :q="echo \"You're not in vim\""
 alias :w="echo \"You're not in vim\""
 alias :wq="echo \"You're not in vim\""
 
+# get ANSI solarized colors for ls
+eval `dircolors $HOME/.dotfiles/zsh/dircolors.ansi-dark`
+
 if (( $+commands[direnv] )); then
     eval "$(direnv hook zsh)"
 fi
