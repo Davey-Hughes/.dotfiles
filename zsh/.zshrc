@@ -75,6 +75,7 @@ tmux() {
 
 # get ANSI solarized colors for ls
 source $HOME/.dotfiles/zsh/dircolors/lscolors.zsh
+export LS_COLORS
 
 alias zshconfig="vim ~/.zshrc"
 alias gdb="gdb -q"
