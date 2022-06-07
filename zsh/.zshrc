@@ -62,6 +62,9 @@ case `uname` in
         export TMUXCONFIG="$HOME/.dotfiles/tmux/macos.conf"
       ;;
       Linux)
+        # common linux zsh configs
+        source $HOME/.dotfiles/zsh/linux.zsh
+
         version=$(cat /proc/version)
         if [[ $version =~ "arch" ]]; then
             source $HOME/.dotfiles/zsh/arch.zsh
@@ -97,9 +100,6 @@ alias gdb="gdb -q"
 alias :q="echo \"You're not in vim\""
 alias :w="echo \"You're not in vim\""
 alias :wq="echo \"You're not in vim\""
-
-# get ANSI solarized colors for ls
-eval `dircolors $HOME/.dotfiles/zsh/dircolors.ansi-dark`
 
 if (( $+commands[direnv] )); then
     eval "$(direnv hook zsh)"
