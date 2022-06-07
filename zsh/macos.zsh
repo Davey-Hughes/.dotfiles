@@ -2,9 +2,6 @@ export PATH="/bin:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/usr/loc
 export PATH="$HOME/bin:$HOME/.toolbox/bin:$HOME/.cargo/bin:$PATH"
 export LIBRARY_PATH=":/usr/local/lib:$LIBRARY_PATH"
 
-# get ANSI solarized colors for ls
-eval `gdircolors $HOME/.dotfiles/zsh/dircolors.ansi-dark`
-
 if (( $+commands[gls] )); then
     alias l="gls -lah --color=auto"
 fi

@@ -1,4 +1,4 @@
-# Path to your oh-my-zsh installation.
+# path to oh-my-zsh installation
 export ZSH=$HOME/.oh-my-zsh
 
 # theme
@@ -6,21 +6,7 @@ ZSH_THEME="davey"
 
 DEFAULT_USER="davey"
 
-# Uncomment the following line to display red dots whilst waiting for completion.
 COMPLETION_WAITING_DOTS="true"
-
-# Uncomment the following line if you want to disable marking untracked files
-# under VCS as dirty. This makes repository status check for large repositories
-# much, much faster.
-# DISABLE_UNTRACKED_FILES_DIRTY="true"
-
-# Which plugins would you like to load? (plugins can be found in ~/.oh-my-zsh/plugins/*)
-# Custom plugins may be added to ~/.oh-my-zsh/custom/plugins/
-# Example format: plugins=(rails git textmate ruby lighthouse)
-# Add wisely, as too many plugins slow down shell startup.
-# plugins=(git)
-
-# User configuration
 
 # don't need to explicitly put . for file autocompletion
 setopt globdots
@@ -42,18 +28,10 @@ export LANG="en_US.UTF-8"
 
 export EDITOR='vim'
 
-export GOPATH="$HOME/go"
-
 source $ZSH/oh-my-zsh.sh
 fpath=(/usr/local/share/zsh-completions $fpath)
 
-# You may need to manually set your language environment
 export LANG=en_US.UTF-8
-
-# Set personal aliases, overriding those provided by oh-my-zsh libs,
-# plugins, and themes. Aliases can be placed here, though oh-my-zsh
-# users are encouraged to define aliases within the ZSH_CUSTOM folder.
-# For a full list of active aliases, run `alias`.
 
 # source os specific settings
 case `uname` in
@@ -84,6 +62,8 @@ case `uname` in
       ;;
 esac
 
+export GOPATH="$HOME/go"
+
 # open or attach tmux in session 'main' if no arguments are passed
 tmux() {
     if [[ $# -eq 0 ]]; then
@@ -93,8 +73,10 @@ tmux() {
     fi
 }
 
+# get ANSI solarized colors for ls
+source $HOME/.dotfiles/zsh/dircolors/lscolors.zsh
+
 alias zshconfig="vim ~/.zshrc"
-# alias make="make -j"
 alias gdb="gdb -q"
 
 alias :q="echo \"You're not in vim\""
@@ -108,21 +90,6 @@ fi
 if (( $+commands[thefuck] )); then
     eval $(thefuck --alias)
 fi
-
-codi() {
-    local syntax="${1:-python}"
-    shift
-    vim -c \
-        "let g:startify_disable_at_vimenter = 1 |\
-        set bt=nofile ls=0 noru nonu nornu |\
-        hi ColorColumn ctermbg=NONE |\
-        hi VertSplit ctermbg=NONE |\
-        hi NonText ctermfg=0 |\
-        Codi $syntax" "$@"
-}
-
-# fzf
-[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 
 # vim bindings
 bindkey -v
