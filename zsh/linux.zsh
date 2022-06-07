@@ -1,6 +1,3 @@
-# get ANSI solarized colors for ls
-eval `dircolors $HOME/.dotfiles/zsh/dircolors.ansi-dark`
-
 # linuxbrew
 test -d ~/.linuxbrew && eval $(~/.linuxbrew/bin/brew shellenv)
 test -d /home/linuxbrew/.linuxbrew && eval $(/home/linuxbrew/.linuxbrew/bin/brew shellenv)
