@@ -73,9 +73,6 @@ tmux() {
     fi
 }
 
-# get ANSI solarized colors for ls
-source $HOME/.dotfiles/zsh/dircolors/lscolors.zsh
-export LS_COLORS
 
 alias zshconfig="vim ~/.zshrc"
 alias gdb="gdb -q"
@@ -83,6 +80,19 @@ alias gdb="gdb -q"
 alias :q="echo \"You're not in vim\""
 alias :w="echo \"You're not in vim\""
 alias :wq="echo \"You're not in vim\""
+
+if (( $+commands[exa] )); then
+    alias l="exa -lah"
+else
+    # get ANSI solarized colors for ls
+    source $HOME/.dotfiles/zsh/dircolors/lscolors.zsh
+    export LS_COLORS
+fi
+
+if (( $+commands[zoxide] )); then
+    eval "$(zoxide init zsh)"
+    alias cd="z"
+fi
 
 if (( $+commands[direnv] )); then
     eval "$(direnv hook zsh)"

@@ -2,7 +2,7 @@ export PATH="/bin:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/usr/loc
 export PATH="$HOME/bin:$HOME/.toolbox/bin:$HOME/.cargo/bin:$PATH"
 export LIBRARY_PATH=":/usr/local/lib:$LIBRARY_PATH"
 
-if (( $+commands[gls] )); then
+if (( !$+commands[exa] && $+commands[gls] )); then
     alias l="gls -lah --color=auto"
 fi
 
@@ -11,9 +11,6 @@ alias g++="g++-11"
 alias wolfram="/Applications/Mathematica.app/Contents/MacOS/WolframKernel"
 
 alias vi="vim -u NONE"
-# alias vi="mvim -v -u NONE"
-# alias vim="mvim -v"
-# alias mvim="mvim $@ > /dev/null 2>&1"
 
 brewdeps() {
     brew list | while read cask; do echo -n $fg[blue] $cask $fg[white]; brew deps $cask | awk '{printf(" %s ", $0)}'; echo ""; done

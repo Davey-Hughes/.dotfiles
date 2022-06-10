@@ -1,0 +1,12 @@
+autopep8
+beautifulsoup4
+compdb
+flake8
+jedi
+matplotlib
+numpy
+pandas
+powerline-status
+pylint
+pynvim
+requests
