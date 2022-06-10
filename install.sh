@@ -51,7 +51,7 @@ symlinks() {
   mkdir -p $HOME/.tmux
   mkdir -p $HOME/.config
 
-  ln -sfn $DOTFDIR/tmux/plugins $HOME/.tmux
+  ln -sfn $DOTFDIR/tmux/plugins $HOME/.tmux/plugins
   ln -sfn $DOTFDIR/zsh/.zshrc $HOME
   ln -sfn $DOTFDIR/tmux/.tmux.conf $HOME
   ln -sfn $DOTFDIR/readline/.inputrc $HOME
