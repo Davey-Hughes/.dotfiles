@@ -36,8 +36,8 @@ export LANG=en_US.UTF-8
 # source os specific settings
 case `uname` in
       Darwin)
-        source $HOME/.dotfiles/zsh/macos.zsh
-        export TMUXCONFIG="$HOME/.dotfiles/tmux/macos.conf"
+        source $HOME/.dotfiles/shell/zsh/macos.zsh
+        export TMUXCONFIG="$HOME/.dotfiles/term/tmux/macos.conf"
       ;;
       Linux)
         # common linux zsh configs
@@ -45,17 +45,17 @@ case `uname` in
 
         version=$(cat /proc/version)
         if [[ $version =~ "arch" ]]; then
-            source $HOME/.dotfiles/zsh/arch.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/tmux/arch.conf"
+            source $HOME/.dotfiles/shell/zsh/arch.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/arch.conf"
         elif [[ $version =~ "Red Hat" ]]; then
-            source $HOME/.dotfiles/zsh/rhel.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/tmux/rhel.conf"
+            source $HOME/.dotfiles/shell/zsh/rhel.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/rhel.conf"
         elif [[ $version =~ "WSL2" ]]; then
-            source $HOME/.dotfiles/zsh/wsl.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/tmux/wsl.conf"
+            source $HOME/.dotfiles/shell/zsh/wsl.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/wsl.conf"
         else
-            source $HOME/.dotfiles/zsh/ubuntu.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/tmux/ubuntu.conf"
+            source $HOME/.dotfiles/shell/zsh/ubuntu.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/ubuntu.conf"
         fi
       ;;
       FreeBSD)
