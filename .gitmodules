@@ -1,4 +1,4 @@
-[submodule "tmux/plugins/tpm"]
-	path = tmux/plugins/tpm
+[submodule "term/tmux/plugins/tpm"]
+	path = term/tmux/plugins/tpm
 	url = https://github.com/tmux-plugins/tpm.git
 	ignore = dirty

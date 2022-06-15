@@ -4,7 +4,8 @@ powerline/cr
 powerline/htop
 powerline/ninja-dev-sync.json
 powerline/powerline
-tmux/plugins/*
-tmux/resurrect/
 
-!tmux/plugins/tpm/*
+*/tmux/plugins/*
+*/tmux/resurrect/
+
+!*tmux/plugins/tpm/*
