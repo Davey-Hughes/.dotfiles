@@ -2,12 +2,13 @@
 
 usage() {
   cat << "EOF"
-usage: $0 [-h] [-z] [-f] [-p] [-w]
+usage: $0 [-h] [-z] [-f] [-p] [-v] [-w]
     -h: print this usage statement
     -b: install homebrew
     -z: install oh-my-fish
     -f: install oh-my-fish
     -p: install packages
+    -p: install vim
     -w: copy windows terminal config
 EOF
 
@@ -50,13 +51,21 @@ install_packages() {
   fi
 }
 
+install_vim() {
+  pushd $HOME/.vim
+  ./install.sh
+  popd
+}
+
 symlinks() {
   echo "Creating symlinks..."
 
-  cd $HOME
+  pushd $HOME
 
   mkdir -p $HOME/.tmux
   mkdir -p $HOME/.config
+
+  ln -sfn $DOTFDIR/.vim $HOME
 
   ln -sfn $DOTFDIR/shell/zsh/.zshrc $HOME
   ln -sfn $DOTFDIR/shell/zsh/davey.zsh-theme $HOME/.oh-my-zsh/themes
@@ -77,6 +86,8 @@ symlinks() {
   ln -sfn $DOTFDIR/.git_template $HOME
 
   ln -sfn $DOTFDIR/powerline $HOME/.config/
+
+  popd
 
 }
 
@@ -102,6 +113,15 @@ windows_terminal() {
   fi
 }
 
+update_submodules() {
+  # initialize all submodules
+  git submodule update --init --recursive
+
+  # pull newest changes for each submodule, recursively
+  git submodule foreach git checkout master
+  git submodule foreach git pull
+}
+
 # assumes dotfiles directory is at this location
 DOTFDIR=$HOME/.dotfiles
 
@@ -109,6 +129,7 @@ INSTALL_HOMEBREW=false
 INSTALL_OMZSH=false
 INSTALL_OMFISH=false
 INSTALL_PACKAGES=false
+INSTALL_VIM=false
 
 # install windows terminal config
 WINDOWS_TERMINAL=false
@@ -130,6 +151,9 @@ while getopts "hbzfpw" opt; do
       ;;
     p)
       INSTALL_PACKAGES=true
+      ;;
+    v)
+      INSTALL_vim=true
       ;;
     w)
       WINDOWS_TERMINAL=true
@@ -182,6 +206,10 @@ if [ "$INSTALL_PACKAGES" = true ]; then
   install_packages
 fi
 
+if [ "$INSTALL_VIM" = true ]; then
+  install_vim
+fi
+
 if [ "$CREATE_SYMLINKS" = true ]; then
   symlinks
 fi
@@ -189,3 +217,5 @@ fi
 if [ "$GIT_SETTINGS" = true ]; then
   git_settings
 fi
+
+update_submodules
