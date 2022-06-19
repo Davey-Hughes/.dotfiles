@@ -41,7 +41,7 @@ case `uname` in
       ;;
       Linux)
         # common linux zsh configs
-        source $HOME/.dotfiles/zsh/linux.zsh
+        source $HOME/.dotfiles/shell/zsh/linux.zsh
 
         version=$(cat /proc/version)
         if [[ $version =~ "arch" ]]; then
