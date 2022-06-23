@@ -1,7 +1,7 @@
 #!/bin/bash
 
 usage() {
-  cat << "EOF"
+  cat << EOF
 usage: $0 [-h] [-z] [-f] [-p] [-v] [-w]
     -h: print this usage statement
     -b: install homebrew
