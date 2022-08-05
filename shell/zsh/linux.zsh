@@ -5,7 +5,7 @@ test -d /home/linuxbrew/.linuxbrew && eval $(/home/linuxbrew/.linuxbrew/bin/brew
 alias vi="vim -v -u NONE"
 
 # prints stderr in red
-export LD_PRELOAD="$HOME/.local/sources/stderred/build/libstderred.so${LD_PRELOAD:+:$LD_PRELOAD}"
+test -d "~/.local/sources/stderred" && export LD_PRELOAD="$HOME/.local/sources/stderred/build/libstderred.so${LD_PRELOAD:+:$LD_PRELOAD}"
 
 # fzf
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
