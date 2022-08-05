@@ -47,6 +47,9 @@ case `uname` in
         if [[ $version =~ "arch" ]]; then
             source $HOME/.dotfiles/shell/zsh/arch.zsh
             export TMUXCONFIG="$HOME/.dotfiles/term/tmux/arch.conf"
+        elif [[ $version =~ "MANJARO" ]]; then
+            source $HOME/.dotfiles/shell/zsh/manjaro.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/manjaro.conf"
         elif [[ $version =~ "Red Hat" ]]; then
             source $HOME/.dotfiles/shell/zsh/rhel.zsh
             export TMUXCONFIG="$HOME/.dotfiles/term/tmux/rhel.conf"
