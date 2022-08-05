@@ -5,10 +5,10 @@ usage() {
 usage: $0 [-h] [-z] [-f] [-p] [-v] [-w]
     -h: print this usage statement
     -b: install homebrew
-    -z: install oh-my-fish
+    -z: install oh-my-zsh
     -f: install oh-my-fish
     -p: install packages
-    -p: install vim
+    -v: install vim
     -w: copy windows terminal config
 EOF
 
@@ -153,7 +153,7 @@ while getopts "hbzfpw" opt; do
       INSTALL_PACKAGES=true
       ;;
     v)
-      INSTALL_vim=true
+      INSTALL_VIM=true
       ;;
     w)
       WINDOWS_TERMINAL=true
