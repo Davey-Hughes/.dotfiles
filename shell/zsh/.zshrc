@@ -85,7 +85,7 @@ if (( $+commands[exa] )); then
     alias l="exa -lah"
 else
     # get ANSI solarized colors for ls
-    source $HOME/.dotfiles/zsh/dircolors/lscolors.zsh
+    source $HOME/.dotfiles/shell/zsh/dircolors/lscolors.zsh
     export LS_COLORS
 fi
 
