@@ -31,6 +31,8 @@ export EDITOR='vim'
 source $ZSH/oh-my-zsh.sh
 fpath=(/usr/local/share/zsh-completions $fpath)
 
+source $HOME/.dotfiles/shell/zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
+
 export LANG=en_US.UTF-8
 
 # source os specific settings
