@@ -98,6 +98,7 @@ git_settings() {
     git config --global init.templatedir '~/.git_template'
     git config --global alias.ctags '!.git/hooks/ctags'
     git config --global init.defaultBranch 'main'
+    git config --global core.excludesfile ~'.git_template/.gitignore'
   else
     echo "git not installed" 2&>1
   fi
@@ -138,7 +139,7 @@ WINDOWS_TERMINAL=false
 CREATE_SYMLINKS=true
 GIT_SETTINGS=true
 
-while getopts "hbzfpw" opt; do
+while getopts "hbzfpwv" opt; do
   case "${opt}" in
     b)
       INSTALL_HOMEBREW=true
