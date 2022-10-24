@@ -99,6 +99,7 @@ git_settings() {
     git config --global alias.ctags '!.git/hooks/ctags'
     git config --global init.defaultBranch 'main'
     git config --global core.excludesfile ~'.git_template/.gitignore'
+    git config --global push.autoSetupRemote true
   else
     echo "git not installed" 2&>1
   fi
