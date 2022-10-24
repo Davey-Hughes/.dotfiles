@@ -31,17 +31,23 @@ export EDITOR='vim'
 source $ZSH/oh-my-zsh.sh
 fpath=(/usr/local/share/zsh-completions $fpath)
 
-source $HOME/.dotfiles/shell/zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
-
 export LANG=en_US.UTF-8
 
 # source os specific settings
 case `uname` in
-      Darwin)
-        source $HOME/.dotfiles/shell/zsh/macos.zsh
-        export TMUXCONFIG="$HOME/.dotfiles/term/tmux/macos.conf"
-      ;;
-      Linux)
+    Darwin)
+        hostname=$(hostname)
+
+        if [[ $hostname == "QL0FP40P3H" ]]; then
+            source $HOME/.dotfiles/shell/zsh/macos_lyft.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/macos_lyft.conf"
+        else
+            source $HOME/.dotfiles/shell/zsh/macos.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/macos.conf"
+        fi
+
+    ;;
+    Linux)
         # common linux zsh configs
         source $HOME/.dotfiles/shell/zsh/linux.zsh
 
@@ -62,9 +68,9 @@ case `uname` in
             source $HOME/.dotfiles/shell/zsh/ubuntu.zsh
             export TMUXCONFIG="$HOME/.dotfiles/term/tmux/ubuntu.conf"
         fi
-      ;;
-      FreeBSD)
-      ;;
+    ;;
+    FreeBSD)
+    ;;
 esac
 
 export GOPATH="$HOME/go"
@@ -140,6 +146,11 @@ bindkey -M vicmd 'j' down-line-or-beginning-search
 bindkey '^a' beginning-of-line
 bindkey '^e' end-of-line
 
+# fish-like auto suggestions - use ctrl-space to accept suggestion
+source $HOME/.dotfiles/shell/zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
+bindkey '^ ' autosuggest-accept
+
+
 # history
 HISTFILE=~/.histfile
 HISTSIZE=10000
@@ -151,3 +162,8 @@ zstyle :compinstall filename '$HOME/.zshrc'
 
 autoload -Uz compinit
 compinit -d $HOME/.cache/zsh/zcompdump-$ZSH_VERSION
+
+# Add support for Go modules and Lyft's Athens module proxy/store
+# These variables were added by 'hacktools/set_go_env_vars.sh'
+export GOPROXY='https://athens.ingress.infra.us-east-1.k8s.lyft.net'
+export GONOSUMDB='github.com/lyft/*,github.lyft.net/*'
