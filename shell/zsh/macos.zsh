@@ -1,4 +1,4 @@
-export PATH="/bin:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/usr/local/opt/llvm/bin:/bin/flake8:/usr/local/opt/coreutils/libexec/gnubin:/usr/local/opt/ruby/bin:$PATH"
+export PATH="/bin:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/opt/homebrew/opt/llvm/bin:/bin/flake8:/usr/local/opt/coreutils/libexec/gnubin:/usr/local/opt/ruby/bin:$PATH"
 export PATH="$HOME/bin:$HOME/.toolbox/bin:$HOME/.cargo/bin:$PATH"
 export LIBRARY_PATH=":/usr/local/lib:$LIBRARY_PATH"
 
