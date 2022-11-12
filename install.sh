@@ -98,7 +98,7 @@ git_settings() {
     git config --global init.templatedir '~/.git_template'
     git config --global alias.ctags '!.git/hooks/ctags'
     git config --global init.defaultBranch 'main'
-    git config --global core.excludesfile ~'.git_template/.gitignore'
+    git config --global core.excludesfile '.git_template/.gitignore'
     git config --global push.autoSetupRemote true
   else
     echo "git not installed" 2&>1
@@ -116,12 +116,13 @@ windows_terminal() {
 }
 
 update_submodules() {
+  :
   # initialize all submodules
-  git submodule update --init --recursive
+  # git submodule update --init --recursive
 
   # pull newest changes for each submodule, recursively
-  git submodule foreach git checkout master
-  git submodule foreach git pull
+  # git submodule foreach git checkout master
+  # git submodule foreach git pull
 }
 
 # assumes dotfiles directory is at this location
