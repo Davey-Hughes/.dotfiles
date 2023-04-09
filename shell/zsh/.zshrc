@@ -26,8 +26,6 @@ setopt HIST_IGNORE_ALL_DUPS
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/go/bin"
 export LANG="en_US.UTF-8"
 
-export EDITOR='vim'
-
 source $ZSH/oh-my-zsh.sh
 fpath=(/usr/local/share/zsh-completions $fpath)
 
@@ -93,6 +91,7 @@ alias :w="echo \"You're not in vim\""
 alias :wq="echo \"You're not in vim\""
 
 if (( $+commands[exa] )); then
+    alias ls="exa"
     alias l="exa -lah"
 else
     # get ANSI solarized colors for ls
@@ -111,6 +110,12 @@ fi
 
 if (( $+commands[thefuck] )); then
     eval $(thefuck --alias)
+fi
+
+# set editor to nvim if available, else vim
+export EDITOR='vim'
+if (( $+commands[nvim] )); then
+    export EDITOR='nvim'
 fi
 
 # vim bindings
