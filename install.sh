@@ -81,7 +81,7 @@ symlinks() {
   ln -sfn $DOTFDIR/readline/.inputrc $HOME
   ln -sfn $DOTFDIR/readline/.editrc $HOME
   ln -sfn $DOTFDIR/postgres/.psqlrc $HOME
-  ln -sfn $DOTFDIR/intellij/.ideavimrc $HOME/.ideavimrc
+  ln -sfn $DOTFDIR/pdb/.pdbrc.py $HOME
 
   ln -sfn $DOTFDIR/.git_template $HOME
 
