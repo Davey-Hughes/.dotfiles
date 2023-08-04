@@ -13,17 +13,6 @@
         "left": [],
         "right": [
             {
-                "function": "powerline.segments.common.net.internal_ip",
-                "priority": 50
-            },
-            {
-                "args": {
-                    "query_url": "http://icanhazip.com/"
-                },
-                "function": "powerline.segments.common.net.external_ip",
-                "priority": 50
-            },
-            {
                 "args": {
                     "gamify": true
                 },
