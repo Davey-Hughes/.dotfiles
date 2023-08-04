@@ -36,9 +36,9 @@ case `uname` in
     Darwin)
         hostname=$(hostname)
 
-        if [[ $hostname == "QL0FP40P3H" ]]; then
-            source $HOME/.dotfiles/shell/zsh/macos_lyft.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/macos_lyft.conf"
+        if [[ $hostname == "dhughes-K44H0465N7-mbp" ]]; then
+            source $HOME/.dotfiles/shell/zsh/macos_flexport.zsh
+            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/macos_flexport.conf"
         else
             source $HOME/.dotfiles/shell/zsh/macos.zsh
             export TMUXCONFIG="$HOME/.dotfiles/term/tmux/macos.conf"
