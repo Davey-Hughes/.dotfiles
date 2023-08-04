@@ -167,3 +167,6 @@ zstyle :compinstall filename '$HOME/.zshrc'
 
 autoload -Uz compinit
 compinit -d $HOME/.cache/zsh/zcompdump-$ZSH_VERSION
+
+zstyle ':completion:*' special-dirs false
+_comp_options+=(globdots)
