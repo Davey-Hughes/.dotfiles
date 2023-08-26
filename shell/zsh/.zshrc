@@ -154,6 +154,7 @@ bindkey '^e' end-of-line
 # fish-like auto suggestions - use ctrl-space to accept suggestion
 source $HOME/.dotfiles/shell/zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
 bindkey '^ ' autosuggest-accept
+ZSH_AUTOSUGGEST_ACCEPT_WIDGETS=()
 
 
 # history
