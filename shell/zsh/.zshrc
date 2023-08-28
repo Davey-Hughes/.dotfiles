@@ -24,6 +24,7 @@ setopt interactivecomments
 setopt HIST_IGNORE_ALL_DUPS
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/go/bin"
+export GOPATH="$HOME/go"
 export LANG="en_US.UTF-8"
 
 source $ZSH/oh-my-zsh.sh
@@ -70,8 +71,6 @@ case `uname` in
     FreeBSD)
     ;;
 esac
-
-export GOPATH="$HOME/go"
 
 # open or attach tmux in session 'main' if no arguments are passed
 tmux() {
@@ -171,3 +170,8 @@ compinit -d $HOME/.cache/zsh/zcompdump-$ZSH_VERSION
 
 zstyle ':completion:*' special-dirs false
 _comp_options+=(globdots)
+
+export GITHUB_USERNAME=dhughes
+
+alias mpr="/Users/dhughes/flexport/mpr"
+alias dev="fx rdev"
