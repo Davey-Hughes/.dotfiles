@@ -1,3 +1,84 @@
+# disable fish greeting
+set -g fish_greeting
+
+set PATH /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $HOME/go/bin
+set GOPATH $HOME/go
+
+# set EDITOR to neovim if exists
+set -g EDITOR vim
+if command -q nvim
+    set -g EDITOR nvim
+end
+
+# vi keybinds
+function fish_user_key_bindings
+    fish_vi_key_bindings
+
+    # bind ctrl-v to edit in EDITOR
+    bind -M default \cv edit_command_buffer
+    bind -M insert \cv edit_command_buffer
+
+    # bind ctrl-space to accept autosuggestion
+    bind -M default -k nul accept-autosuggestion
+    bind -M insert -k nul accept-autosuggestion
+
+    bind -M default j down-or-search
+    bind -M default k up-or-search
+end
+
 if status is-interactive
-    # Commands to run in interactive sessions can go here
+    # open or attach tmux in session 'main' if no arguments are passed
+    function tmux
+        if count $argv > /dev/null
+            command tmux $argv
+        else
+            command tmux new-session -A -s main
+        end
+    end
+
+    if command -q starship
+        starship init fish | source
+    end
+
+    if command -q zoxide
+        zoxide init fish | source
+    end
+
+    if command -q exa
+        alias ls="exa"
+        alias l="exa -lah"
+    end
+
+    if command -q direnv
+        direnv hook fish | source
+    end
+
+    if command -q thefuck
+        thefuck --alias | source
+    end
+end
+
+switch $(uname)
+    case Linux
+        source $HOME/.dotfiles/shell/fish/linux.fish
+
+        set linux_version $(cat /proc/version)
+        switch linux_version
+            case arch
+                source $HOME/.dotfiles/shell/fish/arch.fish
+                set TMUXCONFIG $HOME/.dotfiles/term/tmux/arch.conf
+            case MANJARO
+                source $HOME/.dotfiles/shell/fish/manjaro.fish
+                set TMUXCONFIG $HOME/.dotfiles/term/tmux/manjaro.conf
+        end
+
+    case Darwin
+        if [ $hostname = "dhughes-K44H04657-mbp" ]
+            source $HOME/.dotfiles/shell/fish/macos_flexport.fish
+            set TMUXCONFIG $HOME/.dotfiles/term/tmux/macos_flexport.conf
+        else
+            source $HOME/.dotfiles/shell/fish/macos.fish
+            set TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
+        end
+
 end
