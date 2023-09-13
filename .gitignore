@@ -9,3 +9,5 @@ powerline/powerline
 */tmux/resurrect/
 
 !*tmux/plugins/tpm/*
+
+*.bak
