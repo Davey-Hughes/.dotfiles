@@ -7,14 +7,17 @@ set PATH /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games
 set GOPATH $HOME/go
 
 # set EDITOR to neovim if exists
-set -g EDITOR vim
+set -x EDITOR vim
 if command -q nvim
-    set -g EDITOR nvim
+    set -x EDITOR nvim
 end
 
 # vi keybinds
 function fish_user_key_bindings
     fish_vi_key_bindings
+
+    # unbind cancel when pressing escape in normal mode
+    bind -M default -e \e
 
     # bind ctrl-v to edit in EDITOR
     bind -M default \cv edit_command_buffer
@@ -42,8 +45,21 @@ if status is-interactive
         starship init fish | source
     end
 
+    # rewrite prompt after execution
+    function starship_transient_prompt_func
+        starship module directory
+    end
+
+    function starship_transient_rprompt_func
+        starship module time
+    end
+
+    enable_transience
+
+
     if command -q zoxide
         zoxide init fish | source
+        alias cd="z"
     end
 
     if command -q exa
