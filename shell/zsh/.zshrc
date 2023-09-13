@@ -3,6 +3,19 @@ export ZSH=$HOME/.oh-my-zsh
 
 # theme
 ZSH_THEME="davey"
+COLORSCHEME="tokyonight-moon"
+
+case $COLORSCHEME in
+    tokyonight-moon)
+        kitty +kitten themes --reload-in=all Tokyo Night Moon
+    ;;
+    neosolarized)
+    ;&
+    *)
+        kitty +kitten themes --reload-in=all Solarized Dark - Patched
+    ;;
+esac
+
 
 DEFAULT_USER="davey"
 
@@ -88,6 +101,10 @@ alias gdb="gdb -q"
 alias :q="echo \"You're not in vim\""
 alias :w="echo \"You're not in vim\""
 alias :wq="echo \"You're not in vim\""
+
+# if (( $+commands[starship] )); then
+    # eval "$(starship init zsh)"
+# fi
 
 if (( $+commands[exa] )); then
     alias ls="exa"
