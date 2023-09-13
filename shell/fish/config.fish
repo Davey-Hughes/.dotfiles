@@ -31,6 +31,30 @@ function fish_user_key_bindings
     bind -M default k up-or-search
 end
 
+switch $(uname)
+case Linux
+    source $HOME/.dotfiles/shell/fish/linux.fish
+
+    set linux_version $(cat /proc/version)
+    switch $linux_version
+    case "*arch*"
+        source $HOME/.dotfiles/shell/fish/arch.fish
+        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/arch.conf
+    case "*MANJARO*"
+        source $HOME/.dotfiles/shell/fish/manjaro.fish
+        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/manjaro.conf
+    end
+
+case Darwin
+    if [ $hostname = "dhughes-K44H0465N7-mbp" ]
+        source $HOME/.dotfiles/shell/fish/macos_flexport.fish
+        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos_flexport.conf
+    else
+        source $HOME/.dotfiles/shell/fish/macos.fish
+        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
+    end
+end
+
 if status is-interactive
     set -x COLORSCHEME tokyonight
     set -x COLORSCHEME_VARIANT moon
@@ -102,29 +126,5 @@ if status is-interactive
 
     if command -q thefuck
         thefuck --alias | source
-    end
-end
-
-switch $(uname)
-case Linux
-    source $HOME/.dotfiles/shell/fish/linux.fish
-
-    set linux_version $(cat /proc/version)
-    switch $linux_version
-    case "*arch*"
-        source $HOME/.dotfiles/shell/fish/arch.fish
-        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/arch.conf
-    case "*MANJARO*"
-        source $HOME/.dotfiles/shell/fish/manjaro.fish
-        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/manjaro.conf
-    end
-
-case Darwin
-    if [ $hostname = "dhughes-K44H04657-mbp" ]
-        source $HOME/.dotfiles/shell/fish/macos_flexport.fish
-        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos_flexport.conf
-    else
-        source $HOME/.dotfiles/shell/fish/macos.fish
-        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
     end
 end
