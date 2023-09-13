@@ -1,6 +1,8 @@
 # disable fish greeting
 set -g fish_greeting
 
+set -x SHELL /usr/bin/fish
+
 set PATH /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $HOME/go/bin
 set GOPATH $HOME/go
 
@@ -63,22 +65,22 @@ switch $(uname)
         source $HOME/.dotfiles/shell/fish/linux.fish
 
         set linux_version $(cat /proc/version)
-        switch linux_version
-            case arch
+        switch $linux_version
+            case "*arch*"
                 source $HOME/.dotfiles/shell/fish/arch.fish
-                set TMUXCONFIG $HOME/.dotfiles/term/tmux/arch.conf
-            case MANJARO
+                set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/arch.conf
+            case "*MANJARO*"
                 source $HOME/.dotfiles/shell/fish/manjaro.fish
-                set TMUXCONFIG $HOME/.dotfiles/term/tmux/manjaro.conf
+                set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/manjaro.conf
         end
 
     case Darwin
         if [ $hostname = "dhughes-K44H04657-mbp" ]
             source $HOME/.dotfiles/shell/fish/macos_flexport.fish
-            set TMUXCONFIG $HOME/.dotfiles/term/tmux/macos_flexport.conf
+            set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos_flexport.conf
         else
             source $HOME/.dotfiles/shell/fish/macos.fish
-            set TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
+            set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
         end
 
 end
