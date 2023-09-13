@@ -4,11 +4,7 @@ add_newline = true
 
 format = """
 $directory\
-$git_commit\
-$git_branch\
-$git_state\
-$git_status\
-$git_metrics\
+(<$git_commit$git_branch$git_state$git_status$git_metrics> )\
 $package\
 $c\
 $cmake\
@@ -22,6 +18,7 @@ $nodejs\
 $ocaml\
 $perl\
 $python\
+$ruby\
 $rust\
 $zig\
 $line_break\
@@ -33,6 +30,7 @@ $sudo\
 
 right_format = '''$cmd_duration $status$time'''
 
+# shell stuff
 [character]
 success_symbol = '[⋊>](bold green)'
 error_symbol = '[⋊>](bold red)'
@@ -53,27 +51,9 @@ repo_root_format = '[$before_root_path]($before_repo_root_style)[$repo_root]($re
 before_repo_root_style = 'bold green'
 repo_root_style = 'bold cyan'
 
-[git_branch]
-disabled = false
-format = '[$symbol$branch(:$remote_branch)]($style)'
-symbol = ''
-
-[git_commit]
-disabled = false
-format = '[<$hash$tag]($style) '
-only_detached = false
-
-[git_metrics]
-disabled = false
-format = '([+$added]($added_style) )([-$deleted]($deleted_style)[>]($added_style) )'
-
-[git_status]
-disabled = false
-format = '([$all_status$ahead_behind]($style) )'
-modified = '*'
-
 [jobs]
 disabled = false
+symbol = ''
 number_threshold = 0
 
 [shlvl]
@@ -94,3 +74,88 @@ format = '[$int <-]($style) '
 disabled = false
 time_format = '%H%M %a, %h %d'
 format = '[$time]($style) '
+
+# git modules
+[git_branch]
+disabled = false
+format = ' [$symbol$branch(:$remote_branch)]($style)'
+symbol = ''
+
+[git_commit]
+disabled = false
+format = '[$hash$tag]($style)'
+only_detached = false
+
+[git_metrics]
+disabled = false
+format = '( [+$added]($added_style))( [-$deleted]($deleted_style))'
+
+[git_status]
+disabled = false
+format = '([$all_status$ahead_behind]($style))'
+modified = '*'
+
+# languages
+[package]
+disabled = false
+format = '[$symbol$version]($style) '
+
+[c]
+disabled = false
+format = '| [$symbol($version(-$name) )]($style)'
+
+[cmake]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[golang]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[haskell]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[java]
+disabled = false
+format = '| [${symbol}(${version} )]($style)'
+
+[kotlin]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[gradle]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[lua]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[nodejs]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[ocaml]
+disabled = false
+format = '| [$symbol($version )(\($switch_indicator$switch_name\) )]($style)'
+
+[perl]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[python]
+disabled = false
+format = '| [${symbol}${pyenv_prefix}(${version} )(\($virtualenv\) )]($style)'
+
+[ruby]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[rust]
+disabled = false
+format = '| [$symbol($version )]($style)'
+
+[zig]
+disabled = false
+format = '| [$symbol($version )]($style)'
