@@ -6,18 +6,12 @@ set -x SHELL /usr/bin/fish
 set PATH /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $HOME/go/bin
 set GOPATH $HOME/go
 
-# set EDITOR to neovim if exists
-set -x EDITOR vim
-if command -q nvim
-    set -x EDITOR nvim
-end
-
 # vi keybinds
 function fish_user_key_bindings
     fish_vi_key_bindings
 
     # unbind cancel when pressing escape in normal mode
-    bind -M default -e \e
+    bind --preset -M default -e \e
 
     # bind ctrl-v to edit in EDITOR
     bind -M default \cv edit_command_buffer
@@ -53,6 +47,12 @@ case Darwin
         source $HOME/.dotfiles/shell/fish/macos.fish
         set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
     end
+end
+
+# set EDITOR to neovim if exists
+set -x EDITOR vim
+if command -q nvim
+    set -x EDITOR nvim
 end
 
 if status is-interactive
