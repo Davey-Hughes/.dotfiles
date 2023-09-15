@@ -11,3 +11,4 @@ powerline/powerline
 !*tmux/plugins/tpm/*
 
 *.bak
+*flexport*
