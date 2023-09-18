@@ -98,18 +98,6 @@ if status is-interactive
         starship init fish | source
     end
 
-    # rewrite prompt after execution
-    function starship_transient_prompt_func
-        starship module directory
-    end
-
-    function starship_transient_rprompt_func
-        starship module time
-    end
-
-    enable_transience
-
-
     if command -q zoxide
         zoxide init fish | source
         alias cd="z"
