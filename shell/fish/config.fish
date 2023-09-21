@@ -83,7 +83,7 @@ if status is-interactive
             end
     end
 
-    kitty +kitten themes --reload-in=all $kitty_theme
+    # kitty +kitten themes --reload-in=all $kitty_theme
 
     # open or attach tmux in session 'main' if no arguments are passed
     function tmux
@@ -95,6 +95,7 @@ if status is-interactive
     end
 
     if command -q starship
+        set -x STARSHIP_LOG error
         starship init fish | source
     end
 
