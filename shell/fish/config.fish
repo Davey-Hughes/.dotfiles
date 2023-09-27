@@ -56,6 +56,8 @@ if command -q nvim
 end
 
 if status is-interactive
+    set -g fish_escape_delay_ms 10
+
     set -x COLORSCHEME tokyonight
     set -x COLORSCHEME_VARIANT moon
 
