@@ -2,10 +2,6 @@
 	path = term/tmux/plugins/tpm
 	url = https://github.com/tmux-plugins/tpm.git
 	ignore = dirty
-[submodule ".vim"]
-	path = .vim
-	url = git@github.com:Davey-Hughes/.vim.git
-	ignore = dirty
 [submodule "shell/zsh/zsh-autosuggestions"]
 	path = shell/zsh/zsh-autosuggestions
 	url = https://github.com/zsh-users/zsh-autosuggestions
