@@ -3,8 +3,9 @@ set -g fish_greeting
 
 set -x SHELL /usr/bin/fish
 
-set PATH /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $HOME/go/bin $HOME/.cargo/bin
 set GOPATH $HOME/go
+set GOBIN $GOPATH/bin
+set PATH /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $GOPATH $GOBIN $HOME/.cargo/bin
 
 # vi keybinds
 function fish_user_key_bindings
@@ -113,6 +114,9 @@ if status is-interactive
 
     if command -q direnv
         direnv hook fish | source
+
+        # silence direnv output
+        set -x DIRENV_LOG_FORMAT
     end
 
     if command -q thefuck
