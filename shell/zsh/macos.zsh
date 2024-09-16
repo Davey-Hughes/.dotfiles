@@ -2,6 +2,8 @@ export PATH="/bin:$HOME/Documents/macvim/src/MacVim:/Library/TeX/texbin:/opt/hom
 export PATH="$HOME/bin:$HOME/.toolbox/bin:$HOME/.cargo/bin:$PATH"
 export LIBRARY_PATH=":/usr/local/lib:$LIBRARY_PATH"
 
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
 if (( !$+commands[exa] && $+commands[gls] )); then
     alias l="gls -lah --color=auto"
 fi

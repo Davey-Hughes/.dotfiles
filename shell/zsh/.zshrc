@@ -7,12 +7,12 @@ COLORSCHEME="tokyonight-moon"
 
 case $COLORSCHEME in
     tokyonight-moon)
-        kitty +kitten themes --reload-in=all Tokyo Night Moon
+        # kitty +kitten themes --reload-in=all Tokyo Night Moon
     ;;
     neosolarized)
     ;&
     *)
-        kitty +kitten themes --reload-in=all Solarized Dark - Patched
+        # kitty +kitten themes --reload-in=all Solarized Dark - Patched
     ;;
 esac
 
