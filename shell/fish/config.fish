@@ -107,9 +107,9 @@ if status is-interactive
         alias cd="z"
     end
 
-    if command -q exa
-        alias ls="exa"
-        alias l="exa -lah"
+    if command -q eza
+        alias ls="eza"
+        alias l="eza -lah"
     end
 
     if command -q direnv
