@@ -41,13 +41,8 @@ switch $(uname)
         end
 
     case Darwin
-        if [ $hostname = dhughes-K44H0465N7-mbp ]
-            source $HOME/.dotfiles/shell/fish/macos_flexport.fish
-            set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos_flexport.conf
-        else
-            source $HOME/.dotfiles/shell/fish/macos.fish
-            set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
-        end
+        source $HOME/.dotfiles/shell/fish/macos.fish
+        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
 end
 
 # set EDITOR to neovim if exists
