@@ -52,6 +52,9 @@ if command -q nvim
 end
 
 if status is-interactive
+    set -g fish_cursor_default block
+    set -g fish_cursor_insert block
+
     set -g fish_escape_delay_ms 10
 
     set -x COLORSCHEME tokyonight
