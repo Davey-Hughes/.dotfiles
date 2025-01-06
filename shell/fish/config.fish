@@ -41,8 +41,12 @@ switch $(uname)
         end
 
     case Darwin
-        source $HOME/.dotfiles/shell/fish/macos.fish
-        set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
+        # custom for another macos machine
+        if [ $hostname = "" ]
+        else
+            source $HOME/.dotfiles/shell/fish/macos.fish
+            set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
+        end
 end
 
 # set EDITOR to neovim if exists
@@ -52,9 +56,6 @@ if command -q nvim
 end
 
 if status is-interactive
-    set -g fish_cursor_default block
-    set -g fish_cursor_insert block
-
     set -g fish_escape_delay_ms 10
 
     set -x COLORSCHEME tokyonight
@@ -119,5 +120,9 @@ if status is-interactive
 
     if command -q thefuck
         thefuck --alias | source
+    end
+
+    if command -q atuin
+        atuin init fish | source
     end
 end
