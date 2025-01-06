@@ -62,7 +62,7 @@ threshold = 0
 format = '[$shlvl]($style)'
 
 [sudo]
-disabled = false
+disabled = true
 format = '[# ]($style)'
 style = 'bold red'
 

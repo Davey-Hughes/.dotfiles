@@ -1,7 +1,7 @@
 #!/bin/bash
 
 usage() {
-  cat << EOF
+  cat <<EOF
 usage: $0 [-h] [-z] [-f] [-p] [-v] [-w]
     -h: print this usage statement
     -b: install homebrew
@@ -67,8 +67,8 @@ symlinks() {
 
   ln -sfn $DOTFDIR/.vim $HOME
 
-  ln -sfn $DOTFDIR/shell/zsh/.zshrc $HOME
-  ln -sfn $DOTFDIR/shell/zsh/davey.zsh-theme $HOME/.oh-my-zsh/themes
+  # ln -sfn $DOTFDIR/shell/zsh/.zshrc $HOME
+  # ln -sfn $DOTFDIR/shell/zsh/davey.zsh-theme $HOME/.oh-my-zsh/themes
 
   ln -sfn $DOTFDIR/shell/fish/omf $HOME/.config
 
@@ -85,7 +85,9 @@ symlinks() {
 
   ln -sfn $DOTFDIR/.git_template $HOME
 
-  ln -sfn $DOTFDIR/powerline $HOME/.config/
+  ln -sfn $DOTFDIR/powerline $HOME/.config
+
+  ln -sfn $DOTFDIR/shell/atuin $HOME/.config
 
   popd
 
@@ -101,7 +103,7 @@ git_settings() {
     git config --global core.excludesfile '.git_template/.gitignore'
     git config --global push.autoSetupRemote true
   else
-    echo "git not installed" 2&>1
+    echo "git not installed" 2 &>1
   fi
 }
 
@@ -110,7 +112,7 @@ windows_terminal() {
 
   CDRIVE=/mnt/c
 
-  if [[ `uname -r` =~ "WSL2" ]]; then
+  if [[ $(uname -r) =~ "WSL2" ]]; then
     cp $DOTFDIR/term/windowsTerminal/settings.json $CDRIVE/Users/davey/AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState
   fi
 }
@@ -143,54 +145,52 @@ GIT_SETTINGS=true
 
 while getopts "hbzfpwv" opt; do
   case "${opt}" in
-    b)
-      INSTALL_HOMEBREW=true
-      ;;
-    z)
-      INSTALL_OMZSH=true
-      ;;
-    f)
-      INSTALL_OMFISH=true
-      ;;
-    p)
-      INSTALL_PACKAGES=true
-      ;;
-    v)
-      INSTALL_VIM=true
-      ;;
-    w)
-      WINDOWS_TERMINAL=true
-      ;;
-    h|*)
-      usage
-      ;;
+  b)
+    INSTALL_HOMEBREW=true
+    ;;
+  z)
+    INSTALL_OMZSH=true
+    ;;
+  f)
+    INSTALL_OMFISH=true
+    ;;
+  p)
+    INSTALL_PACKAGES=true
+    ;;
+  v)
+    INSTALL_VIM=true
+    ;;
+  w)
+    WINDOWS_TERMINAL=true
+    ;;
+  h | *)
+    usage
+    ;;
   esac
 done
 
 KERNEL=''
 OS=''
 
-case `uname` in
-      Darwin)
-        KERNEL='macos'
-      ;;
-      Linux)
-        KERNEL='linux'
+case $(uname) in
+Darwin)
+  KERNEL='macos'
+  ;;
+Linux)
+  KERNEL='linux'
 
-
-        version=$(cat /proc/version)
-        if [[ $version =~ "arch" ]]; then
-          :
-        elif [[ $version =~ "Red Hat" ]]; then
-          :
-        elif [[ $version =~ "WSL2" ]]; then
-          :
-        else
-          :
-        fi
-      ;;
-      FreeBSD)
-      ;;
+  version=$(cat /proc/version)
+  if [[ $version =~ "arch" ]]; then
+    :
+  elif [[ $version =~ "Red Hat" ]]; then
+    :
+  elif [[ $version =~ "WSL2" ]]; then
+    :
+  else
+    :
+  fi
+  ;;
+FreeBSD) ;;
 esac
 
 if [ "$INSTALL_HOMEBREW" = true ]; then
