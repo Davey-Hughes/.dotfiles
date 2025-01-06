@@ -76,6 +76,7 @@ symlinks() {
   ln -sfn $DOTFDIR/term/tmux/plugins $HOME/.tmux/plugins
 
   ln -sfn $DOTFDIR/term/kitty $HOME/.config
+  ln -sfn $DOTFDIR/term/ghostty $HOME/.config
   ln -sfn $DOTFDIR/term/alacritty $HOME/.config
 
   ln -sfn $DOTFDIR/readline/.inputrc $HOME
