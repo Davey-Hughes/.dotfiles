@@ -1,7 +1,11 @@
+confirm-close-surface = false
+
 font-family = Hack FC Ligatured CCG
+font-size = 13
 
 theme = "tokyonight-moon"
 
+shell-integration-features = no-cursor
 cursor-style = block
 cursor-style-blink = false
 
