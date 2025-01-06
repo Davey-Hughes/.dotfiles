@@ -1,0 +1,8 @@
+font-family = Hack FC Ligatured CCG
+
+theme = "tokyonight-moon"
+
+cursor-style = block
+cursor-style-blink = false
+
+window-decoration = false
