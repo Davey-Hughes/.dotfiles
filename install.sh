@@ -6,10 +6,8 @@ usage: $0 [-h] [-z] [-f] [-p] [-v] [-w]
     -h: print this usage statement
     -b: install homebrew
     -z: install oh-my-zsh
-    -f: install oh-my-fish
     -p: install packages
     -v: install vim
-    -w: copy windows terminal config
 EOF
 
   exit 1
@@ -25,12 +23,6 @@ install_ohmyzsh() {
   echo "Installing oh-my-zsh..."
 
   sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-}
-
-install_ohmyfish() {
-  echo "Installing oh-my-fish..."
-
-  curl https://raw.githubusercontent.com/oh-my-fish/oh-my-fish/master/bin/install | fish
 }
 
 install_packages() {
@@ -65,12 +57,8 @@ symlinks() {
   mkdir -p $HOME/.tmux
   mkdir -p $HOME/.config
 
-  ln -sfn $DOTFDIR/.vim $HOME
-
   # ln -sfn $DOTFDIR/shell/zsh/.zshrc $HOME
   # ln -sfn $DOTFDIR/shell/zsh/davey.zsh-theme $HOME/.oh-my-zsh/themes
-
-  ln -sfn $DOTFDIR/shell/fish/omf $HOME/.config
 
   ln -sfn $DOTFDIR/term/tmux/.tmux.conf $HOME
   ln -sfn $DOTFDIR/term/tmux/plugins $HOME/.tmux/plugins
@@ -108,26 +96,6 @@ git_settings() {
   fi
 }
 
-windows_terminal() {
-  echo "Copying Windows Terminal config..."
-
-  CDRIVE=/mnt/c
-
-  if [[ $(uname -r) =~ "WSL2" ]]; then
-    cp $DOTFDIR/term/windowsTerminal/settings.json $CDRIVE/Users/davey/AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState
-  fi
-}
-
-update_submodules() {
-  :
-  # initialize all submodules
-  # git submodule update --init --recursive
-
-  # pull newest changes for each submodule, recursively
-  # git submodule foreach git checkout master
-  # git submodule foreach git pull
-}
-
 # assumes dotfiles directory is at this location
 DOTFDIR=$HOME/.dotfiles
 
@@ -136,9 +104,6 @@ INSTALL_OMZSH=false
 INSTALL_OMFISH=false
 INSTALL_PACKAGES=false
 INSTALL_VIM=false
-
-# install windows terminal config
-WINDOWS_TERMINAL=false
 
 # these always run by default
 CREATE_SYMLINKS=true
@@ -160,9 +125,6 @@ while getopts "hbzfpwv" opt; do
     ;;
   v)
     INSTALL_VIM=true
-    ;;
-  w)
-    WINDOWS_TERMINAL=true
     ;;
   h | *)
     usage
@@ -221,5 +183,3 @@ fi
 if [ "$GIT_SETTINGS" = true ]; then
   git_settings
 fi
-
-update_submodules
