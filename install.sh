@@ -78,6 +78,9 @@ symlinks() {
 
   ln -sfn $DOTFDIR/shell/atuin $HOME/.config
 
+  ln -sfn $DOTFDIR/yabai $HOME/.config
+  ln -sfn $DOTFDIR/skhd $HOME/.config
+
   popd
 
 }
