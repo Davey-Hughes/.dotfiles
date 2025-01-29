@@ -125,4 +125,9 @@ if status is-interactive
     if command -q atuin
         atuin init fish | source
     end
+
+    if test -e $HOME/.config/claude/claude.txt
+        cat $HOME/.config/claude/claude.txt | read -x ANTHROPIC_API_KEY
+    end
+
 end
