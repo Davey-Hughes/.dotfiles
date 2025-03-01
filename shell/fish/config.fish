@@ -58,6 +58,9 @@ end
 if status is-interactive
     set -g fish_escape_delay_ms 10
 
+    set -g fish_cursor_default block
+    set -g fish_cursor_insert block
+
     set -x COLORSCHEME tokyonight
     set -x COLORSCHEME_VARIANT moon
 
