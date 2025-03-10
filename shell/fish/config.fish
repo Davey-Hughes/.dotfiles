@@ -129,6 +129,17 @@ if status is-interactive
         atuin init fish | source
     end
 
+    if command -q yazi
+        function y
+            set tmp (mktemp -t "yazi-cwd.XXXXXX")
+            yazi $argv --cwd-file="$tmp"
+            if set cwd (command cat -- "$tmp"); and [ -n "$cwd" ]; and [ "$cwd" != "$PWD" ]
+                builtin cd -- "$cwd"
+            end
+            rm -f -- "$tmp"
+        end
+    end
+
     if test -e $HOME/.config/claude/claude.txt
         cat $HOME/.config/claude/claude.txt | read -x ANTHROPIC_API_KEY
     end

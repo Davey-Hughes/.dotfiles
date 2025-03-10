@@ -81,6 +81,9 @@ symlinks() {
   ln -sfn $DOTFDIR/yabai $HOME/.config
   ln -sfn $DOTFDIR/skhd $HOME/.config
 
+  ln -sfn $DOTFDIR/yazi $HOME/.config
+  ln -sfn $DOTFDIR/mpv $HOME/.config
+
   popd
 
 }
