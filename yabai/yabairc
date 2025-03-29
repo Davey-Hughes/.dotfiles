@@ -10,3 +10,5 @@ yabai -m config window_gap     5
 
 yabai -m rule --add app="^System Settings$" manage=off
 yabai -m rule --add app="^Finder$" title="^Copy$" manage=off
+yabai -m rule --add app="^Finder$" title="^Trash$" manage=off
+yabai -m rule --add app="^League of Legends$" manage=off
