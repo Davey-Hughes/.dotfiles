@@ -84,6 +84,10 @@ symlinks() {
   ln -sfn $DOTFDIR/yazi $HOME/.config
   ln -sfn $DOTFDIR/mpv $HOME/.config
 
+  ln -sfn $DOTFDIR/neovide $HOME/.config
+
+  ln -sfn $DOTFDIR/MangoHud $HOME/.config
+
   popd
 
 }
