@@ -1,6 +1,3 @@
-# path to oh-my-zsh installation
-export ZSH=$HOME/.oh-my-zsh
-
 # theme
 ZSH_THEME="davey"
 COLORSCHEME="tokyonight-moon"
@@ -40,7 +37,6 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/g
 export GOPATH="$HOME/go"
 export LANG="en_US.UTF-8"
 
-source $ZSH/oh-my-zsh.sh
 fpath=(/usr/local/share/zsh-completions $fpath)
 
 export LANG=en_US.UTF-8

@@ -32,6 +32,9 @@ switch $(uname)
 
         set linux_version $(cat /proc/version)
         switch $linux_version
+            case "*valve*"
+                source $HOME/.dotfiles/shell/fish/steamdeck.fish
+                set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/steamdeck.conf
             case "*arch*"
                 source $HOME/.dotfiles/shell/fish/arch.fish
                 set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/arch.conf

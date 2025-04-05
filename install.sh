@@ -60,6 +60,10 @@ symlinks() {
   # ln -sfn $DOTFDIR/shell/zsh/.zshrc $HOME
   # ln -sfn $DOTFDIR/shell/zsh/davey.zsh-theme $HOME/.oh-my-zsh/themes
 
+  ln -sfn $DOTFDIR/shell/fish/config.fish $HOME/.config/fish
+
+  ln -sfn $DOTFDIR/shell/starship/starship.toml $HOME/.config/starship.toml
+
   ln -sfn $DOTFDIR/term/tmux/.tmux.conf $HOME
   ln -sfn $DOTFDIR/term/tmux/plugins $HOME/.tmux/plugins
 
