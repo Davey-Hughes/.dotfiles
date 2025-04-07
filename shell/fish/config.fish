@@ -3,9 +3,7 @@ set -g fish_greeting
 
 set -x SHELL /usr/bin/fish
 
-set GOPATH $HOME/go
-set GOBIN $GOPATH/bin
-set PATH /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $GOPATH $GOBIN $HOME/.cargo/bin
+set PATH $HOME/.cargo/bin /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $GOPATH $GOBIN
 
 # vi keybinds
 function fish_user_key_bindings
@@ -19,8 +17,8 @@ function fish_user_key_bindings
     bind -M insert \cv edit_command_buffer
 
     # bind ctrl-space to accept autosuggestion
-    bind -M default -k nul accept-autosuggestion
-    bind -M insert -k nul accept-autosuggestion
+    bind -M default ctrl-space accept-autosuggestion
+    bind -M insert ctrl-space accept-autosuggestion
 
     bind -M default j down-or-search
     bind -M default k up-or-search
@@ -129,7 +127,20 @@ if status is-interactive
     end
 
     if command -q atuin
+        set -x ATUIN_NOBIND true
         atuin init fish | source
+
+        bind \cr _atuin_search
+        bind up _atuin_bind_up
+        bind \eOA _atuin_bind_up
+        bind \e\[A _atuin_bind_up
+
+        if bind -M insert >/dev/null 2>&1
+            bind -M insert \cr _atuin_search
+            bind -M insert up _atuin_bind_up
+            bind -M insert \eOA _atuin_bind_up
+            bind -M insert \e\[A _atuin_bind_up
+        end
     end
 
     if command -q yazi

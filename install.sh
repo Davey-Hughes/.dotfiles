@@ -59,8 +59,10 @@ symlinks() {
 
   # ln -sfn $DOTFDIR/shell/zsh/.zshrc $HOME
   # ln -sfn $DOTFDIR/shell/zsh/davey.zsh-theme $HOME/.oh-my-zsh/themes
+  #
+  ln -sfn $HOME/.vim $HOME/.config/nvim
 
-  ln -sfn $DOTFDIR/shell/fish/config.fish $HOME/.config/fish
+  ln -sfn $DOTFDIR/shell/fish $HOME/.config/fish
 
   ln -sfn $DOTFDIR/shell/starship/starship.toml $HOME/.config/starship.toml
 
