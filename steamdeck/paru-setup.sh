@@ -51,8 +51,9 @@ fi
 echo "Initializing pacman keyring..."
 sudo pacman-key --init
 
-# Populate the Arch keyring
+# Populate the Arch + holo keyrings
 sudo pacman-key --populate archlinux
+sudo pacman-key --populate holo
 
 # Import the primary key for Chaotic-AUR
 echo "Importing the primary key for Chaotic-AUR..."
