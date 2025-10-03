@@ -94,6 +94,8 @@ symlinks() {
 
   ln -sfn $DOTFDIR/MangoHud $HOME/.config
 
+  ln -sfn $DOTFDIR/paru $HOME/.config
+
   popd
 
 }
