@@ -36,9 +36,6 @@ switch $(uname)
             case "*arch*"
                 source $HOME/.dotfiles/shell/fish/arch.fish
                 set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/arch.conf
-            case "*MANJARO*"
-                source $HOME/.dotfiles/shell/fish/manjaro.fish
-                set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/manjaro.conf
         end
 
     case Darwin
