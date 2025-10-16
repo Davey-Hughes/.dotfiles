@@ -81,20 +81,16 @@ symlinks() {
   ln -sfn $DOTFDIR/.git_template $HOME
 
   ln -sfn $DOTFDIR/powerline $HOME/.config
-
   ln -sfn $DOTFDIR/shell/atuin $HOME/.config
+  ln -sfn $DOTFDIR/yazi $HOME/.config
+  ln -sfn $DOTFDIR/mpv $HOME/.config
+  ln -sfn $DOTFDIR/MangoHud $HOME/.config
+  ln -sfn $DOTFDIR/neovide $HOME/.config
+  ln -sfn $DOTFDIR/paru $HOME/.config
+  ln -sfn $DOTFDIR/gitui $HOME/.config
 
   ln -sfn $DOTFDIR/yabai $HOME/.config
   ln -sfn $DOTFDIR/skhd $HOME/.config
-
-  ln -sfn $DOTFDIR/yazi $HOME/.config
-  ln -sfn $DOTFDIR/mpv $HOME/.config
-
-  ln -sfn $DOTFDIR/neovide $HOME/.config
-
-  ln -sfn $DOTFDIR/MangoHud $HOME/.config
-
-  ln -sfn $DOTFDIR/paru $HOME/.config
 
   popd
 
