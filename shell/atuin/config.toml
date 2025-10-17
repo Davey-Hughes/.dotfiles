@@ -2,3 +2,5 @@ sync_address = "https://atuin.daveynet.xyz"
 sync_frequency = "1m"
 keymap_mode = "auto"
 style = "auto"
+
+history_filter = ["set .*API.*"]
