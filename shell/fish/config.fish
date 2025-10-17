@@ -151,8 +151,16 @@ if status is-interactive
         end
     end
 
-    if test -e $HOME/.config/claude/claude.txt
-        cat $HOME/.config/claude/claude.txt | read -x ANTHROPIC_API_KEY
+    # if test -e $HOME/.config/claude/claude.txt
+    #     cat $HOME/.config/claude/claude.txt | read -x ANTHROPIC_API_KEY
+    # end
+
+    if test -d $HOME/.config/.claude
+        set -x CLAUDE_CONFIG_DIR $HOME/.config/.claude
+    end
+
+    if test -e $HOME/.config/.claude/claude-code.txt
+        cat $HOME/.config/.claude/claude-code.txt | read -x CLAUDE_CODE_OAUTH_TOKEN
     end
 
 end
