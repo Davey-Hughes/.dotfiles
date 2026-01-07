@@ -1,0 +1,13 @@
+# /etc/fstab: static file system information.
+#
+# Use 'blkid' to print the universally unique identifier for a device; this may
+# be used with UUID= as a more robust way to name devices that works even if
+# disks are added and removed. See fstab(5).
+#
+# <file system>								<mount point>					<type>	<options>					<dump>		<pass>
+
+192.168.1.69:/mnt/user/games			/home/davey/mnt/daveynet/nfs/games			nfs	nofail,x-systemd.automount,x-systemd.DirectoryMode=true,rw,vers=4.2,hard,rsize=131072,wsize=131072,timeo=20 0 0
+192.168.1.69:/mnt/user/roms				/home/davey/mnt/daveynet/nfs/roms			nfs	nofail,x-systemd.automount,x-systemd.DirectoryMode=true,rw,vers=4.2,hard,rsize=131072,wsize=131072,timeo=20 0 0
+192.168.1.69:/mnt/user/media\0400		/home/davey/mnt/daveynet/nfs/media\0400	nfs	nofail,x-systemd.automount,x-systemd.DirectoryMode=true,rw,vers=4.2,hard,rsize=131072,wsize=131072,timeo=20 0 0
+192.168.1.69:/mnt/user/media\0401		/home/davey/mnt/daveynet/nfs/media\0401	nfs	nofail,x-systemd.automount,x-systemd.DirectoryMode=true,rw,vers=4.2,hard,rsize=131072,wsize=131072,timeo=20 0 0
+192.168.1.69:/mnt/user/miscellaneous	/home/davey/mnt/daveynet/nfs/miscellaneous	nfs	nofail,x-systemd.automount,x-systemd.DirectoryMode=true,rw,vers=4.2,hard,rsize=131072,wsize=131072,timeo=20 0 0
