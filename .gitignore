@@ -12,3 +12,7 @@ powerline/powerline
 
 *.bak
 *flexport*
+shell/fish/fish_variables
+shell/fish/completions
+shell/fish/conf.d
+shell/fish/functions
