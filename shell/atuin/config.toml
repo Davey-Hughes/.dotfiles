@@ -4,3 +4,8 @@ keymap_mode = "auto"
 style = "auto"
 
 history_filter = ["set .*API.*"]
+search_mode = "daemon-fuzzy"
+
+[daemon]
+enabled = true
+autostart = true
