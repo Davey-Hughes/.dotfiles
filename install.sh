@@ -66,6 +66,7 @@ symlinks() {
 
   ln -sfn $DOTFDIR/shell/starship/starship.toml $HOME/.config/starship.toml
 
+  ln -sfn $DOTFDIR/term/zellij $HOME/.config
   ln -sfn $DOTFDIR/term/tmux/.tmux.conf $HOME
   ln -sfn $DOTFDIR/term/tmux/plugins $HOME/.tmux/plugins
 
