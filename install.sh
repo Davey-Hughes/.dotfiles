@@ -29,7 +29,7 @@ install_packages() {
   if [ "$(command -v brew)" ]; then
     echo "Installing homebrew packages..."
 
-    brew bundle --no-lock --file $DOTFDIR/homebrew/$KERNEL/Brewfile
+    brew bundle --no-lock --file $DOTFDIR/os/$KERNEL/homebrew/Brewfile
   else
     echo "homebrew not installed" 2>&1
   fi
