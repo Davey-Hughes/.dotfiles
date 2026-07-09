@@ -1,0 +1,103 @@
+# =============================================================================
+# NFS auto-remount reference  —  example /etc/fstab entries + the systemd fix
+# -----------------------------------------------------------------------------
+# Reference notes (NOT a live config; generic example paths). Distilled from
+# debugging NFS shares that (a) sometimes didn't mount at login and (b) wouldn't
+# remount after an NFS drop. Diagnosed 2026-07. Copy/adapt the lines you need.
+#
+# TL;DR: the fstab options below are only half the fix. The other half is a
+# systemd drop-in that disables the per-mount start-limit (see CRITICAL section).
+# Without that, one transient failure marks the mount 'failed' *permanently*.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Recommended NFS line (one per share):
+#   <server:export>            <mountpoint>            nfs   <options>   0 0
+# -----------------------------------------------------------------------------
+nas.example.lan:/export/media        /mnt/nas/media        nfs   _netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.mount-timeout=30,rw,vers=4.2,hard,rsize=131072,wsize=131072,timeo=20   0 0
+
+# A share whose name contains a SPACE -> escape it as \040 in BOTH columns:
+nas.example.lan:/export/home\040photos   /mnt/nas/home\040photos   nfs   _netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.mount-timeout=30,rw,vers=4.2,hard,rsize=131072,wsize=131072,timeo=20   0 0
+
+
+# -----------------------------------------------------------------------------
+# What each option does / why:
+#   _netdev                    Treat as a network mount (order after network).
+#   nofail                     Boot doesn't fail if the share is unavailable.
+#   x-systemd.automount        Mount lazily on first access. Core to recovery:
+#                              the mountpoint is always present and (re)mounts
+#                              on demand instead of only once at boot.
+#   x-systemd.idle-timeout=600 Unmount after 10 min idle, so a stale/half-dead
+#                              handle is torn down and cleanly remounted on the
+#                              next access. Helps recover from mid-session drops.
+#   x-systemd.mount-timeout=30 A single hung mount attempt gives up in 30s
+#                              (default is 90s).
+#   rw,vers=4.2                Read-write, NFSv4.2.
+#   hard                       KEEP THIS. I/O pauses during an outage and
+#                              AUTO-RESUMES when the server returns. `soft` risks
+#                              silent data corruption on writes.
+#   rsize/wsize=131072         128 KiB transfer sizes (throughput).
+#   timeo=20                   2.0s RPC timeout (deciseconds). Aggressive but
+#                              fine on a healthy LAN; makes stalls shorter. Raise
+#                              toward 50 if you see retransmit noise under load.
+#
+#   !! DO NOT use  x-systemd.DirectoryMode=true  -- it is NOT a real option.
+#      (The real DirectoryMode= takes an octal like 0755.) It's a silent no-op.
+#      Historic copy/paste mistake in my configs; just delete it.
+
+
+# -----------------------------------------------------------------------------
+# CRITICAL companion fix (NOT an fstab option): disable the systemd start-limit
+# -----------------------------------------------------------------------------
+# Symptom: a share fails to mount at boot (e.g. network not up yet) or drops
+# mid-session, then NEVER remounts on its own until reboot / manual restart.
+#
+# Cause: each generated *.mount unit defaults to StartLimitBurst=5 within
+# StartLimitIntervalSec=10s. A few fast failures trip the limit; systemd then
+# marks the .mount AND its .automount 'failed' PERMANENTLY and the automount
+# stops triggering (journal: "start-limit-hit" / "mount-start-limit-hit").
+#
+# Fix: give each NFS mount unit a drop-in that disables the rate limit, so a
+# transient failure can never become permanent (it just retries on next access):
+#
+#   for u in $(systemctl list-units -t mount 'mnt-nas-*' --all --plain --no-legend | awk '{print $1}'); do
+#     sudo mkdir -p /etc/systemd/system/"$u".d
+#     printf '[Unit]\nStartLimitIntervalSec=0\n' | sudo tee /etc/systemd/system/"$u".d/override.conf >/dev/null
+#   done
+#   sudo systemctl daemon-reload
+#
+# Notes:
+#   - Unit name = escaped mountpoint: /mnt/nas/media -> mnt-nas-media.mount.
+#     Adjust the 'mnt-nas-*' glob to match your mountpoints.
+#   - Verify it took:  systemctl show mnt-nas-media.mount -p StartLimitIntervalUSec  # want 0
+#   - A NEW fstab line creates a fresh unit with the default limit again -> re-run this.
+
+
+# -----------------------------------------------------------------------------
+# Recover a share already stuck in the 'failed' state (one-time):
+#   sudo systemctl reset-failed 'mnt-nas-media.*'
+#   sudo systemctl restart mnt-nas-media.automount
+#   ls /mnt/nas/media        # touch it to trigger the actual mount
+
+
+# -----------------------------------------------------------------------------
+# Root cause of the boot-time failures in my case (for future reference):
+#   - The desktop (KDE Plasma) stat'd shares bookmarked in the Places sidebar
+#     at login, which triggered their automounts.
+#   - This happened BEFORE the LAN was routable: a slow-probing NIC (Realtek
+#     r8169) plus network-online.target firing early -- nm-online -s returns on
+#     NetworkManager "startup complete", not on real connectivity -- so DHCP and
+#     the default route weren't ready yet.
+#   - Result: "mount.nfs: Network is unreachable", retried fast -> start-limit-hit.
+#   The StartLimitIntervalSec=0 fix makes this self-heal within seconds; the two
+#   fixes below are optional and were skipped as cosmetic:
+#
+#     * Remove the share's KDE Places bookmark (~/.local/share/user-places.xbel)
+#       so nothing probes it at login.
+#     * Make network-online.target meaningful by dropping -s from nm-online:
+#         # /etc/systemd/system/NetworkManager-wait-online.service.d/override.conf
+#         [Service]
+#         ExecStart=
+#         ExecStart=/usr/bin/nm-online -q --timeout=60
+# -----------------------------------------------------------------------------
