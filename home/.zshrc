@@ -47,33 +47,33 @@ case `uname` in
         hostname=$(hostname)
 
         if [[ $hostname == "dhughes-K44H0465N7-mbp" ]]; then
-            source $HOME/.dotfiles/zsh/macos_flexport.zsh
+            source $HOME/.zsh/macos_flexport.zsh
             export TMUXCONFIG="$HOME/.tmux/macos_flexport.conf"
         else
-            source $HOME/.dotfiles/zsh/macos.zsh
+            source $HOME/.zsh/macos.zsh
             export TMUXCONFIG="$HOME/.tmux/macos.conf"
         fi
 
     ;;
     Linux)
         # common linux zsh configs
-        source $HOME/.dotfiles/zsh/linux.zsh
+        source $HOME/.zsh/linux.zsh
 
         version=$(cat /proc/version)
         if [[ $version =~ "arch" ]]; then
-            source $HOME/.dotfiles/zsh/arch.zsh
+            source $HOME/.zsh/arch.zsh
             export TMUXCONFIG="$HOME/.tmux/arch.conf"
         elif [[ $version =~ "MANJARO" ]]; then
-            source $HOME/.dotfiles/zsh/manjaro.zsh
+            source $HOME/.zsh/manjaro.zsh
             export TMUXCONFIG="$HOME/.tmux/manjaro.conf"
         elif [[ $version =~ "Red Hat" ]]; then
-            source $HOME/.dotfiles/zsh/rhel.zsh
+            source $HOME/.zsh/rhel.zsh
             export TMUXCONFIG="$HOME/.tmux/rhel.conf"
         elif [[ $version =~ "WSL2" ]]; then
-            source $HOME/.dotfiles/zsh/wsl.zsh
+            source $HOME/.zsh/wsl.zsh
             export TMUXCONFIG="$HOME/.tmux/wsl.conf"
         else
-            source $HOME/.dotfiles/zsh/ubuntu.zsh
+            source $HOME/.zsh/ubuntu.zsh
             export TMUXCONFIG="$HOME/.tmux/ubuntu.conf"
         fi
     ;;
@@ -107,7 +107,7 @@ if (( $+commands[exa] )); then
     alias l="exa -lah"
 else
     # get ANSI solarized colors for ls
-    source $HOME/.dotfiles/zsh/dircolors/lscolors.zsh
+    source $HOME/.zsh/dircolors/lscolors.zsh
     export LS_COLORS
 fi
 
@@ -164,7 +164,7 @@ bindkey '^a' beginning-of-line
 bindkey '^e' end-of-line
 
 # fish-like auto suggestions - use ctrl-space to accept suggestion
-source $HOME/.dotfiles/zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
+source $HOME/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
 bindkey '^ ' autosuggest-accept
 ZSH_AUTOSUGGEST_ACCEPT_WIDGETS=()
 
