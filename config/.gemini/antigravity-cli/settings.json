@@ -1,0 +1,18 @@
+{
+  "colorScheme": "tokyo night",
+  "enableTelemetry": false,
+  "model": "Gemini 3.1 Pro (High)",
+  "permissions": {
+    "allow": [
+      "command(git add)",
+      "command(git commit)"
+    ]
+  },
+  "trustedWorkspaces": [
+    "/home/davey/projects/plaintextesports",
+    "/home/davey/projects/ws-sim",
+    "/home/davey/beaver/cst-frontend",
+    "/home/davey/projects/ws-sim/frontend",
+    "/home/davey/.dotfiles"
+  ]
+}
