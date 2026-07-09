@@ -62,17 +62,17 @@ symlinks() {
   #
   ln -sfn $HOME/.vim $HOME/.config/nvim
 
-  ln -sfn $DOTFDIR/shell/fish $HOME/.config/fish
+  ln -sfn $DOTFDIR/config/fish $HOME/.config/fish
 
-  ln -sfn $DOTFDIR/shell/starship/starship.toml $HOME/.config/starship.toml
+  ln -sfn $DOTFDIR/config/starship/starship.toml $HOME/.config/starship.toml
 
-  ln -sfn $DOTFDIR/term/zellij $HOME/.config
+  ln -sfn $DOTFDIR/config/zellij $HOME/.config
   ln -sfn $DOTFDIR/term/tmux/.tmux.conf $HOME
   ln -sfn $DOTFDIR/term/tmux/plugins $HOME/.tmux/plugins
 
-  ln -sfn $DOTFDIR/term/kitty $HOME/.config
-  ln -sfn $DOTFDIR/term/ghostty $HOME/.config
-  ln -sfn $DOTFDIR/term/alacritty $HOME/.config
+  ln -sfn $DOTFDIR/config/kitty $HOME/.config
+  ln -sfn $DOTFDIR/config/ghostty $HOME/.config
+  ln -sfn $DOTFDIR/config/alacritty $HOME/.config
 
   ln -sfn $DOTFDIR/readline/.inputrc $HOME
   ln -sfn $DOTFDIR/readline/.editrc $HOME
@@ -81,17 +81,17 @@ symlinks() {
 
   ln -sfn $DOTFDIR/.git_template $HOME
 
-  ln -sfn $DOTFDIR/powerline $HOME/.config
-  ln -sfn $DOTFDIR/shell/atuin $HOME/.config
-  ln -sfn $DOTFDIR/yazi $HOME/.config
-  ln -sfn $DOTFDIR/mpv $HOME/.config
-  ln -sfn $DOTFDIR/MangoHud $HOME/.config
-  ln -sfn $DOTFDIR/neovide $HOME/.config
-  ln -sfn $DOTFDIR/paru $HOME/.config
-  ln -sfn $DOTFDIR/gitui $HOME/.config
+  ln -sfn $DOTFDIR/config/powerline $HOME/.config
+  ln -sfn $DOTFDIR/config/atuin $HOME/.config
+  ln -sfn $DOTFDIR/config/yazi $HOME/.config
+  ln -sfn $DOTFDIR/config/mpv $HOME/.config
+  ln -sfn $DOTFDIR/config/MangoHud $HOME/.config
+  ln -sfn $DOTFDIR/config/neovide $HOME/.config
+  ln -sfn $DOTFDIR/config/paru $HOME/.config
+  ln -sfn $DOTFDIR/config/gitui $HOME/.config
 
-  ln -sfn $DOTFDIR/yabai $HOME/.config
-  ln -sfn $DOTFDIR/skhd $HOME/.config
+  ln -sfn $DOTFDIR/config/yabai $HOME/.config
+  ln -sfn $DOTFDIR/config/skhd $HOME/.config
 
   popd
 

@@ -151,16 +151,27 @@ if status is-interactive
         end
     end
 
-    # if test -e $HOME/.config/claude/claude.txt
-    #     cat $HOME/.config/claude/claude.txt | read -x ANTHROPIC_API_KEY
-    # end
+    if command -q lazygit
+        alias gg="lazygit"
+    end
 
     if test -d $HOME/.config/.claude
         set -x CLAUDE_CONFIG_DIR $HOME/.config/.claude
     end
 
-    if test -e $HOME/.config/.claude/claude-code.txt
-        cat $HOME/.config/.claude/claude-code.txt | read -x CLAUDE_CODE_OAUTH_TOKEN
+    # if test -e $HOME/.config/.claude/claude-api.txt
+    #     cat $HOME/.config/.claude/claude-api.txt | read -x CLAUDE_API_KEY
+    # end
+    #
+    # if test -e $HOME/.config/.claude/claude-code.txt
+    #     cat $HOME/.config/.claude/claude-code.txt | read -x CLAUDE_CODE_OAUTH_TOKEN
+    # end
+
+    if test -e $HOME/.config/.gemini/gemini-api.txt
+        cat $HOME/.config/.gemini/gemini-api.txt | read -x GEMINI_API_KEY
     end
+
+    # make sure docker context is default even if docker desktop is open
+    set -x DOCKER_CONTEXT default
 
 end
