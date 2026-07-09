@@ -31,3 +31,19 @@ config/.claude/*
 !config/.claude/output-styles/
 !config/.claude/hooks/
 !config/.claude/skills/
+
+# Antigravity/Gemini: track ONLY hand-picked user-wide config.
+config/.gemini/*
+!config/.gemini/settings.json
+!config/.gemini/projects.json
+!config/.gemini/trustedFolders.json
+!config/.gemini/antigravity-cli/
+
+config/.gemini/antigravity-cli/*
+!config/.gemini/antigravity-cli/settings.json
+!config/.gemini/antigravity-cli/mcp/
+!config/.gemini/antigravity-cli/skills/
+!config/.gemini/antigravity-cli/rules/
+!config/.gemini/antigravity-cli/hooks/
+!config/.gemini/antigravity-cli/plugins/
+!config/.gemini/antigravity-cli/sidecars/

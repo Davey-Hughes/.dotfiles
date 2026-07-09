@@ -175,3 +175,5 @@ if status is-interactive
     set -x DOCKER_CONTEXT default
 
 end
+
+set -gx ANTIGRAVITY_CONFIG_DIR "$HOME/.config/.gemini/antigravity-cli"
