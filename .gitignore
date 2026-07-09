@@ -18,3 +18,16 @@ shell/fish/conf.d
 shell/fish/functions
 home/.tmux/plugins/*
 !home/.tmux/plugins/tpm
+
+# Claude Code: track ONLY hand-picked user-wide config.
+# Everything else in the dir (secrets, credentials, caches, sessions,
+# .claude.json, plugins, history, projects/) must never be committed.
+config/.claude/*
+!config/.claude/settings.json
+!config/.claude/CLAUDE.md
+!config/.claude/keybindings.json
+!config/.claude/agents/
+!config/.claude/commands/
+!config/.claude/output-styles/
+!config/.claude/hooks/
+!config/.claude/skills/

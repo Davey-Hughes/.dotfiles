@@ -1,0 +1,37 @@
+{
+  "env": {
+    "DISABLE_AUTOUPDATER": "1"
+  },
+  "permissions": {
+    "defaultMode": "auto"
+  },
+  "model": "opus[1m]",
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "tokyo-night@claude-themes": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "chrome-devtools-mcp@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-themes": {
+      "source": {
+        "source": "github",
+        "repo": "matcra587/claude-themes"
+      }
+    }
+  },
+  "effortLevel": "xhigh",
+  "tui": "fullscreen",
+  "skipWorkflowUsageWarning": true,
+  "theme": "custom:tokyo-night:tokyo-night",
+  "skipAutoPermissionPrompt": true,
+  "agentPushNotifEnabled": true
+}
