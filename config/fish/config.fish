@@ -3,7 +3,8 @@ set -g fish_greeting
 
 set -x SHELL /usr/bin/fish
 
-set PATH $HOME/.cargo/bin /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $GOPATH $GOBIN
+# Add paths cleanly (fish automatically deduplicates and handles this properly)
+fish_add_path $HOME/.cargo/bin /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $GOPATH $GOBIN
 
 # vi keybinds
 function fish_user_key_bindings
@@ -24,25 +25,24 @@ function fish_user_key_bindings
     bind -M default k up-or-search
 end
 
-switch $(uname)
+switch (uname)
     case Linux
-        source $HOME/.dotfiles/config/fish/linux.fish
+        source $HOME/.config/fish/linux.fish
 
-        set linux_version $(cat /proc/version)
+        set linux_version (cat /proc/version)
         switch $linux_version
             case "*valve*"
-                source $HOME/.dotfiles/config/fish/steamdeck.fish
+                source $HOME/.config/fish/steamdeck.fish
                 set -x TMUXCONFIG $HOME/.tmux/steamdeck.conf
             case "*arch*"
-                source $HOME/.dotfiles/config/fish/arch.fish
+                source $HOME/.config/fish/arch.fish
                 set -x TMUXCONFIG $HOME/.tmux/arch.conf
         end
 
     case Darwin
         # custom for another macos machine
-        if [ $hostname = "" ]
-        else
-            source $HOME/.dotfiles/config/fish/macos.fish
+        if test -n "$hostname"
+            source $HOME/.config/fish/macos.fish
             set -x TMUXCONFIG $HOME/.tmux/macos.conf
         end
 end
@@ -168,7 +168,7 @@ if status is-interactive
     # end
 
     if test -e $HOME/.config/.gemini/gemini-api.txt
-        cat $HOME/.config/.gemini/gemini-api.txt | read -x GEMINI_API_KEY
+        read -x GEMINI_API_KEY < $HOME/.config/.gemini/gemini-api.txt
     end
 
     # make sure docker context is default even if docker desktop is open
