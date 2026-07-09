@@ -47,34 +47,34 @@ case `uname` in
         hostname=$(hostname)
 
         if [[ $hostname == "dhughes-K44H0465N7-mbp" ]]; then
-            source $HOME/.dotfiles/shell/zsh/macos_flexport.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/macos_flexport.conf"
+            source $HOME/.dotfiles/zsh/macos_flexport.zsh
+            export TMUXCONFIG="$HOME/.tmux/macos_flexport.conf"
         else
-            source $HOME/.dotfiles/shell/zsh/macos.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/macos.conf"
+            source $HOME/.dotfiles/zsh/macos.zsh
+            export TMUXCONFIG="$HOME/.tmux/macos.conf"
         fi
 
     ;;
     Linux)
         # common linux zsh configs
-        source $HOME/.dotfiles/shell/zsh/linux.zsh
+        source $HOME/.dotfiles/zsh/linux.zsh
 
         version=$(cat /proc/version)
         if [[ $version =~ "arch" ]]; then
-            source $HOME/.dotfiles/shell/zsh/arch.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/arch.conf"
+            source $HOME/.dotfiles/zsh/arch.zsh
+            export TMUXCONFIG="$HOME/.tmux/arch.conf"
         elif [[ $version =~ "MANJARO" ]]; then
-            source $HOME/.dotfiles/shell/zsh/manjaro.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/manjaro.conf"
+            source $HOME/.dotfiles/zsh/manjaro.zsh
+            export TMUXCONFIG="$HOME/.tmux/manjaro.conf"
         elif [[ $version =~ "Red Hat" ]]; then
-            source $HOME/.dotfiles/shell/zsh/rhel.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/rhel.conf"
+            source $HOME/.dotfiles/zsh/rhel.zsh
+            export TMUXCONFIG="$HOME/.tmux/rhel.conf"
         elif [[ $version =~ "WSL2" ]]; then
-            source $HOME/.dotfiles/shell/zsh/wsl.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/wsl.conf"
+            source $HOME/.dotfiles/zsh/wsl.zsh
+            export TMUXCONFIG="$HOME/.tmux/wsl.conf"
         else
-            source $HOME/.dotfiles/shell/zsh/ubuntu.zsh
-            export TMUXCONFIG="$HOME/.dotfiles/term/tmux/ubuntu.conf"
+            source $HOME/.dotfiles/zsh/ubuntu.zsh
+            export TMUXCONFIG="$HOME/.tmux/ubuntu.conf"
         fi
     ;;
     FreeBSD)
@@ -107,7 +107,7 @@ if (( $+commands[exa] )); then
     alias l="exa -lah"
 else
     # get ANSI solarized colors for ls
-    source $HOME/.dotfiles/shell/zsh/dircolors/lscolors.zsh
+    source $HOME/.dotfiles/zsh/dircolors/lscolors.zsh
     export LS_COLORS
 fi
 
@@ -164,7 +164,7 @@ bindkey '^a' beginning-of-line
 bindkey '^e' end-of-line
 
 # fish-like auto suggestions - use ctrl-space to accept suggestion
-source $HOME/.dotfiles/shell/zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
+source $HOME/.dotfiles/zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
 bindkey '^ ' autosuggest-accept
 ZSH_AUTOSUGGEST_ACCEPT_WIDGETS=()
 

@@ -52,47 +52,22 @@ install_vim() {
 symlinks() {
   echo "Creating symlinks..."
 
-  pushd $HOME
+  if ! command -v stow &> /dev/null; then
+    echo "Stow is not installed. Please install GNU stow first."
+    exit 1
+  fi
 
   mkdir -p $HOME/.tmux
   mkdir -p $HOME/.config
 
-  # ln -sfn $DOTFDIR/shell/zsh/.zshrc $HOME
-  # ln -sfn $DOTFDIR/shell/zsh/davey.zsh-theme $HOME/.oh-my-zsh/themes
+  # ln -sfn $DOTFDIR/zsh/.zshrc $HOME
+  # ln -sfn $DOTFDIR/zsh/davey.zsh-theme $HOME/.oh-my-zsh/themes
   #
   ln -sfn $HOME/.vim $HOME/.config/nvim
 
-  ln -sfn $DOTFDIR/config/fish $HOME/.config/fish
-
-  ln -sfn $DOTFDIR/config/starship/starship.toml $HOME/.config/starship.toml
-
-  ln -sfn $DOTFDIR/config/zellij $HOME/.config
-  ln -sfn $DOTFDIR/term/tmux/.tmux.conf $HOME
-  ln -sfn $DOTFDIR/term/tmux/plugins $HOME/.tmux/plugins
-
-  ln -sfn $DOTFDIR/config/kitty $HOME/.config
-  ln -sfn $DOTFDIR/config/ghostty $HOME/.config
-  ln -sfn $DOTFDIR/config/alacritty $HOME/.config
-
-  ln -sfn $DOTFDIR/readline/.inputrc $HOME
-  ln -sfn $DOTFDIR/readline/.editrc $HOME
-  ln -sfn $DOTFDIR/postgres/.psqlrc $HOME
-  ln -sfn $DOTFDIR/pdb/.pdbrc.py $HOME
-
-  ln -sfn $DOTFDIR/.git_template $HOME
-
-  ln -sfn $DOTFDIR/config/powerline $HOME/.config
-  ln -sfn $DOTFDIR/config/atuin $HOME/.config
-  ln -sfn $DOTFDIR/config/yazi $HOME/.config
-  ln -sfn $DOTFDIR/config/mpv $HOME/.config
-  ln -sfn $DOTFDIR/config/MangoHud $HOME/.config
-  ln -sfn $DOTFDIR/config/neovide $HOME/.config
-  ln -sfn $DOTFDIR/config/paru $HOME/.config
-  ln -sfn $DOTFDIR/config/gitui $HOME/.config
-
-  ln -sfn $DOTFDIR/config/yabai $HOME/.config
-  ln -sfn $DOTFDIR/config/skhd $HOME/.config
-
+  pushd $DOTFDIR
+  stow -t $HOME/.config config
+  stow -t $HOME home
   popd
 
 }

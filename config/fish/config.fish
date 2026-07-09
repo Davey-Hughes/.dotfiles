@@ -26,24 +26,24 @@ end
 
 switch $(uname)
     case Linux
-        source $HOME/.dotfiles/shell/fish/linux.fish
+        source $HOME/.dotfiles/config/fish/linux.fish
 
         set linux_version $(cat /proc/version)
         switch $linux_version
             case "*valve*"
-                source $HOME/.dotfiles/shell/fish/steamdeck.fish
-                set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/steamdeck.conf
+                source $HOME/.dotfiles/config/fish/steamdeck.fish
+                set -x TMUXCONFIG $HOME/.tmux/steamdeck.conf
             case "*arch*"
-                source $HOME/.dotfiles/shell/fish/arch.fish
-                set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/arch.conf
+                source $HOME/.dotfiles/config/fish/arch.fish
+                set -x TMUXCONFIG $HOME/.tmux/arch.conf
         end
 
     case Darwin
         # custom for another macos machine
         if [ $hostname = "" ]
         else
-            source $HOME/.dotfiles/shell/fish/macos.fish
-            set -x TMUXCONFIG $HOME/.dotfiles/term/tmux/macos.conf
+            source $HOME/.dotfiles/config/fish/macos.fish
+            set -x TMUXCONFIG $HOME/.tmux/macos.conf
         end
 end
 

@@ -16,3 +16,5 @@ shell/fish/fish_variables
 shell/fish/completions
 shell/fish/conf.d
 shell/fish/functions
+home/.tmux/plugins/*
+!home/.tmux/plugins/tpm
