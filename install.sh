@@ -73,6 +73,12 @@ git_settings() {
   echo "Applying git settings..."
 
   if [ "$(command -v git)" ]; then
+    # Keep the global git config under XDG ($XDG_CONFIG_HOME/git/config) instead
+    # of ~/.gitconfig. git reads this path natively; GIT_CONFIG_GLOBAL makes
+    # --global writes land here too, on fresh machines as well.
+    : "${XDG_CONFIG_HOME:=$HOME/.config}"
+    mkdir -p "$XDG_CONFIG_HOME/git"
+    export GIT_CONFIG_GLOBAL="$XDG_CONFIG_HOME/git/config"
     git config --global init.templatedir "$HOME/.git_template"
     git config --global alias.ctags '!.git/hooks/ctags'
     git config --global init.defaultBranch 'main'
