@@ -19,3 +19,25 @@ export NODE_REPL_HISTORY="${NODE_REPL_HISTORY:-$XDG_STATE_HOME/node/repl_history
 
 # python — REPL history (Python 3.13+ honors PYTHON_HISTORY)
 export PYTHON_HISTORY="${PYTHON_HISTORY:-$XDG_STATE_HOME/python/history}"
+
+# redis-cli — REPL history
+export REDISCLI_HISTFILE="${REDISCLI_HISTFILE:-$XDG_DATA_HOME/redis/rediscli_history}"
+
+# psql — query history
+export PSQL_HISTORY="${PSQL_HISTORY:-$XDG_STATE_HOME/psql/history}"
+
+# wget — point at an XDG wgetrc that relocates the HSTS database (no env var for it)
+export WGETRC="${WGETRC:-$XDG_CONFIG_HOME/wget/wgetrc}"
+
+# ipython
+export IPYTHONDIR="${IPYTHONDIR:-$XDG_CONFIG_HOME/ipython}"
+
+# jupyter — use platformdirs (XDG) instead of ~/.jupyter
+export JUPYTER_PLATFORM_DIRS="${JUPYTER_PLATFORM_DIRS:-1}"
+
+# npm — relocate cache and user config out of $HOME
+export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$XDG_CACHE_HOME/npm}"
+export NPM_CONFIG_USERCONFIG="${NPM_CONFIG_USERCONFIG:-$XDG_CONFIG_HOME/npm/npmrc}"
+
+# dotnet
+export DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$XDG_DATA_HOME/dotnet}"

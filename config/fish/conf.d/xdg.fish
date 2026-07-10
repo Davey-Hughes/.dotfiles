@@ -18,3 +18,25 @@ set -q NODE_REPL_HISTORY; or set -gx NODE_REPL_HISTORY $XDG_STATE_HOME/node/repl
 
 # python — REPL history (Python 3.13+ honors PYTHON_HISTORY)
 set -q PYTHON_HISTORY; or set -gx PYTHON_HISTORY $XDG_STATE_HOME/python/history
+
+# redis-cli — REPL history
+set -q REDISCLI_HISTFILE; or set -gx REDISCLI_HISTFILE $XDG_DATA_HOME/redis/rediscli_history
+
+# psql — query history
+set -q PSQL_HISTORY; or set -gx PSQL_HISTORY $XDG_STATE_HOME/psql/history
+
+# wget — point at an XDG wgetrc that relocates the HSTS database (no env var for it)
+set -q WGETRC; or set -gx WGETRC $XDG_CONFIG_HOME/wget/wgetrc
+
+# ipython
+set -q IPYTHONDIR; or set -gx IPYTHONDIR $XDG_CONFIG_HOME/ipython
+
+# jupyter — use platformdirs (XDG) instead of ~/.jupyter
+set -q JUPYTER_PLATFORM_DIRS; or set -gx JUPYTER_PLATFORM_DIRS 1
+
+# npm — relocate cache and user config out of $HOME
+set -q NPM_CONFIG_CACHE; or set -gx NPM_CONFIG_CACHE $XDG_CACHE_HOME/npm
+set -q NPM_CONFIG_USERCONFIG; or set -gx NPM_CONFIG_USERCONFIG $XDG_CONFIG_HOME/npm/npmrc
+
+# dotnet
+set -q DOTNET_CLI_HOME; or set -gx DOTNET_CLI_HOME $XDG_DATA_HOME/dotnet
