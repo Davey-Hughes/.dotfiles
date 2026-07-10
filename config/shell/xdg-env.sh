@@ -51,3 +51,19 @@ case ":$PATH:" in *":$CARGO_HOME/bin:"*) ;; *) export PATH="$CARGO_HOME/bin:$PAT
 # go
 export GOPATH="${GOPATH:-$XDG_DATA_HOME/go}"
 case ":$PATH:" in *":$GOPATH/bin:"*) ;; *) export PATH="$GOPATH/bin:$PATH" ;; esac
+
+# less — pager search history
+export LESSHISTFILE="${LESSHISTFILE:-$XDG_STATE_HOME/less/history}"
+
+# azure cli
+export AZURE_CONFIG_DIR="${AZURE_CONFIG_DIR:-$XDG_CONFIG_HOME/azure}"
+
+# aws cli
+export AWS_CONFIG_FILE="${AWS_CONFIG_FILE:-$XDG_CONFIG_HOME/aws/config}"
+export AWS_SHARED_CREDENTIALS_FILE="${AWS_SHARED_CREDENTIALS_FILE:-$XDG_CONFIG_HOME/aws/credentials}"
+
+# pm2 (node process manager)
+export PM2_HOME="${PM2_HOME:-$XDG_DATA_HOME/pm2}"
+
+# ollama — model store
+export OLLAMA_MODELS="${OLLAMA_MODELS:-$XDG_DATA_HOME/ollama/models}"

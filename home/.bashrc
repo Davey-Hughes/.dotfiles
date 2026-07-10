@@ -10,6 +10,10 @@ xdg_env="${XDG_CONFIG_HOME:-$HOME/.config}/shell/xdg-env.sh"
 [ -r "$xdg_env" ] && . "$xdg_env"
 unset xdg_env
 
+# bash history under XDG state
+HISTFILE="$XDG_STATE_HOME/bash/history"
+mkdir -p "${HISTFILE%/*}"
+
 alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 PS1='[\u@\h \W]\$ '

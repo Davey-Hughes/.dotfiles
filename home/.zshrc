@@ -164,7 +164,8 @@ ZSH_AUTOSUGGEST_ACCEPT_WIDGETS=()
 
 
 # history
-HISTFILE=~/.histfile
+HISTFILE="$XDG_STATE_HOME/zsh/history"
+mkdir -p "${HISTFILE:h}" 2>/dev/null
 HISTSIZE=10000
 SAVEHIST=10000
 setopt appendhistory autocd extendedglob nomatch notify

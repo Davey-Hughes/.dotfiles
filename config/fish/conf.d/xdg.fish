@@ -48,3 +48,19 @@ set -q RUSTUP_HOME; or set -gx RUSTUP_HOME $XDG_DATA_HOME/rustup
 
 # go
 set -q GOPATH; or set -gx GOPATH $XDG_DATA_HOME/go
+
+# less — pager search history
+set -q LESSHISTFILE; or set -gx LESSHISTFILE $XDG_STATE_HOME/less/history
+
+# azure cli
+set -q AZURE_CONFIG_DIR; or set -gx AZURE_CONFIG_DIR $XDG_CONFIG_HOME/azure
+
+# aws cli
+set -q AWS_CONFIG_FILE; or set -gx AWS_CONFIG_FILE $XDG_CONFIG_HOME/aws/config
+set -q AWS_SHARED_CREDENTIALS_FILE; or set -gx AWS_SHARED_CREDENTIALS_FILE $XDG_CONFIG_HOME/aws/credentials
+
+# pm2 (node process manager)
+set -q PM2_HOME; or set -gx PM2_HOME $XDG_DATA_HOME/pm2
+
+# ollama — model store
+set -q OLLAMA_MODELS; or set -gx OLLAMA_MODELS $XDG_DATA_HOME/ollama/models
