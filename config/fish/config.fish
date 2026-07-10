@@ -27,22 +27,22 @@ end
 
 switch (uname)
     case Linux
-        source $HOME/.config/fish/linux.fish
+        source $__fish_config_dir/linux.fish
 
         set linux_version (cat /proc/version)
         switch $linux_version
             case "*valve*"
-                source $HOME/.config/fish/steamdeck.fish
+                source $__fish_config_dir/steamdeck.fish
                 set -x TMUXCONFIG $HOME/.tmux/steamdeck.conf
             case "*arch*"
-                source $HOME/.config/fish/arch.fish
+                source $__fish_config_dir/arch.fish
                 set -x TMUXCONFIG $HOME/.tmux/arch.conf
         end
 
     case Darwin
         # custom for another macos machine
         if test -n "$hostname"
-            source $HOME/.config/fish/macos.fish
+            source $__fish_config_dir/macos.fish
             set -x TMUXCONFIG $HOME/.tmux/macos.conf
         end
 end
@@ -155,20 +155,20 @@ if status is-interactive
         alias gg="lazygit"
     end
 
-    if test -d $HOME/.config/.claude
-        set -x CLAUDE_CONFIG_DIR $HOME/.config/.claude
+    if test -d $XDG_CONFIG_HOME/.claude
+        set -x CLAUDE_CONFIG_DIR $XDG_CONFIG_HOME/.claude
     end
 
-    # if test -e $HOME/.config/.claude/claude-api.txt
-    #     cat $HOME/.config/.claude/claude-api.txt | read -x CLAUDE_API_KEY
+    # if test -e $XDG_CONFIG_HOME/.claude/claude-api.txt
+    #     cat $XDG_CONFIG_HOME/.claude/claude-api.txt | read -x CLAUDE_API_KEY
     # end
     #
-    # if test -e $HOME/.config/.claude/claude-code.txt
-    #     cat $HOME/.config/.claude/claude-code.txt | read -x CLAUDE_CODE_OAUTH_TOKEN
+    # if test -e $XDG_CONFIG_HOME/.claude/claude-code.txt
+    #     cat $XDG_CONFIG_HOME/.claude/claude-code.txt | read -x CLAUDE_CODE_OAUTH_TOKEN
     # end
 
-    if test -e $HOME/.config/.gemini/gemini-api.txt
-        read -x GEMINI_API_KEY < $HOME/.config/.gemini/gemini-api.txt
+    if test -e $XDG_CONFIG_HOME/.gemini/gemini-api.txt
+        read -x GEMINI_API_KEY < $XDG_CONFIG_HOME/.gemini/gemini-api.txt
     end
 
     # make sure docker context is default even if docker desktop is open
@@ -176,4 +176,4 @@ if status is-interactive
 
 end
 
-set -gx ANTIGRAVITY_CONFIG_DIR "$HOME/.config/.gemini/antigravity-cli"
+set -gx ANTIGRAVITY_CONFIG_DIR "$XDG_CONFIG_HOME/.gemini/antigravity-cli"
