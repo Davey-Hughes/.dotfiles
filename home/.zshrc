@@ -33,7 +33,10 @@ setopt interactivecomments
 # don't add duplicate commands to the histfile
 setopt HIST_IGNORE_ALL_DUPS
 
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$PATH"
+# keep PATH entries unique (first wins), and put the XDG toolchain bins ahead of
+# the system rust/go so rustup/GOPATH match fish & bash rather than /usr/sbin.
+typeset -U PATH path
+export PATH="$CARGO_HOME/bin:$GOPATH/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$PATH"
 export LANG="en_US.UTF-8"
 
 fpath=(/usr/local/share/zsh-completions $fpath)
