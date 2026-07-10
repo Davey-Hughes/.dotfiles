@@ -18,6 +18,22 @@ os_layers() {
   esac
 }
 
+# Remove stray symlinks an older install.sh leaked into $HOME root: config
+# packages belong under $XDG_CONFIG_HOME, so any NON-dotted $HOME symlink that
+# points back into this repo is cruft. Legit home links (~/.zshrc, ~/.claude,
+# ...) are dotted and are left untouched. Idempotent.
+prune_stray_links() {
+  local link name
+  for link in "$HOME"/*; do
+    [ -L "$link" ] || continue
+    name=${link##*/}
+    case "$name" in .*) continue ;; esac
+    case "$(readlink "$link")" in
+      *dotfiles*) rm -v "$link" ;;
+    esac
+  done
+}
+
 symlinks() {
   echo "Creating symlinks..."
 
@@ -27,6 +43,9 @@ symlinks() {
   fi
 
   : "${XDG_CONFIG_HOME:=$HOME/.config}"
+
+  # Clean up stray $HOME-root links from older versions of this script.
+  prune_stray_links
 
   # Create base directories
   mkdir -p "$HOME/.tmux"
