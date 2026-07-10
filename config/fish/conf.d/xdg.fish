@@ -61,6 +61,3 @@ set -q AWS_SHARED_CREDENTIALS_FILE; or set -gx AWS_SHARED_CREDENTIALS_FILE $XDG_
 
 # pm2 (node process manager)
 set -q PM2_HOME; or set -gx PM2_HOME $XDG_DATA_HOME/pm2
-
-# ollama — model store
-set -q OLLAMA_MODELS; or set -gx OLLAMA_MODELS $XDG_DATA_HOME/ollama/models

@@ -64,6 +64,3 @@ export AWS_SHARED_CREDENTIALS_FILE="${AWS_SHARED_CREDENTIALS_FILE:-$XDG_CONFIG_H
 
 # pm2 (node process manager)
 export PM2_HOME="${PM2_HOME:-$XDG_DATA_HOME/pm2}"
-
-# ollama — model store
-export OLLAMA_MODELS="${OLLAMA_MODELS:-$XDG_DATA_HOME/ollama/models}"
