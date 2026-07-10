@@ -40,3 +40,11 @@ set -q NPM_CONFIG_USERCONFIG; or set -gx NPM_CONFIG_USERCONFIG $XDG_CONFIG_HOME/
 
 # dotnet
 set -q DOTNET_CLI_HOME; or set -gx DOTNET_CLI_HOME $XDG_DATA_HOME/dotnet
+
+# rust — CARGO_HOME (registry cache, bins, credentials) + RUSTUP_HOME (toolchains).
+# PATH ($CARGO_HOME/bin) is added by fish_add_path in config.fish.
+set -q CARGO_HOME; or set -gx CARGO_HOME $XDG_DATA_HOME/cargo
+set -q RUSTUP_HOME; or set -gx RUSTUP_HOME $XDG_DATA_HOME/rustup
+
+# go
+set -q GOPATH; or set -gx GOPATH $XDG_DATA_HOME/go

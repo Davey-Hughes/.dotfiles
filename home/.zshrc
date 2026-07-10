@@ -33,8 +33,7 @@ setopt interactivecomments
 # don't add duplicate commands to the histfile
 setopt HIST_IGNORE_ALL_DUPS
 
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/go/bin"
-export GOPATH="$HOME/go"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$PATH"
 export LANG="en_US.UTF-8"
 
 fpath=(/usr/local/share/zsh-completions $fpath)

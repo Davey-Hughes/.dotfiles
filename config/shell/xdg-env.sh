@@ -41,3 +41,13 @@ export NPM_CONFIG_USERCONFIG="${NPM_CONFIG_USERCONFIG:-$XDG_CONFIG_HOME/npm/npmr
 
 # dotnet
 export DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$XDG_DATA_HOME/dotnet}"
+
+# rust — CARGO_HOME (registry cache, bins, credentials) + RUSTUP_HOME (toolchains).
+# Replaces sourcing ~/.cargo/env, whose generated content hardcodes $HOME/.cargo/bin.
+export CARGO_HOME="${CARGO_HOME:-$XDG_DATA_HOME/cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$XDG_DATA_HOME/rustup}"
+case ":$PATH:" in *":$CARGO_HOME/bin:"*) ;; *) export PATH="$CARGO_HOME/bin:$PATH" ;; esac
+
+# go
+export GOPATH="${GOPATH:-$XDG_DATA_HOME/go}"
+case ":$PATH:" in *":$GOPATH/bin:"*) ;; *) export PATH="$GOPATH/bin:$PATH" ;; esac
