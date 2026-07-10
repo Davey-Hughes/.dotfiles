@@ -2,6 +2,21 @@
 
 DOTFDIR=$HOME/.dotfiles
 
+# Echoes the os/ layer(s) to stow for this machine, most-general first.
+# Only layers that actually exist under os/ are stowed by symlinks().
+os_layers() {
+  case "$(uname)" in
+    Darwin) echo "macos" ;;
+    Linux)
+      if grep -qi valve /proc/version 2>/dev/null; then
+        echo "steamdeck"
+      elif grep -qi arch /proc/version 2>/dev/null; then
+        echo "arch"
+      fi
+      ;;
+  esac
+}
+
 symlinks() {
   echo "Creating symlinks..."
 
@@ -10,16 +25,27 @@ symlinks() {
     exit 1
   fi
 
+  : "${XDG_CONFIG_HOME:=$HOME/.config}"
+
   # Create base directories
-  mkdir -p $HOME/.tmux
-  mkdir -p $HOME/.config
+  mkdir -p "$HOME/.tmux"
+  mkdir -p "$XDG_CONFIG_HOME"
 
   # Custom cross-linking
-  ln -sfn $HOME/.vim $HOME/.config/nvim
+  ln -sfn "$HOME/.vim" "$XDG_CONFIG_HOME/nvim"
 
-  pushd $DOTFDIR >/dev/null
-  stow -t $HOME/.config config
-  stow -t $HOME home
+  pushd "$DOTFDIR" >/dev/null
+
+  # Common configs (all platforms)
+  stow -t "$XDG_CONFIG_HOME" config
+  stow -t "$HOME" home
+
+  # Platform-specific layers, if present for this OS
+  for layer in $(os_layers); do
+    [ -d "$DOTFDIR/os/$layer/config" ] && stow -d "$DOTFDIR/os/$layer" -t "$XDG_CONFIG_HOME" config
+    [ -d "$DOTFDIR/os/$layer/home" ]   && stow -d "$DOTFDIR/os/$layer" -t "$HOME" home
+  done
+
   popd >/dev/null
 }
 
