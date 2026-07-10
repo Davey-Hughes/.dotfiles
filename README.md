@@ -13,7 +13,7 @@ The repository is organized cleanly by symlink target location rather than scatt
 
 - `config/` - Cross-platform configs symlinked into `$XDG_CONFIG_HOME` (defaults to `~/.config/`) — e.g. `fish`, `kitty`, `starship.toml`, `zellij`. Also `config/shell/xdg-env.sh`, the cross-shell XDG environment (see below).
 - `home/` - Configs symlinked directly into your home directory `~/` — e.g. `.zshrc`, `.zshenv`, `.bashrc`, `.tmux.conf`, `.inputrc`.
-- `os/<platform>/` - Platform-specific trees. A `config/` or `home/` subfolder here is stowed **only on the matching OS**, layered on top of the common configs: `macos` → `yabai`/`skhd`, `arch` → `paru`/`MangoHud`, plus `steamdeck`. Also houses GUI tools, machine scripts, and the Homebrew `Brewfile`s.
+- `os/<platform>/` - Platform-specific trees. A `config/` or `home/` subfolder here is stowed **only on the matching OS**, layered on top of the common configs: `macos` → `yabai`/`skhd`, `arch` → `paru`/`MangoHud`, plus `steamdeck` (SteamOS is Arch-based, so it inherits the `arch` layer). Also houses GUI tools, machine scripts, and the Homebrew `Brewfile`s.
 
 ## Installation
 
@@ -36,6 +36,8 @@ To add a new config app down the road, you no longer need to update the install 
 
 ## Shell environment & XDG
 `config/shell/xdg-env.sh` (POSIX, for `bash`/`zsh`), `config/fish/conf.d/xdg.fish` (fish), and `config/environment.d/xdg.conf` (systemd user session, Linux) define the XDG base directories and redirect many tools' cache/data/config out of `$HOME` into XDG locations. The three files are kept in sync. See `docs/xdg-home-audit.md` for the full inventory of what is redirected versus intentionally left in place.
+
+The env vars only redirect *future* writes. On a fresh machine, run `scripts/xdg-migrate.sh` (dry-run) and then `scripts/xdg-migrate.sh --apply` to move any pre-existing tool dirs (`~/.cargo`, `~/.npm`, …) into their XDG homes. It is idempotent and skips anything already migrated.
 
 ## ZSH
 The custom ZSH theme included is originally based on the `bira`, `gnzh`, `phil!`'s, and `nanotech` themes.

@@ -2,14 +2,15 @@
 
 DOTFDIR=$HOME/.dotfiles
 
-# Echoes the os/ layer(s) to stow for this machine, most-general first.
-# Only layers that actually exist under os/ are stowed by symlinks().
+# Echoes the os/ layer(s) to stow for this machine, most-general first so a more
+# specific layer can override. Only layers that exist under os/ are stowed.
+# SteamOS is Arch-based, so the deck inherits the arch layer (paru, MangoHud).
 os_layers() {
   case "$(uname)" in
     Darwin) echo "macos" ;;
     Linux)
       if grep -qi valve /proc/version 2>/dev/null; then
-        echo "steamdeck"
+        echo "arch steamdeck"
       elif grep -qi arch /proc/version 2>/dev/null; then
         echo "arch"
       fi
