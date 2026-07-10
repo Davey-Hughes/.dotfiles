@@ -35,7 +35,7 @@ cd ~/.dotfiles
 To add a new config app down the road, you no longer need to update the install script. Place a cross-platform config in `config/` (or `home/`), or a platform-specific one under `os/<platform>/config` (or `os/<platform>/home`), then rerun `./install.sh`. Stow will detect the new additions and link them on the matching OS.
 
 ## Shell environment & XDG
-`config/shell/xdg-env.sh` (POSIX, for `bash`/`zsh`) and `config/fish/conf.d/xdg.fish` (fish) define the XDG base directories and redirect many tools' cache/data/config out of `$HOME` into XDG locations. The two files are kept in sync. See `docs/xdg-home-audit.md` for the full inventory of what is redirected versus intentionally left in place.
+`config/shell/xdg-env.sh` (POSIX, for `bash`/`zsh`), `config/fish/conf.d/xdg.fish` (fish), and `config/environment.d/xdg.conf` (systemd user session, Linux) define the XDG base directories and redirect many tools' cache/data/config out of `$HOME` into XDG locations. The three files are kept in sync. See `docs/xdg-home-audit.md` for the full inventory of what is redirected versus intentionally left in place.
 
 ## ZSH
 The custom ZSH theme included is originally based on the `bira`, `gnzh`, `phil!`'s, and `nanotech` themes.
