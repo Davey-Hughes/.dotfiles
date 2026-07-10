@@ -11,7 +11,7 @@ powerline/powerline
 !*tmux/plugins/tpm/*
 
 *.bak
-shell/fish/fish_variables
+config/fish/fish_variables
 shell/fish/completions
 shell/fish/conf.d
 shell/fish/functions
