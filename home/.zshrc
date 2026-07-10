@@ -44,16 +44,8 @@ export LANG=en_US.UTF-8
 # source os specific settings
 case `uname` in
     Darwin)
-        hostname=$(hostname)
-
-        if [[ $hostname == "dhughes-K44H0465N7-mbp" ]]; then
-            source $HOME/.zsh/macos_flexport.zsh
-            export TMUXCONFIG="$HOME/.tmux/macos_flexport.conf"
-        else
-            source $HOME/.zsh/macos.zsh
-            export TMUXCONFIG="$HOME/.tmux/macos.conf"
-        fi
-
+        source $HOME/.zsh/macos.zsh
+        export TMUXCONFIG="$HOME/.tmux/macos.conf"
     ;;
     Linux)
         # common linux zsh configs
@@ -183,8 +175,3 @@ compinit -d $HOME/.cache/zsh/zcompdump-$ZSH_VERSION
 
 zstyle ':completion:*' special-dirs false
 _comp_options+=(globdots)
-
-export GITHUB_USERNAME=dhughes
-
-alias mpr="/Users/dhughes/flexport/mpr"
-alias dev="fx rdev"
