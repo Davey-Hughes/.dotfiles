@@ -64,3 +64,20 @@ export AWS_SHARED_CREDENTIALS_FILE="${AWS_SHARED_CREDENTIALS_FILE:-$XDG_CONFIG_H
 
 # pm2 (node process manager)
 export PM2_HOME="${PM2_HOME:-$XDG_DATA_HOME/pm2}"
+
+# ts-node — REPL history
+export TS_NODE_HISTORY="${TS_NODE_HISTORY:-$XDG_STATE_HOME/ts-node/history}"
+
+# bun — home (global bins under $BUN_INSTALL/bin) + install cache split into XDG cache
+export BUN_INSTALL="${BUN_INSTALL:-$XDG_DATA_HOME/bun}"
+export BUN_INSTALL_CACHE_DIR="${BUN_INSTALL_CACHE_DIR:-$XDG_CACHE_HOME/bun}"
+case ":$PATH:" in *":$BUN_INSTALL/bin:"*) ;; *) export PATH="$BUN_INSTALL/bin:$PATH" ;; esac
+
+# rubygems — relocate the API source-index spec cache (~/.gem/specs)
+export GEM_SPEC_CACHE="${GEM_SPEC_CACHE:-$XDG_CACHE_HOME/gem}"
+
+# --- Non-XDG shell behaviour (kept here so ~/.zshenv sets it before /etc/zshrc) ---
+
+# macOS Terminal.app / zsh: stop it writing per-session restore files to
+# ~/.zsh_sessions. Harmless on Linux and other shells (they ignore it).
+export SHELL_SESSIONS_DISABLE=1

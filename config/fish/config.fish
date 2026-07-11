@@ -4,7 +4,7 @@ set -g fish_greeting
 set -x SHELL /usr/bin/fish
 
 # Add paths cleanly (fish automatically deduplicates and handles this properly)
-fish_add_path $CARGO_HOME/bin /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $GOPATH/bin $GOBIN
+fish_add_path $CARGO_HOME/bin $BUN_INSTALL/bin /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin /usr/games $GOPATH/bin $GOBIN
 
 # vi keybinds
 function fish_user_key_bindings
