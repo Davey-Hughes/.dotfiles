@@ -1,3 +1,8 @@
+# OS-specific overrides live in an `os.conf` supplied by the per-OS stow layer
+# (e.g. os/macos/config/ghostty/os.conf sets the macOS `command`). The leading
+# `?` makes it optional: no error on machines where no os layer is stowed.
+config-file = ?os.conf
+
 confirm-close-surface = false
 
 font-family = Hack FC Ligatured CCG

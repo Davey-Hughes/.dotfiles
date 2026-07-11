@@ -54,6 +54,20 @@ symlinks() {
   # Custom cross-linking
   ln -sfn "$HOME/.vim" "$XDG_CONFIG_HOME/nvim"
 
+  # Pre-create config dirs shared between the common layer and an OS layer.
+  # GNU stow "folds" a directory into a single symlink when only one package
+  # provides it; a second stow dir (the OS layer) then cannot merge into that
+  # fold ("existing target is not owned by stow"). Making the shared dir a real
+  # directory first keeps it unfolded, so both layers drop per-file symlinks
+  # into it (e.g. config/ghostty/config + os/macos/config/ghostty/os.conf).
+  for layer in $(os_layers); do
+    [ -d "$DOTFDIR/os/$layer/config" ] || continue
+    while IFS= read -r dir; do
+      rel=${dir#"$DOTFDIR/os/$layer/config/"}
+      [ -d "$DOTFDIR/config/$rel" ] && mkdir -p "$XDG_CONFIG_HOME/$rel"
+    done < <(find "$DOTFDIR/os/$layer/config" -mindepth 1 -type d)
+  done
+
   pushd "$DOTFDIR" >/dev/null
 
   # Common configs (all platforms)
