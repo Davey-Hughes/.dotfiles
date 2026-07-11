@@ -32,6 +32,6 @@
   "tui": "fullscreen",
   "skipWorkflowUsageWarning": true,
   "theme": "custom:tokyo-night:tokyo-night",
-  "skipAutoPermissionPrompt": true,
-  "agentPushNotifEnabled": true
+  "agentPushNotifEnabled": true,
+  "skipAutoPermissionPrompt": true
 }
