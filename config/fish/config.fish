@@ -179,6 +179,7 @@ if status is-interactive
     # make sure docker context is default even if docker desktop is open
     set -x DOCKER_CONTEXT default
 
+    source $__fish_config_dir/fzf-tokyonight.fish
 end
 
 set -gx ANTIGRAVITY_CONFIG_DIR "$XDG_CONFIG_HOME/.gemini/antigravity-cli"
