@@ -61,3 +61,13 @@ set -q AWS_SHARED_CREDENTIALS_FILE; or set -gx AWS_SHARED_CREDENTIALS_FILE $XDG_
 
 # pm2 (node process manager)
 set -q PM2_HOME; or set -gx PM2_HOME $XDG_DATA_HOME/pm2
+
+# ts-node — REPL history
+set -q TS_NODE_HISTORY; or set -gx TS_NODE_HISTORY $XDG_STATE_HOME/ts-node/history
+
+# bun — home + install cache. PATH ($BUN_INSTALL/bin) is added by fish_add_path in config.fish.
+set -q BUN_INSTALL; or set -gx BUN_INSTALL $XDG_DATA_HOME/bun
+set -q BUN_INSTALL_CACHE_DIR; or set -gx BUN_INSTALL_CACHE_DIR $XDG_CACHE_HOME/bun
+
+# rubygems — relocate the API source-index spec cache (~/.gem/specs)
+set -q GEM_SPEC_CACHE; or set -gx GEM_SPEC_CACHE $XDG_CACHE_HOME/gem
