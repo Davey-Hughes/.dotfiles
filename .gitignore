@@ -13,6 +13,10 @@ powerline/powerline
 *.bak
 config/fish/fish_variables
 
+# Claude Code writes a project-local settings file into any repo it runs in;
+# it's a per-machine session artifact, not dotfiles content.
+/.claude/settings.local.json
+
 shell/fish/completions
 shell/fish/conf.d
 shell/fish/functions
