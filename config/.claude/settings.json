@@ -3,7 +3,29 @@
     "DISABLE_AUTOUPDATER": "1"
   },
   "permissions": {
-    "defaultMode": "auto"
+    "defaultMode": "auto",
+    "ask": [
+      "Bash(rm -rf:*)",
+      "Bash(rm -fr:*)",
+      "Bash(rm -Rf:*)",
+      "Bash(rm -r:*)",
+      "Bash(rm -R:*)",
+      "Bash(sudo rm -rf:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.config/.claude/hooks/rm-guard.sh",
+            "statusMessage": "Checking for destructive rm"
+          }
+        ]
+      }
+    ]
   },
   "model": "opus[1m]",
   "enabledPlugins": {
