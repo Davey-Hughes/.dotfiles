@@ -76,6 +76,15 @@ case ":$PATH:" in *":$BUN_INSTALL/bin:"*) ;; *) export PATH="$BUN_INSTALL/bin:$P
 # rubygems — relocate the API source-index spec cache (~/.gem/specs)
 export GEM_SPEC_CACHE="${GEM_SPEC_CACHE:-$XDG_CACHE_HOME/gem}"
 
+# Claude Code / Antigravity — point their config dirs at the stowed XDG copies
+# (mirrors config/fish/config.fish so bash & zsh behave the same as fish).
+# Claude is guarded on the dir existing so a machine without the stowed config
+# keeps using ~/.claude instead of pointing at an empty dir.
+if [ -d "$XDG_CONFIG_HOME/.claude" ]; then
+  export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$XDG_CONFIG_HOME/.claude}"
+fi
+export ANTIGRAVITY_CONFIG_DIR="${ANTIGRAVITY_CONFIG_DIR:-$XDG_CONFIG_HOME/.gemini/antigravity-cli}"
+
 # --- Non-XDG shell behaviour (kept here so ~/.zshenv sets it before /etc/zshrc) ---
 
 # macOS Terminal.app / zsh: stop it writing per-session restore files to
