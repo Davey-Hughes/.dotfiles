@@ -2,6 +2,13 @@
 
 DOTFDIR=$HOME/.dotfiles
 
+# Where pre-existing files that collide with a symlink target get moved. Created
+# lazily on the first conflict; timestamped so repeated runs never clobber a
+# previous backup. Kept OUTSIDE the repo so it is never tracked.
+BACKUP_DIR="$HOME/.dotfiles-backup/$(date +%Y%m%d-%H%M%S)"
+BACKUP_COUNT=0
+STOW_FAILED=0
+
 # Echoes the os/ layer(s) to stow for this machine, most-general first so a more
 # specific layer can override. Only layers that exist under os/ are stowed.
 # SteamOS is Arch-based, so the deck inherits the arch layer (paru, MangoHud).
@@ -34,6 +41,60 @@ prune_stray_links() {
   done
 }
 
+# Move a pre-existing target out of the way so stow can link over it. Preserves
+# the target's relative path under the backup dir and records that we did it.
+backup_target() {
+  local abs="$1" rel="$2"
+  [ -e "$abs" ] || [ -L "$abs" ] || return 0   # nothing there (already resolved)
+  mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
+  mv "$abs" "$BACKUP_DIR/$rel"
+  echo "  moved $rel -> $BACKUP_DIR/$rel"
+  BACKUP_COUNT=$((BACKUP_COUNT + 1))
+}
+
+# Ask stow (dry-run) which targets would conflict for this package, then move
+# each offending real file/dir into the backup dir. Loops a few times because
+# unfolding one conflict can reveal a deeper one. Leaves the filesystem ready
+# for a clean, conflict-free stow.
+backup_conflicts() {
+  local stow_dir="$1" target="$2" pkg="$3"
+  local pass rel conflicts
+  for pass in 1 2 3 4 5; do
+    conflicts=$(stow -n -v2 -d "$stow_dir" -t "$target" "$pkg" 2>&1 | sed -n \
+      -e 's/.* over existing target \(.*\) since .*/\1/p' \
+      -e 's/.* over existing directory target \(.*\)/\1/p' \
+      -e 's/.*existing target is not owned by stow: \(.*\)/\1/p' \
+      -e 's/.*existing target is neither a link nor a directory: \(.*\)/\1/p' | sort -u)
+    [ -z "$conflicts" ] && return 0
+    while IFS= read -r rel; do
+      [ -n "$rel" ] && backup_target "$target/$rel" "$rel"
+    done <<< "$conflicts"
+  done
+}
+
+# Back up conflicts, then stow for real and report the true outcome instead of
+# swallowing stow's exit status (the old script always printed "complete").
+stow_pkg() {
+  local stow_dir="$1" target="$2" pkg="$3"
+  backup_conflicts "$stow_dir" "$target" "$pkg"
+  if ! stow -d "$stow_dir" -t "$target" "$pkg"; then
+    echo "ERROR: stow failed for package '$pkg' (dir=$stow_dir target=$target)" >&2
+    STOW_FAILED=1
+  fi
+}
+
+# Pull in git submodules (tpm, zsh-autosuggestions) that .zshrc/.tmux.conf
+# source. A plain `git clone` leaves these empty; without them zsh errors on
+# every startup and tmux's plugin manager never loads. Non-fatal so an offline
+# run still proceeds.
+init_submodules() {
+  command -v git &>/dev/null || return 0
+  [ -f "$DOTFDIR/.gitmodules" ] || return 0
+  echo "Initializing git submodules..."
+  git -C "$DOTFDIR" submodule update --init --recursive \
+    || echo "WARNING: submodule init failed; tpm / zsh-autosuggestions may be missing" >&2
+}
+
 symlinks() {
   echo "Creating symlinks..."
 
@@ -51,7 +112,14 @@ symlinks() {
   mkdir -p "$HOME/.tmux"
   mkdir -p "$XDG_CONFIG_HOME"
 
-  # Custom cross-linking
+  # Custom cross-linking. ~/.vim is a separate repo (github.com/Davey-Hughes/.vim);
+  # NeoVim reads it through this link. On a fresh machine it dangles until that
+  # repo is cloned -- clone it if git is available and it is not present yet.
+  if [ ! -e "$HOME/.vim" ] && command -v git &>/dev/null; then
+    echo "Cloning ~/.vim (NeoVim config)..."
+    git clone https://github.com/Davey-Hughes/.vim.git "$HOME/.vim" \
+      || echo "WARNING: could not clone ~/.vim; ~/.config/nvim will dangle until it exists" >&2
+  fi
   ln -sfn "$HOME/.vim" "$XDG_CONFIG_HOME/nvim"
 
   # Pre-create config dirs shared between the common layer and an OS layer.
@@ -71,16 +139,20 @@ symlinks() {
   pushd "$DOTFDIR" >/dev/null
 
   # Common configs (all platforms)
-  stow -t "$XDG_CONFIG_HOME" config
-  stow -t "$HOME" home
+  stow_pkg "$DOTFDIR" "$XDG_CONFIG_HOME" config
+  stow_pkg "$DOTFDIR" "$HOME" home
 
   # Platform-specific layers, if present for this OS
   for layer in $(os_layers); do
-    [ -d "$DOTFDIR/os/$layer/config" ] && stow -d "$DOTFDIR/os/$layer" -t "$XDG_CONFIG_HOME" config
-    [ -d "$DOTFDIR/os/$layer/home" ]   && stow -d "$DOTFDIR/os/$layer" -t "$HOME" home
+    [ -d "$DOTFDIR/os/$layer/config" ] && stow_pkg "$DOTFDIR/os/$layer" "$XDG_CONFIG_HOME" config
+    [ -d "$DOTFDIR/os/$layer/home" ]   && stow_pkg "$DOTFDIR/os/$layer" "$HOME" home
   done
 
   popd >/dev/null
+
+  if [ "$BACKUP_COUNT" -gt 0 ]; then
+    echo "Moved $BACKUP_COUNT pre-existing file(s) aside into $BACKUP_DIR"
+  fi
 }
 
 git_settings() {
@@ -103,6 +175,21 @@ git_settings() {
   fi
 }
 
+# Install tmux plugins headlessly so a fresh machine never needs an interactive
+# `prefix + I`. tpm's bin scripts require TMUX_PLUGIN_MANAGER_PATH, which is only
+# set once a tmux server has sourced the config -- so spin up a throwaway
+# detached session first, drive tpm, then tear it down. Non-fatal.
+tmux_plugins() {
+  command -v tmux &>/dev/null || return 0
+  local tpm="$HOME/.tmux/plugins/tpm/bin"
+  [ -x "$tpm/install_plugins" ] || return 0
+  echo "Installing tmux plugins..."
+  export TMUX_PLUGIN_MANAGER_PATH="$HOME/.tmux/plugins/"
+  tmux new-session -d -s __tpm_bootstrap 2>/dev/null
+  "$tpm/install_plugins" || echo "WARNING: tmux plugin install failed" >&2
+  tmux kill-session -t __tpm_bootstrap 2>/dev/null
+}
+
 install_packages() {
   if [ "$(command -v brew)" ]; then
     KERNEL="linux"
@@ -119,8 +206,15 @@ install_packages() {
 }
 
 # Run the core setup tasks automatically
+init_submodules
 symlinks
 git_settings
 install_packages
+tmux_plugins
+
+if [ "$STOW_FAILED" -ne 0 ]; then
+  echo "Dotfiles installation finished WITH ERRORS (see above)." >&2
+  exit 1
+fi
 
 echo "Dotfiles installation complete!"
