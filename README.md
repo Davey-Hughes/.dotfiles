@@ -13,7 +13,7 @@ The repository is organized cleanly by symlink target location rather than scatt
 
 - `config/` - Cross-platform configs symlinked into `$XDG_CONFIG_HOME` (defaults to `~/.config/`) — e.g. `fish`, `kitty`, `starship.toml`, `zellij`. Also `config/shell/xdg-env.sh`, the cross-shell XDG environment (see below).
 - `home/` - Configs symlinked directly into your home directory `~/` — e.g. `.zshrc`, `.zshenv`, `.bashrc`, `.tmux.conf`, `.inputrc`.
-- `os/<platform>/` - Platform-specific trees. A `config/` or `home/` subfolder here is stowed **only on the matching OS**, layered on top of the common configs: `macos` → `yabai`/`skhd`, `arch` → `paru`/`MangoHud`, plus `steamdeck` (SteamOS is Arch-based, so it inherits the `arch` layer). Also houses GUI tools, machine scripts, and the Homebrew `Brewfile`s.
+- `os/<platform>/` - Platform-specific trees. A `config/` or `home/` subfolder here is stowed **only on the matching OS**, layered on top of the common configs: `macos` → `yabai`/`skhd`, `arch` → `paru`/`MangoHud`/KDE Plasma config, plus `steamdeck` (SteamOS is Arch-based, so it inherits the `arch` layer). Also houses GUI tools, machine scripts, and the Homebrew `Brewfile`s.
 
 ## Installation
 
@@ -33,6 +33,20 @@ cd ~/.dotfiles
 
 ## Adding New Configs
 To add a new config app down the road, you no longer need to update the install script. Place a cross-platform config in `config/` (or `home/`), or a platform-specific one under `os/<platform>/config` (or `os/<platform>/home`), then rerun `./install.sh`. Stow will detect the new additions and link them on the matching OS.
+
+## KDE Plasma (Arch only)
+
+KDE Plasma settings (theme, shortcuts, panels, Dolphin/Konsole/Kate) are tracked
+under `os/arch/config/` and symlinked into `~/.config` on Arch/SteamOS. KDE writes
+through the symlinks (KConfig `directWriteFallback`), so tweaking settings in
+System Settings edits the repo copy directly.
+
+**Dependency:** `kwinrc` enables the [`krohnkite`](https://github.com/anametologin/krohnkite)
+tiling script. Install it from the AUR (e.g. `paru -S kwin-scripts-krohnkite`) for
+tiling to work; the config symlinks fine without it, tiling just stays inactive.
+
+Hardware/state files (monitor layout, file-index state, KDE Connect pairing keys,
+activity stats) are intentionally **not** tracked.
 
 ## Shell environment & XDG
 `config/shell/xdg-env.sh` (POSIX, for `bash`/`zsh`), `config/fish/conf.d/xdg.fish` (fish), and `config/environment.d/xdg.conf` (systemd user session, Linux) define the XDG base directories and redirect many tools' cache/data/config out of `$HOME` into XDG locations. The three files are kept in sync. See `docs/xdg-home-audit.md` for the full inventory of what is redirected versus intentionally left in place.
