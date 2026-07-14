@@ -124,10 +124,6 @@ if status is-interactive
         set -x DIRENV_LOG_FORMAT
     end
 
-    if command -q thefuck
-        thefuck --alias | source
-    end
-
     if command -q atuin
         set -x ATUIN_NOBIND true
         atuin init fish | source
@@ -173,7 +169,7 @@ if status is-interactive
     # end
 
     if test -e $XDG_CONFIG_HOME/.gemini/gemini-api.txt
-        read -x GEMINI_API_KEY < $XDG_CONFIG_HOME/.gemini/gemini-api.txt
+        read -x GEMINI_API_KEY <$XDG_CONFIG_HOME/.gemini/gemini-api.txt
     end
 
     # make sure docker context is default even if docker desktop is open
