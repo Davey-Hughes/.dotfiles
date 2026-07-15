@@ -3,15 +3,7 @@
     "DISABLE_AUTOUPDATER": "1"
   },
   "permissions": {
-    "defaultMode": "auto",
-    "ask": [
-      "Bash(rm -rf:*)",
-      "Bash(rm -fr:*)",
-      "Bash(rm -Rf:*)",
-      "Bash(rm -r:*)",
-      "Bash(rm -R:*)",
-      "Bash(sudo rm -rf:*)"
-    ]
+    "defaultMode": "auto"
   },
   "hooks": {
     "PreToolUse": [
@@ -54,6 +46,5 @@
   "tui": "fullscreen",
   "skipWorkflowUsageWarning": true,
   "theme": "custom:tokyo-night:tokyo-night",
-  "agentPushNotifEnabled": true,
-  "skipAutoPermissionPrompt": true
+  "agentPushNotifEnabled": true
 }
