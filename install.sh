@@ -112,6 +112,12 @@ symlinks() {
   mkdir -p "$HOME/.tmux"
   mkdir -p "$XDG_CONFIG_HOME"
 
+  # git_settings() writes the global git config to $XDG_CONFIG_HOME/git/config.
+  # Stow folds config/git/ into a single symlink when the target dir does not
+  # exist yet, which would send that write inside the repo. Pre-creating it real
+  # keeps it unfolded, so `ignore` links in beside a real, untracked `config`.
+  mkdir -p "$XDG_CONFIG_HOME/git"
+
   # Custom cross-linking. ~/.vim is a separate repo (github.com/Davey-Hughes/.vim);
   # NeoVim reads it through this link. On a fresh machine it dangles until that
   # repo is cloned -- clone it if git is available and it is not present yet.
@@ -165,11 +171,13 @@ git_settings() {
     : "${XDG_CONFIG_HOME:=$HOME/.config}"
     mkdir -p "$XDG_CONFIG_HOME/git"
     export GIT_CONFIG_GLOBAL="$XDG_CONFIG_HOME/git/config"
-    git config --global init.templatedir "$HOME/.git_template"
-    git config --global alias.ctags '!.git/hooks/ctags'
     git config --global init.defaultBranch 'main'
-    git config --global core.excludesfile "$HOME/.git_template/.gitignore"
     git config --global push.autoSetupRemote true
+
+    # Deliberately no core.excludesfile: the global ignore list is stowed to
+    # $XDG_CONFIG_HOME/git/ignore, which git reads on its own. Pointing
+    # excludesfile elsewhere silently shadows that path -- the old setup did
+    # exactly that and left a dead ~/.config/git/ignore ignoring nothing.
 
     # Back the kde-wallpaper filter named by .gitattributes. Repo-local, not
     # --global: .gitattributes only points at it from inside this repo. Filters
