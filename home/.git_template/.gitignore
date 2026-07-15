@@ -3,3 +3,5 @@
 *tags
 .ccls-cache/*
 .envrc
+
+**/.claude/settings.local.json
