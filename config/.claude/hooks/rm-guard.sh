@@ -1,21 +1,39 @@
 #!/usr/bin/env bash
-# PreToolUse (Bash) guard: force a confirmation prompt before any recursive rm,
-# in every permission mode — including `auto`. A previous unattended session ran
-# `rm -rf` with an unset variable that expanded to /* and wiped the machine;
-# this makes such deletions always stop for a human "yes".
+# PreToolUse (Bash) guard -- WRAPPER around rm_guard.py.
 #
-# Emits {permissionDecision:"ask"} when the command looks like a recursive rm.
-# Over-asking is safe, under-asking is not, so anything ambiguous asks.
+# Runs the real guard and passes its verdict through. If that guard cannot RUN
+# at all -- python3 missing, syntax error, file deleted, chmod'd non-executable
+# -- this falls back to a crude scan that errs toward asking, instead of
+# emitting nothing and letting the command through unexamined.
+#
+# Why the fallback exists: from 12 Jul to 15 Jul 2026 the guard on this machine
+# returned `ask` correctly for every recursive rm, and Claude Code discarded all
+# of them because of `skipAutoPermissionPrompt: true` in settings.json. Nothing
+# surfaced that. The hook looked healthy in /hooks the entire time. A guard that
+# silently does nothing is worse than no guard at all, because you stop looking
+# for one. So: never exit quiet on a path that means "I could not check".
 
 input=$(cat)
+guard="${BASH_SOURCE[0]%/*}/rm_guard.py"
 
 ask() {
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Recursive rm detected — confirm before deleting. A prior auto-mode session ran rm -rf with an unset variable expanding to /* and caused data loss."}}'
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"rm_guard.py could not run, so this recursive rm was NOT properly checked — falling back to a crude scan. Confirm manually, and look into why the guard is broken."}}'
   exit 0
 }
 
-# Prefer jq for an exact read of the command; fall back to scanning the raw
-# payload so the guard still fires on a machine without jq.
+# Exit status is the only signal that separates "ran and had no opinion" from
+# "never ran": both produce empty stdout. Trust silence only on exit 0.
+if out=$(printf '%s' "$input" | python3 "$guard" 2>/dev/null); then
+  case "$out" in
+    "")   exit 0 ;;                          # ran, no opinion -> normal flow
+    '{'*) printf '%s\n' "$out"; exit 0 ;;    # ran, emitted a verdict
+  esac
+fi
+
+# --- fallback: guard absent, crashed, or emitted something unparseable --------
+# Deliberately crude and over-eager. Known false positives (matches the bare
+# word "rm" in prose; treats any -r flag such as `jq -r` as the recursion flag).
+# Over-asking is the correct failure here.
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
 
 if [ -n "$cmd" ]; then
@@ -34,7 +52,7 @@ if [ -n "$cmd" ]; then
   done
   [ "$has_rm" = 1 ] && [ "$has_rec" = 1 ] && ask
 else
-  # jq missing / no command field: coarse scan, err toward asking.
+  # jq missing / no command field: coarse scan of the raw payload.
   printf '%s' "$input" | grep -Eq 'rm[[:space:]]+(-[[:alnum:]]*[rR]|--recursive|--no-preserve-root)' && ask
 fi
 exit 0
