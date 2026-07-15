@@ -2,6 +2,8 @@
 PreviewSize=16
 
 [General]
+AlwaysShowTabBar=true
+ShowFullPathInTitlebar=true
 Version=202
 ViewPropsTimestamp=2026,7,12,19,14,2.371
 
@@ -11,3 +13,6 @@ Places Icons Static Size=22
 
 [MainWindow]
 MenuBar=Disabled
+
+[PreviewSettings]
+Plugins=opendocumentthumbnail,ebookthumbnail,gsthumbnail,ffmpegthumbs,imagethumbnail,jpegthumbnail,mobithumbnail,blenderthumbnail,windowsexethumbnail,svgthumbnail,comicbookthumbnail,kraorathumbnail,djvuthumbnail,directorythumbnail,exrthumbnail,audiothumbnail,rawthumbnail,cursorthumbnail,fontthumbnail,windowsimagethumbnail,appimagethumbnail,ffmpegthumbnailer,glycin-heif,renderdoc,glycin-jxl,glycin-image-rs,glycin-svg,gsf-office

@@ -290,6 +290,7 @@ immutability=1
 plugin=org.kde.plasma.volume
 
 [Containments][3][Applets][8][Applets][17][Configuration][General]
+currentTab=streams
 migrated=true
 
 [Containments][3][Applets][8][Applets][18]
@@ -336,12 +337,6 @@ knownItems=org.kde.kdeconnect,org.kde.plasma.keyboardlayout,org.kde.plasma.print
 
 [Containments][3][General]
 AppletOrder=27;4;6;26;7;8;22;23
-
-[Containments][54]
-formfactor=0
-immutability=1
-location=0
-plugin=org.kde.desktopcontainment
 
 [Containments][55]
 ItemGeometries-3440x1440=
