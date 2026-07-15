@@ -2,6 +2,10 @@
 RepeatDelay=150
 RepeatRate=100
 
-[Libinput][1189][32774][BenQ ZOWIE BenQ ZOWIE Gaming Mouse]
+[Libinput][1189][32773][BenQ ZOWIE BenQ ZOWIE Gaming Mouse]
 PointerAcceleration=-0.800
+PointerAccelerationProfile=1
+
+[Libinput][1189][32774][BenQ ZOWIE BenQ ZOWIE Gaming Mouse]
+PointerAcceleration=-0.850
 PointerAccelerationProfile=1
