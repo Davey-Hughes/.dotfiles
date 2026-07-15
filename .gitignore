@@ -51,3 +51,8 @@ config/.gemini/antigravity-cli/*
 !config/.gemini/antigravity-cli/hooks/
 !config/.gemini/antigravity-cli/plugins/
 !config/.gemini/antigravity-cli/sidecars/
+
+# KDE rewrites ksmserverrc on every logout with the session client IDs of
+# whatever was open. It holds no settings at all -- only restart state -- so it
+# conflicts forever and never carries anything worth restoring on a new machine.
+os/arch/config/ksmserverrc
