@@ -170,6 +170,14 @@ git_settings() {
     git config --global init.defaultBranch 'main'
     git config --global core.excludesfile "$HOME/.git_template/.gitignore"
     git config --global push.autoSetupRemote true
+
+    # Back the kde-wallpaper filter named by .gitattributes. Repo-local, not
+    # --global: .gitattributes only points at it from inside this repo. Filters
+    # are not carried by a clone, so without this a fresh machine silently
+    # commits the wallpaper paths again -- the exact leak the filter exists to
+    # stop. Keep the sed in sync with .gitattributes' comment.
+    git -C "$DOTFDIR" config filter.kde-wallpaper.clean "sed -E '/^(Image|SlidePaths)=/d'"
+    git -C "$DOTFDIR" config filter.kde-wallpaper.smudge cat
   else
     echo "git not installed" 2>&1
   fi

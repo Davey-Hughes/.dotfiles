@@ -1,0 +1,10 @@
+# The Plasma appletsrc carries panel layout and applet config worth tracking,
+# but KDE writes the *current* wallpaper path into it too -- and the slideshow
+# rotates every SlideInterval (30 min here), so the file is otherwise dirty
+# permanently and leaks local wallpaper paths into this public repo.
+#
+# The kde-wallpaper filter strips Image=/SlidePaths= on the way into git only:
+# the working copy keeps them, so the live slideshow keeps working. The filter
+# is configured per-clone by install.sh (git_settings); a clone that skips it
+# just commits the lines again, which is why it lives there and not only here.
+os/arch/config/plasma-org.kde.plasma.desktop-appletsrc filter=kde-wallpaper
