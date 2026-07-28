@@ -34,25 +34,73 @@ fi
 # Deliberately crude and over-eager. Known false positives (matches the bare
 # word "rm" in prose; treats any -r flag such as `jq -r` as the recursion flag).
 # Over-asking is the correct failure here.
+#
+# Two things it does NOT ask about, matching rm_guard.py's scope: rm without a
+# recursion flag, and `git rm` (a working-tree operation, recoverable from
+# history). Both are tracked per pipeline segment so `git rm -r x && rm -rf /`
+# still asks on the second segment.
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+
+# Each rule is a (command seen, danger flag seen) pair within one segment. A
+# lone `find` is fine and a lone `-delete` is fine; together they are not.
+verdict() {
+  [ "$n_rm"     = 1 ] && [ "$f_rec"    = 1 ] && [ "$is_git" = 0 ] && ask
+  [ "$n_find"   = 1 ] && [ "$f_finddel" = 1 ] && ask
+  [ "$n_fd"     = 1 ] && [ "$f_fdexec"  = 1 ] && ask
+  [ "$n_rsync"  = 1 ] && [ "$f_rsdel"   = 1 ] && ask
+  [ "$n_rclone" = 1 ] && [ "$f_rcact"   = 1 ] && ask
+  [ "$is_git"   = 1 ] && [ "$f_clean"   = 1 ] && ask   # git clean, unlike git rm
+  return 0
+}
+reset_seg() { n_rm=0 n_find=0 n_fd=0 n_rsync=0 n_rclone=0
+              f_rec=0 f_finddel=0 f_fdexec=0 f_rsdel=0 f_rcact=0 f_clean=0
+              is_git=0 head=1; }
 
 if [ -n "$cmd" ]; then
   cmd=${cmd//$'\n'/ }                      # flatten multi-line commands
-  has_rm=0 has_rec=0
   # read -ra splits on whitespace WITHOUT glob-expanding, so a literal /* in the
   # command is never expanded by this guard.
   IFS=$' \t' read -ra toks <<< "$cmd"
+  reset_seg
   for t in "${toks[@]}"; do
-    case "${t##*/}" in rm) has_rm=1 ;; esac  # basename match also catches /bin/rm
+    t=${t//\"/}; t=${t//\'/}                 # crude unquoting, so `ssh h "find ..."`
+    [ -n "$t" ] || continue                  # still exposes its inner words
     case "$t" in
-      --recursive|--recursive=*|--no-preserve-root) has_rec=1 ;;
+      ';'|'&&'|'||'|'|'|'&') verdict; reset_seg; continue ;;
+    esac
+    if [ "$head" = 1 ]; then                 # command word, modulo wrappers
+      case "${t##*/}" in
+        sudo|command|env|nohup|time|nice) ;;
+        *=*) ;;                              # leading VAR=value assignment
+        git) is_git=1; head=0 ;;
+        *) head=0 ;;
+      esac
+    fi
+    case "${t##*/}" in                       # basename also catches /bin/rm
+      rm)         n_rm=1 ;;
+      find)       n_find=1 ;;
+      fd|fdfind)  n_fd=1 ;;
+      rsync)      n_rsync=1 ;;
+      rclone)     n_rclone=1 ;;
+    esac
+    case "$t" in
+      -delete|-exec|-execdir|-ok|-okdir)            f_finddel=1 ;;
+      -x|-X|--exec|--exec-batch)                    f_fdexec=1 ;;
+      --delete|--delete-*|--del)                    f_rsdel=1 ;;
+      sync|purge|delete|deletefile|rmdir|rmdirs|move|cleanup) f_rcact=1 ;;
+      clean)                                        f_clean=1 ;;
+      --recursive|--recursive=*|--no-preserve-root) f_rec=1 ;;
       --*) : ;;                              # other long opts ignored (not --force)
-      -*[rR]*) has_rec=1 ;;                  # short bundle with r/R: -rf -fr -Rf -r
+      -*[rR]*) f_rec=1 ;;                    # short bundle with r/R: -rf -fr -Rf -r
     esac
   done
-  [ "$has_rm" = 1 ] && [ "$has_rec" = 1 ] && ask
+  verdict
 else
-  # jq missing / no command field: coarse scan of the raw payload.
-  printf '%s' "$input" | grep -Eq 'rm[[:space:]]+(-[[:alnum:]]*[rR]|--recursive|--no-preserve-root)' && ask
+  # jq missing / no command field: coarse scan of the raw payload. `git rm` is
+  # rewritten to `git-rm` first; the left-hand boundary class excludes `-`, so
+  # the rewritten form no longer matches.
+  printf '%s' "$input" \
+    | sed -E 's/(^|[^A-Za-z0-9_-])git[[:space:]]+rm([^A-Za-z0-9_-]|$)/\1git-rm\2/g' \
+    | grep -Eq '(^|[^A-Za-z0-9_-])rm[[:space:]]+(-[[:alnum:]]*[rR]|--recursive|--no-preserve-root)|(^|[^A-Za-z0-9_-])(-delete|-execdir|-exec|--delete|--del|--exec-batch)([^A-Za-z0-9_-]|$)|rclone[[:space:]]+(sync|purge|delete|move|cleanup)|clean[[:space:]]+-[[:alnum:]]*f' && ask
 fi
 exit 0
