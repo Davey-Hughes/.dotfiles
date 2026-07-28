@@ -158,9 +158,7 @@ if status is-interactive
         alias gg="lazygit"
     end
 
-    if test -d $XDG_CONFIG_HOME/.claude
-        set -x CLAUDE_CONFIG_DIR $XDG_CONFIG_HOME/.claude
-    end
+    # CLAUDE_CONFIG_DIR is set globally in conf.d/xdg.fish (applies to non-interactive fish too).
 
     # if test -e $XDG_CONFIG_HOME/.claude/claude-api.txt
     #     cat $XDG_CONFIG_HOME/.claude/claude-api.txt | read -x CLAUDE_API_KEY

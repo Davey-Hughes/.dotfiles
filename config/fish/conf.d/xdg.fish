@@ -71,3 +71,12 @@ set -q BUN_INSTALL_CACHE_DIR; or set -gx BUN_INSTALL_CACHE_DIR $XDG_CACHE_HOME/b
 
 # rubygems — relocate the API source-index spec cache (~/.gem/specs)
 set -q GEM_SPEC_CACHE; or set -gx GEM_SPEC_CACHE $XDG_CACHE_HOME/gem
+
+# claude code — config dir (plugins, sessions, memory) under XDG instead of ~/.claude.
+# Lives here (not the is-interactive block in config.fish) so NON-interactive fish — GUI
+# launches, task runners, other shells' subprocesses — resolve the same store. Mirrors the
+# POSIX copy in shell/xdg-env.sh. Guarded on the dir existing so a machine without the stowed
+# config falls back to ~/.claude rather than pointing at an empty dir.
+if test -d $XDG_CONFIG_HOME/.claude
+    set -q CLAUDE_CONFIG_DIR; or set -gx CLAUDE_CONFIG_DIR $XDG_CONFIG_HOME/.claude
+end
