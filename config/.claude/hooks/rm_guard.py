@@ -124,6 +124,47 @@ GIT_RM_RE = re.compile(
 # the text means there is nothing here to judge, and we stop immediately.
 GUARDED_CMD_RE = re.compile(
     r"(?<![\w-])(?:rm|find|fd|fdfind|rsync|rclone|git|ssh)(?![\w-])")
+
+# --- text the shell never executes -------------------------------------------
+# The raw-text heuristics below read the command as code. Two regions of a
+# command line are not code, and reading them as code is how this guard spent
+# its first week prompting on `git commit`: a commit message *about* shell
+# commands is indistinguishable from shell commands.
+#
+#     git commit -m "$(cat <<'EOF'
+#     fix(claude): collapse duplicate findings
+#
+#     `git clean -fdxn | head` is two segments that say the same thing.
+#     EOF
+#     )"
+#
+# Nothing there deletes anything, but it carries a `$(`, the word `git` and the
+# word `clean`, which is a destructive pairing as far as danger_hint can tell.
+# Worse, prose puts stray quotes in the line (`the "clean flag`), which bash
+# takes literally inside a quoted heredoc and shlex chokes on.
+#
+# A quoted heredoc body (<<'EOF' / <<"EOF") is literal: the shell performs no
+# expansion and no substitution inside it. An UNQUOTED <<EOF *does* expand, so
+# `$(rm -rf /)` in that body really runs -- those are deliberately left alone.
+#
+# The terminator rule is bash's, exactly: it must sit at column 0, and only the
+# <<- form tolerates anything before it, and then only TABS. Being loose here is
+# not a small error -- an indented `EOF` inside the body would end the match
+# early and spill the rest of the message back into the scan, which is precisely
+# what a commit message quoting a heredoc does.
+HEREDOC_RE = re.compile(
+    r"<<(-)?[ \t]*(['\"])([A-Za-z_][A-Za-z0-9_]*)\2.*?^(?(1)\t*)\3$",
+    re.S | re.M)
+# Flags whose argument is prose written for a human. Matched only when the value
+# is quoted, so the substitution is bounded by the quote the shell itself uses.
+# The residual hole is `--body "$(rm -rf /)"` -- a substitution smuggled into a
+# message argument, which does execute and is no longer read. That is a way to
+# type a deletion, not a way to make one by accident, and the accident is what
+# this guard is for.
+MSG_FLAG_RE = re.compile(
+    r"(?<![\w-])(?:-m|--message|--body|--title|--description|--notes|--subject)"
+    r"(?:[ \t]+|=)"
+    r"(?:\$'(?:\\.|[^'\\])*'|'[^']*'|\"(?:\\.|[^\"\\])*\")")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
 REDIRECTS = {">", ">>", "<", "<<", ">&", "<&", "2>", "|&"}
@@ -240,6 +281,16 @@ def danger_hint(text):
     """Does the raw text plausibly contain a destructive invocation?"""
     return any(name.search(text) and flag.search(text)
                for name, flag in DANGER_PAIRS)
+
+
+def strip_data(text):
+    """Blank the regions of a command line the shell treats as data, not code.
+
+    Only the raw-text heuristics read this. Tokenizing still runs on the
+    original command, so the per-command analysis below sees everything.
+    """
+    text = HEREDOC_RE.sub(" HEREDOC ", text)
+    return MSG_FLAG_RE.sub(" MESSAGE ", text)
 
 
 def safe_roots(cwd):
@@ -635,6 +686,9 @@ def analyse(cmd, cwd, depth=0):
     # command is git's business and none of ours. Done on the raw text so the
     # heuristics below never see a git rm either.
     text = GIT_RM_RE.sub(" git-rm ", cmd)
+    # ...and blank the parts of the line that are data rather than code, so a
+    # commit message quoting `git clean -fdx` is not read as running it.
+    text = strip_data(text)
     if not GUARDED_CMD_RE.search(text):
         return []
 
@@ -654,6 +708,13 @@ def analyse(cmd, cwd, depth=0):
         lex.whitespace_split = True
         toks = list(lex)
     except ValueError as e:
+        # Same gate as every other bail-out: unreadable only matters if there is
+        # something destructive to hide. shlex is stricter than the shell it
+        # stands in for -- it rejects $'...' outright, and a stray quote in a
+        # heredoc body that bash takes literally -- so ungated this fires on
+        # commands that would have run perfectly well.
+        if not danger:
+            return []
         return [bare("ask", f"command could not be parsed ({e})")]
 
     # Opaque constructs bail -- but only in *command position*. `.` is the POSIX
