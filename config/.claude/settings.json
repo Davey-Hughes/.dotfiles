@@ -5,7 +5,7 @@
   "permissions": {
     "defaultMode": "auto"
   },
-  "model": "opus[1m]",
+  "model": "claude-opus-5[1m]",
   "hooks": {
     "PreToolUse": [
       {
@@ -26,7 +26,6 @@
     "playwright@claude-plugins-official": true,
     "code-review@claude-plugins-official": true,
     "tokyo-night@claude-themes": true,
-    "rust-analyzer-lsp@claude-plugins-official": true,
     "chrome-devtools-mcp@claude-plugins-official": true,
     "feature-dev@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,
