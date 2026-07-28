@@ -183,11 +183,26 @@ MAX_SSH_DEPTH = 3
 # them as styled spans, so these survive into the permission dialog. They also
 # ride along into the model's blocking error on a deny, which costs a handful of
 # tokens and is worth it to make the flagged operand unmissable.
-HOT = "\x1b[1;31m"   # bold red -- the operand that is actually the problem
-DIM = "\x1b[2m"      # the rest of the echoed command, present only as context
+#
+# Three roles, so the echoed command splits the way it reads: what is doing the
+# destroying, what is being destroyed, and what is merely along for the ride.
+#
+# CONTEXT is deliberately empty. Dimming the third role was the obvious choice
+# and the wrong one: SGR 2 renders anywhere from "slightly grey" to "barely
+# there" depending on the colorscheme, and the parts it covered -- the label
+# line and the unflagged operands -- are exactly what you read to work out what
+# ELSE is on the line. Red and yellow carry the emphasis on their own.
+RED = "\x1b[1;31m"     # the command and its flags -- `rm -rf`, `git clean -fdx`
+YELLOW = "\x1b[1;33m"  # the operands that tripped the guard
+CONTEXT = ""           # everything else: left at the terminal's normal weight
 RESET = "\x1b[0m"
 MAX_ECHO = 160       # past this the echoed command elides its unflagged operands
 MAX_TOKEN = 120      # ...and any single token is truncated regardless
+
+# The second word is part of the command name, not an operand, for the few
+# guarded tools that are subcommand-shaped. Without this `git clean -fdx` would
+# render with `clean` dimmed between two red tokens.
+SUBCOMMANDS = {"git": {"clean"}, "rclone": RCLONE_DESTRUCTIVE}
 
 
 # Gates the conservative bail-outs on recursion actually being in play. Matched
@@ -723,16 +738,24 @@ def analyse(cmd, cwd, depth=0):
 
 # --- rendering ---------------------------------------------------------------
 
-def hot(s):
-    return f"{HOT}{s}{RESET}"
-
-
-def dim(s):
-    return f"{DIM}{s}{RESET}"
+def paint(style, s):
+    # An empty style means "leave it alone" -- emitting a bare RESET there would
+    # litter the echoed command with no-op escapes.
+    return f"{style}{s}{RESET}" if style else s
 
 
 def clip(s, n=MAX_TOKEN):
     return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def command_head(toks):
+    """-> index one past the tokens that name the command: `rm`, `git clean`."""
+    idx, base = command_word(toks)
+    head = idx + 1
+    subs = SUBCOMMANDS.get(base)
+    if subs and head < len(toks) and toks[head] in subs:
+        head += 1
+    return head
 
 
 def echo_line(toks, flagged):
@@ -742,22 +765,31 @@ def echo_line(toks, flagged):
     verbatim above, so the useful thing to show here is the guard's own view of
     it -- `rm -rf "$W"/*` echoes as `rm -rf $W/*`, which is what got classified.
     """
-    idx, _ = command_word(toks)
+    head = command_head(toks)
+
+    def style(i):
+        if i is None:                       # the elision marker
+            return CONTEXT
+        if toks[i] in flagged:              # what is about to be destroyed
+            return YELLOW
+        if i < head or toks[i].startswith("-"):
+            return RED                      # what is doing the destroying
+        return CONTEXT
+
     pieces = [(i, clip(t)) for i, t in enumerate(toks)]
     if sum(len(p) + 1 for _, p in pieces) > MAX_ECHO:
-        # Too long to show whole. The command word, its flags and every flagged
+        # Too long to show whole. The command, its flags and every flagged
         # operand always survive; runs of anything else collapse to one ellipsis.
         kept, elided = [], False
         for i, p in pieces:
-            if i <= idx or toks[i] in flagged or p.startswith("-"):
+            if i < head or toks[i] in flagged or p.startswith("-"):
                 kept.append((i, p))
                 elided = False
             elif not elided:
                 kept.append((None, "…"))
                 elided = True
         pieces = kept
-    return " ".join(hot(p) if i is not None and toks[i] in flagged else dim(p)
-                    for i, p in pieces)
+    return " ".join(paint(style(i), p) for i, p in pieces)
 
 
 def blocks(findings):
@@ -766,10 +798,21 @@ def blocks(findings):
     Keyed on the label too, so the rare segment that trips two rules at once --
     `find /etc -exec rm -rf {} +` is both a find and an rm -- reports both
     rather than silently merging them under whichever label came first.
+
+    Identical findings collapse: `git clean -fdxn | head; git clean -fdxn | wc -l`
+    is two segments that tokenize the same and say the same thing, and printing
+    that row twice reads as two separate problems.
     """
-    order, groups = [], {}
+    order, groups, seen = [], {}, set()
     for f in findings:
-        key = (tuple(f.segment) if f.segment else None, f.label)
+        # segment is a list, so the Finding itself is unhashable -- key on a
+        # tuple-ised copy rather than on f.
+        ident = (f.decision, tuple(f.segment) if f.segment else None,
+                 f.label, f.operand, f.reason)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        key = ident[1], f.label
         if key not in groups:
             groups[key] = []
             order.append(key)
@@ -787,7 +830,7 @@ def render(headline, findings):
             out.append("  " + echo_line(list(segment),
                                         {f.operand for f in group if f.operand}))
             if label:
-                out.append("  " + dim(label))
+                out.append("  " + paint(CONTEXT, label))
             out.append("")
         ops = [clip(f.operand) for f in group if f.operand]
         width = max((len(o) for o in ops), default=0)
@@ -795,8 +838,9 @@ def render(headline, findings):
             if not f.operand:
                 out.append("  " + f.reason)
                 continue
+            # Yellow again, so the row keys back to the operand in the echo.
             op = clip(f.operand)
-            out.append("  " + hot(op) + " " * (width - len(op) + 2) + f.reason)
+            out.append("  " + paint(YELLOW, op) + " " * (width - len(op) + 2) + f.reason)
     return "\n".join(out)
 
 
