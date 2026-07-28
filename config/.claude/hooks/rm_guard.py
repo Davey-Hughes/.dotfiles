@@ -41,6 +41,12 @@ do NOT prevent it, because a variable that is *set but empty* is not an error:
 
 Quoting does not help either. Only ${W:?} (with the colon) aborts on empty.
 The suffix is the whole danger: bare "$W" is harmless when empty, "$W"/* is not.
+
+Output shape: every dangerous operand becomes a Finding, and the verdict names
+the segment it came from rather than the whole command line, so `deploy.sh &&
+rm -rf $W/*` reports the `rm` half and not the deploy. Claude Code renders
+permissionDecisionReason through an ANSI-aware component, so the flagged
+operands are bold red and the rest of the echoed command is dim.
 """
 import json
 import os
@@ -48,10 +54,14 @@ import posixpath
 import re
 import shlex
 import sys
+from collections import namedtuple
+from typing import NoReturn
 
 # --- decisions ---------------------------------------------------------------
+# Both of these exit. Annotated NoReturn so the bail-out arms in main() read as
+# terminal rather than as fallthrough.
 
-def emit(decision, reason):
+def emit(decision, reason) -> NoReturn:
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": decision,
@@ -59,9 +69,25 @@ def emit(decision, reason):
     }}))
     sys.exit(0)
 
-def passthrough():
+def passthrough() -> NoReturn:
     """Nothing destructive here; stay silent and let normal permissions apply."""
     sys.exit(0)
+
+# One dangerous operand, and enough context to point at it.
+#
+#   decision  allow / ask / deny for this operand alone
+#   segment   tokens of the pipeline segment it came from, echoed back so the
+#             verdict names the offending command and not the whole line
+#   label     why THIS operand is the one at risk ("rsync --delete prunes the
+#             destination"). None for rm, where the operands speak for themselves
+#   operand   the flagged token, or None for a whole-segment complaint
+#   reason    the explanation from classify_operand
+Finding = namedtuple("Finding", "decision segment label operand reason")
+
+
+def bare(decision, reason):
+    """A verdict with no operand to point at -- a parse failure or a bail-out."""
+    return Finding(decision, None, None, None, reason)
 
 # --- policy ------------------------------------------------------------------
 
@@ -74,6 +100,8 @@ DANGEROUS_VARS = {"HOME", "PWD", "OLDPWD", "ROOT", "USER", "TMPDIR"}
 GUARDED_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}$")
 EXPANSION_RE = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]")
 BARE_VAR_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
+# The variable name inside any expansion form: $W, ${W}, ${W:-default}.
+EXP_NAME_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 GLOB_CHARS = "*?["
 
 RM_NAMES = {"rm"}
@@ -150,6 +178,16 @@ REMOTE_SPEC_RE = re.compile(r"^[A-Za-z0-9_.+-]*(?:@[A-Za-z0-9_.-]+)?:|^[a-z][a-z
 
 RANK = {"allow": 0, "ask": 1, "deny": 2}
 MAX_SSH_DEPTH = 3
+
+# Claude Code parses permissionDecisionReason for SGR sequences and re-renders
+# them as styled spans, so these survive into the permission dialog. They also
+# ride along into the model's blocking error on a deny, which costs a handful of
+# tokens and is worth it to make the flagged operand unmissable.
+HOT = "\x1b[1;31m"   # bold red -- the operand that is actually the problem
+DIM = "\x1b[2m"      # the rest of the echoed command, present only as context
+RESET = "\x1b[0m"
+MAX_ECHO = 160       # past this the echoed command elides its unflagged operands
+MAX_TOKEN = 120      # ...and any single token is truncated regardless
 
 
 # Gates the conservative bail-outs on recursion actually being in play. Matched
@@ -276,9 +314,14 @@ def classify_operand(op, cwd, bare_var_ok=True):
             return "allow", f"bare ${name} with no suffix"
         if all(GUARDED_RE.match(e) for e in exps):
             return "allow", "all expansions are ${VAR:?}-guarded"
+        # Name the actual variables in the fix, not a placeholder -- the advice
+        # is only actionable if it can be pasted.
+        names = dict.fromkeys(m.group(1) for m in
+                              (EXP_NAME_RE.match(e) for e in exps) if m)
+        hint = ", ".join('"${%s:?}"' % n for n in names) or '"${VAR:?}"'
         return "ask", (
             "unguarded expansion with a suffix -- if it is empty this becomes "
-            "a path under /. Use \"${VAR:?}\" instead."
+            f"a path under /. Use {hint} instead."
         )
 
     if any(c in op for c in GLOB_CHARS):
@@ -413,8 +456,8 @@ def rsync_targets(argv):
 
 
 def rclone_targets(argv):
-    """rclone: -> (destructive, targets). sync/move destroy the destination;
-    purge/delete/rmdir destroy what they name."""
+    """rclone: -> (destructive, targets, subcommand). sync/move destroy the
+    destination; purge/delete/rmdir destroy what they name."""
     operands, sub = [], ""
     i = 1
     while i < len(argv):
@@ -427,14 +470,14 @@ def rclone_targets(argv):
         operands.append(t)
         i += 1
     if not operands:
-        return False, []
+        return False, [], ""
     sub = operands[0]
     if sub not in RCLONE_DESTRUCTIVE:
-        return False, []
+        return False, [], ""
     rest = operands[1:]
     if sub in ("sync", "move"):
-        return True, rest[-1:]      # destination is pruned to match source
-    return True, rest               # purge/delete/rmdir destroy what they name
+        return True, rest[-1:], sub  # destination is pruned to match source
+    return True, rest, sub           # purge/delete/rmdir destroy what they name
 
 
 def git_clean_targets(argv):
@@ -489,77 +532,96 @@ def ssh_remote_command(argv):
 # --- analysis ----------------------------------------------------------------
 
 def analyse_segment(argv, cwd, depth):
-    """-> [(decision, reason)] for the non-rm commands in one segment."""
+    """-> [Finding] for the non-rm commands in one segment."""
     out = []
+    segment = argv
     idx, base = command_word(argv)
     argv = argv[idx:]
     if not argv:
         return out
 
-    def rate(targets, label, bare_var_ok=False):
+    def rate(targets, label, missing, bare_var_ok=False):
+        """Judge each target, tagging every Finding with the same why-this-one label."""
         if not targets:
-            out.append(("ask", f"{label} with no explicit path -- defaults to the "
-                               f"current directory"))
+            out.append(Finding("ask", segment, label, None, missing))
             return
         for t in targets:
             d, r = classify_operand(t, cwd, bare_var_ok=bare_var_ok)
-            out.append((d, f"{label} `{t}`: {r}"))
+            out.append(Finding(d, segment, label, t, r))
 
     if base == "find":
         destructive, roots = find_targets(argv)
         if destructive:
-            rate(roots, "find deletes under")
+            rate(roots,
+                 "find deletes everything under its search roots",
+                 "no search root given, so find descends from the current directory")
     elif base in ("fd", "fdfind"):
         destructive, roots = fd_targets(argv)
         if destructive:
             # fd with no path argument searches the current directory, exactly
             # as `find . ` does -- so treat it as the literal `.` rather than as
             # a missing operand.
-            rate(roots or ["."], "fd deletes under")
+            rate(roots or ["."],
+                 "fd -x/-X runs a destructive command on everything under its search roots",
+                 "no search root given, so fd descends from the current directory")
     elif base == "rsync":
         destructive, dest, ok = rsync_targets(argv)
+        label = "rsync --delete prunes the destination to match the source"
         if destructive and not ok:
-            out.append(("ask", "rsync --delete but the destination operand could "
-                               "not be identified"))
+            out.append(Finding("ask", segment, label, None,
+                               "the destination operand could not be identified"))
         elif destructive:
-            rate(dest, "rsync --delete prunes destination")
+            rate(dest, label, "no destination operand")
     elif base == "rclone":
-        destructive, targets = rclone_targets(argv)
+        destructive, targets, sub = rclone_targets(argv)
         if destructive:
-            rate(targets, "rclone destroys")
+            label = ("rclone %s prunes the destination to match the source" % sub
+                     if sub in ("sync", "move")
+                     else "rclone %s destroys what it names" % sub)
+            rate(targets, label, f"rclone {sub} with no operand")
     elif base in GIT_NAMES:
         destructive, paths = git_clean_targets(argv)
         if destructive:
+            label = ("git clean removes untracked and ignored files, "
+                     "which are not in history and cannot be restored")
             for t in paths:
                 d, r = classify_operand(t, cwd, bare_var_ok=False)
                 # Untracked and ignored files are not in history. Even a "safe"
-                # path only earns a prompt, never a silent pass.
-                out.append(("ask" if d == "allow" else d,
-                            f"git clean removes untracked/ignored files under `{t}`: {r}"))
+                # path only earns a prompt, never a silent pass -- and saying
+                # "literal relative path" there would read like a clean bill.
+                if d == "allow":
+                    d, r = "ask", ("the path itself is bounded, but nothing "
+                                   "under it is recoverable")
+                out.append(Finding(d, segment, label, t, r))
     elif base == "ssh":
         remote = ssh_remote_command(argv)
         if remote and depth < MAX_SSH_DEPTH:
             # No local cwd applies on the far end, so pass cwd="": only /tmp and
-            # /var/tmp stay safe and every other absolute path asks.
-            d, r = analyse(remote, "", depth + 1)
-            if d is not None:
-                out.append((d, f"over ssh: {r}"))
+            # /var/tmp stay safe and every other absolute path asks. The findings
+            # keep the REMOTE segment as their echo -- that is the command that
+            # matters -- and carry the hop in their label.
+            hop = "over ssh -- no local safe root clears a path on the far end"
+            for f in analyse(remote, "", depth + 1):
+                out.append(f._replace(
+                    label=f"{hop}; {f.label}" if f.label else hop))
         elif remote:
-            out.append(("ask", "ssh nested too deeply to analyse"))
+            out.append(Finding("ask", segment, "over ssh", None,
+                               "ssh nested too deeply to analyse"))
     return out
 
 
 def analyse(cmd, cwd, depth=0):
+    """-> [Finding]. Empty means the guard has no opinion."""
     # Raw scan first: no guarded command name anywhere means nothing to judge.
     if not GUARDED_CMD_RE.search(cmd):
-        return None, ""
+        return []
 
     # Blank out `git rm`, then look again. If nothing guarded survives, the
     # command is git's business and none of ours. Done on the raw text so the
     # heuristics below never see a git rm either.
     text = GIT_RM_RE.sub(" git-rm ", cmd)
     if not GUARDED_CMD_RE.search(text):
-        return None, ""
+        return []
 
     # The bail-outs below exist to stop a *destructive* command hiding inside
     # something unreadable. With no destructive pairing anywhere -- no recursion
@@ -569,14 +631,15 @@ def analyse(cmd, cwd, depth=0):
 
     # Check the RAW string for constructs tokenizing would destroy the evidence of.
     if danger and ("`" in text or "$(" in text):
-        return "ask", "command substitution near a destructive command cannot be resolved statically"
+        return [bare("ask", "command substitution near a destructive command "
+                            "cannot be resolved statically")]
 
     try:
         lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
         toks = list(lex)
     except ValueError as e:
-        return "ask", f"command could not be parsed ({e})"
+        return [bare("ask", f"command could not be parsed ({e})")]
 
     # Opaque constructs bail -- but only in *command position*. `.` is the POSIX
     # source builtin at the start of a segment and a jq filter in `jq -r . f`;
@@ -586,19 +649,22 @@ def analyse(cmd, cwd, depth=0):
             base = os.path.basename(t)
             in_cmd_pos = i == 0 or toks[i - 1] in SEPARATORS
             if in_cmd_pos and base in OPAQUE:
-                return "ask", f"command contains `{base}`, which hides its arguments"
+                return [bare("ask", f"command contains `{base}`, which hides its arguments")]
             if base in SHELLS and i + 1 < len(toks) and toks[i + 1] == "-c":
-                return "ask", f"command contains `{base} -c`, which hides its arguments"
+                return [bare("ask", f"command contains `{base} -c`, which hides its arguments")]
     if "--no-preserve-root" in toks:
-        return "deny", "--no-preserve-root defeats rm's own safety net"
+        return [bare("deny", "--no-preserve-root defeats rm's own safety net")]
 
     in_git = git_segments(toks)
-    worst, reason = None, ""
+    bounds = segment_bounds(toks)
+    findings = []
 
-    def note(d, r):
-        nonlocal worst, reason
-        if worst is None or RANK[d] > RANK[worst]:
-            worst, reason = d, r
+    def segment_at(i):
+        """The pipeline segment token i belongs to, for echoing back."""
+        for s, e in bounds:
+            if s <= i < e:
+                return toks[s:e]
+        return list(toks)
 
     # --- rm itself. Scanned across all tokens, not just command position, so
     # `sudo rm -rf` and `xargs rm -r` are both seen.
@@ -609,6 +675,7 @@ def analyse(cmd, cwd, depth=0):
             i += 1
             continue
         found_rm = True
+        segment = segment_at(i)
         i += 1
         recursive, operands = False, []
         while i < len(toks) and toks[i] not in SEPARATORS:
@@ -633,14 +700,15 @@ def analyse(cmd, cwd, depth=0):
             continue
         for op in operands:
             d, r = classify_operand(op, cwd)
-            note(d, f"`{op}`: {r}")
+            # No label: for rm every operand is a target, which the echoed
+            # command already makes obvious.
+            findings.append(Finding(d, segment, None, op, r))
 
     # --- everything else, one segment at a time.
-    for start, end in segment_bounds(toks):
-        for d, r in analyse_segment(toks[start:end], cwd, depth):
-            note(d, r)
+    for start, end in bounds:
+        findings.extend(analyse_segment(toks[start:end], cwd, depth))
 
-    if not found_rm and worst is None:
+    if not found_rm and not findings:
         # Nothing survived parsing. Every construct that could execute a string
         # (eval, <shell> -c, xargs, substitution) already bailed above, so a bare
         # mention here is inert text -- unless it actually reads as a recursive
@@ -648,9 +716,88 @@ def analyse(cmd, cwd, depth=0):
         # approve it. Searched against the git-stripped text, so an exempted
         # `git -C /path rm -r` does not read as unparsed.
         if RM_RECURSIVE_RE.search(text):
-            return "ask", "text reads as a recursive rm the guard could not parse"
-        return None, ""
-    return worst, reason
+            return [bare("ask", "text reads as a recursive rm the guard could not parse")]
+        return []
+    return findings
+
+
+# --- rendering ---------------------------------------------------------------
+
+def hot(s):
+    return f"{HOT}{s}{RESET}"
+
+
+def dim(s):
+    return f"{DIM}{s}{RESET}"
+
+
+def clip(s, n=MAX_TOKEN):
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def echo_line(toks, flagged):
+    """The offending segment, rebuilt from the tokens the guard actually parsed.
+
+    Deliberately not the raw text: the permission dialog already prints that
+    verbatim above, so the useful thing to show here is the guard's own view of
+    it -- `rm -rf "$W"/*` echoes as `rm -rf $W/*`, which is what got classified.
+    """
+    idx, _ = command_word(toks)
+    pieces = [(i, clip(t)) for i, t in enumerate(toks)]
+    if sum(len(p) + 1 for _, p in pieces) > MAX_ECHO:
+        # Too long to show whole. The command word, its flags and every flagged
+        # operand always survive; runs of anything else collapse to one ellipsis.
+        kept, elided = [], False
+        for i, p in pieces:
+            if i <= idx or toks[i] in flagged or p.startswith("-"):
+                kept.append((i, p))
+                elided = False
+            elif not elided:
+                kept.append((None, "…"))
+                elided = True
+        pieces = kept
+    return " ".join(hot(p) if i is not None and toks[i] in flagged else dim(p)
+                    for i, p in pieces)
+
+
+def blocks(findings):
+    """Group findings into (segment, label, findings), first-seen order.
+
+    Keyed on the label too, so the rare segment that trips two rules at once --
+    `find /etc -exec rm -rf {} +` is both a find and an rm -- reports both
+    rather than silently merging them under whichever label came first.
+    """
+    order, groups = [], {}
+    for f in findings:
+        key = (tuple(f.segment) if f.segment else None, f.label)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(f)
+    return [(k[0], k[1], groups[k]) for k in order]
+
+
+def render(headline, findings):
+    if len(findings) == 1 and findings[0].segment is None:
+        return f"{headline} -- {findings[0].reason}"   # nothing to point at
+    out = [headline]
+    for segment, label, group in blocks(findings):
+        out.append("")
+        if segment:
+            out.append("  " + echo_line(list(segment),
+                                        {f.operand for f in group if f.operand}))
+            if label:
+                out.append("  " + dim(label))
+            out.append("")
+        ops = [clip(f.operand) for f in group if f.operand]
+        width = max((len(o) for o in ops), default=0)
+        for f in group:
+            if not f.operand:
+                out.append("  " + f.reason)
+                continue
+            op = clip(f.operand)
+            out.append("  " + hot(op) + " " * (width - len(op) + 2) + f.reason)
+    return "\n".join(out)
 
 
 def main():
@@ -663,16 +810,22 @@ def main():
     if not cmd:
         passthrough()
     try:
-        decision, reason = analyse(cmd, cwd)
+        findings = analyse(cmd, cwd)
     except Exception as e:
         emit("ask", f"guard errored ({type(e).__name__}: {e}); asking to be safe")
-    if decision is None:
+    if not findings:
         passthrough()
-    if decision == "allow":
-        emit("allow", f"destructive command on a provably safe target -- {reason}")
-    if decision == "deny":
-        emit("deny", f"refusing catastrophic delete -- {reason}")
-    emit("ask", f"destructive recursive command needs confirmation -- {reason}")
+    worst = max(RANK[f.decision] for f in findings)
+    if worst == RANK["allow"]:
+        # Nothing was blocked, so there is nothing to point at. Stay on one line.
+        emit("allow", "destructive command on a provably safe target -- "
+                      f"{findings[0].reason}")
+    # Only the operands that actually held the command up. A proven-safe operand
+    # sitting next to a dangerous one is noise in a prompt about the dangerous one.
+    blocked = [f for f in findings if f.decision != "allow"]
+    if worst == RANK["deny"]:
+        emit("deny", render("refusing catastrophic delete", blocked))
+    emit("ask", render("destructive recursive command needs confirmation", blocked))
 
 
 if __name__ == "__main__":
