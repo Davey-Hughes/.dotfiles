@@ -13,6 +13,11 @@ powerline/powerline
 *.bak
 config/fish/fish_variables
 
+# Python bytecode. Running or importing a hook script (config/.claude/hooks/)
+# drops a __pycache__ next to the source, inside a tracked directory.
+__pycache__/
+*.py[cod]
+
 # Claude Code writes a project-local settings file into any repo it runs in;
 # it's a per-machine session artifact, not dotfiles content.
 /.claude/settings.local.json
