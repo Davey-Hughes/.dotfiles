@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Verdicts rm_guard.py must produce, plus the rm-guard.sh wrapper contract.
+
+    python3 test_rm_guard.py
+
+Four outcomes, and the difference between the first two matters:
+
+    pass    the guard stayed silent and normal permissions apply
+    allow   the guard looked, proved the target safe, and said so
+    ask     confirm first
+    deny    refused
+
+cwd is a fixed synthetic path rather than the real one, so a verdict never
+depends on where the suite happens to be run from -- safe_roots() folds cwd in,
+and a run from /tmp would quietly clear operands a run from $HOME would not.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+GUARD = os.path.join(HERE, "rm_guard.py")
+WRAPPER = os.path.join(HERE, "rm-guard.sh")
+# Deep, absolute, and outside every safe root, so `.` resolves to something
+# bounded and /etc still reads as out of bounds.
+CWD = "/home/u/project"
+
+
+def payload(cmd, cwd=CWD):
+    return json.dumps({"tool_input": {"command": cmd}, "cwd": cwd})
+
+
+def run(argv, cmd, cwd=CWD):
+    """-> (decision, reason). 'pass' means silence, 'crash' means it died."""
+    p = subprocess.run(argv, input=payload(cmd, cwd), capture_output=True, text=True)
+    if p.returncode != 0:
+        return "crash", p.stderr.strip()
+    if not p.stdout.strip():
+        return "pass", ""
+    try:
+        d = json.loads(p.stdout)["hookSpecificOutput"]
+    except (ValueError, KeyError) as e:
+        return "unparseable", f"{e}: {p.stdout[:200]}"
+    return d["permissionDecision"], d["permissionDecisionReason"]
+
+
+def verdict(cmd, cwd=CWD):
+    return run([sys.executable, GUARD], cmd, cwd)
+
+
+def heredoc(body):
+    """The commit form Claude Code writes, which is where this all started."""
+    return "git commit -m \"$(cat <<'EOF'\n%s\nEOF\n)\"" % body
+
+
+# (name, command, expected decision)
+CASES = [
+    # --- commit messages are prose, not code ---------------------------------
+    # A commit message *about* shell commands is indistinguishable from shell
+    # commands, and this guard's own history is nothing but such commits.
+    ("commit: prose says 'clean'", heredoc("chore: clean up the git hooks"), "pass"),
+    ("commit: prose quotes a git clean pipeline",
+     heredoc("fix(claude): collapse duplicates\n\n"
+             "`git clean -fdxn | head; git clean -fdxn | wc -l` is two segments."), "pass"),
+    ("commit: prose quotes rm -rf",
+     heredoc("fix: guard against rm -rf \"$W\"/* when W is empty"), "pass"),
+    ("commit: prose leaves an odd double quote",
+     heredoc('fix(git): quote the "clean flag properly'), "pass"),
+    ("commit: plain -m mentioning clean", 'git commit -m "chore: clean up dead code"', "pass"),
+    ("commit: plain -m quoting rm -rf",
+     'git commit -m "fix: stop rm -rf /tmp/x from firing"', "pass"),
+    # shlex rejects $'...' outright; bash has accepted it for thirty years.
+    ("commit: ansi-c quoted message", "git commit -m $'fix: clean up\\nsecond line'", "pass"),
+    ("commit: --message= form", 'git commit --message="chore: clean up rm -rf handling"', "pass"),
+    ("gh pr create --body prose",
+     'gh pr create --title "clean up" --body "runs rm -rf on /tmp"', "pass"),
+    ("commit -F takes a filename, not prose", "git commit -F /tmp/msg.txt", "pass"),
+
+    # --- heredoc boundaries --------------------------------------------------
+    # The terminator rule is bash's: column 0, and only <<- tolerates anything
+    # before it, and then only tabs. A loose rule ends the match early and
+    # spills the rest of the message back into the scan.
+    ("commit: prose contains an indented heredoc example",
+     heredoc('fix: strip data\n\n    git commit -m "$(cat <<\'EOF\'\n'
+             '    fix: clean up rm -rf handling\n    EOF\n    )"\n\nend of message.'), "pass"),
+    ("indented EOF does not terminate, so the rm stays data",
+     "cat <<'EOF' > /tmp/f\n  EOF\nrm -rf /\nEOF", "pass"),
+    ("code after a column-0 terminator is still code",
+     "cat <<'EOF' > /tmp/f\nsome text\nEOF\nrm -rf /", "deny"),
+    ("<<- allows a tab-indented terminator",
+     "cat <<-'EOF' > /tmp/f\n\tEOF\nrm -rf /etc/x", "ask"),
+    # Unquoted <<EOF expands, so its body is deliberately NOT stripped. A
+    # literal `rm -rf /` in there is still only data the shell writes to a file,
+    # so this deny is a known false positive: conservative, and the safe way to
+    # be wrong.
+    ("unquoted heredoc body is left in the scan",
+     "cat <<EOF > /tmp/f\nrm -rf /\nEOF", "deny"),
+
+    # --- a message argument must not shield a real command -------------------
+    ("commit then a real rm", 'git commit -m "chore: clean up" && rm -rf /', "deny"),
+    ("commit then a real git clean", 'git commit -m "wip" && git clean -fdx', "ask"),
+    ("commit then an rm of $HOME", 'git commit -m "clean" ; rm -rf "$HOME"', "deny"),
+
+    # --- unreadable text asks only when something destructive is in play -----
+    ("unparseable with a recursive rm", 'rm -rf "/tmp/a && rm -rf $W/*', "ask"),
+    ("unparseable and harmless", 'echo "unbalanced && git log', "pass"),
+
+    # --- core behaviour, which none of the above may disturb -----------------
+    ("rm -rf the filesystem root", "rm -rf /", "deny"),
+    ("rm -rf $HOME", 'rm -rf "$HOME"', "deny"),
+    ("rm -rf unguarded expansion with a suffix", 'rm -rf "$W"/*', "ask"),
+    ("rm -rf ${VAR:?}-guarded", 'rm -rf "${W:?}"/*', "allow"),
+    ("rm -rf under a safe root", "rm -rf /tmp/build/out", "allow"),
+    ("rm -rf outside every safe root", "rm -rf /etc/foo", "ask"),
+    ("rm without -r cannot descend", "rm /etc/passwd", "pass"),
+    ("git rm is out of scope", "git rm -r src/", "pass"),
+    ("find -delete", "find /etc -name '*.log' -delete", "ask"),
+    ("fd -X rm", "fd -e log -X rm -rf /etc", "ask"),
+    ("rsync --delete prunes the destination", "rsync -a --delete /src/ /etc/dst/", "ask"),
+    ("rclone sync", "rclone sync /src remote:bucket", "ask"),
+    ("git clean -fdx", "git clean -fdx", "ask"),
+    ("ssh runs it on the far end", "ssh box 'rm -rf /var/data'", "ask"),
+    ("eval hides its arguments", 'eval "rm -rf $X/*"', "ask"),
+    ("--no-preserve-root", "rm -rf --no-preserve-root /", "deny"),
+    ("substitution next to an rm", 'rm -rf "$(cat targets.txt)"', "ask"),
+    ("ls piped to a non-recursive rm", "ls | xargs rm", "pass"),
+    ("docker run --rm is not rm", "docker run --rm -it ubuntu", "pass"),
+    ("jq -r is not a recursion flag", "jq -r . file.json", "pass"),
+    ("prose that merely mentions rm", 'echo "did my rm get logged?"', "pass"),
+]
+
+
+def check_wrapper():
+    """rm-guard.sh must relay the guard's verdict, and must never fail silent.
+
+    A guard that quietly does nothing is worse than no guard, because you stop
+    looking for one -- that is the whole reason the wrapper exists.
+    """
+    fails = []
+
+    def want(name, got, expected):
+        if got != expected:
+            fails.append((name, "", expected, got, ""))
+
+    d, _ = run(["bash", WRAPPER], 'git commit -m "chore: clean up rm -rf handling"')
+    want("wrapper: relays a passthrough", d, "pass")
+
+    d, reason = run(["bash", WRAPPER], "rm -rf /etc/x")
+    want("wrapper: relays a verdict", d, "ask")
+    if "\x1b[" not in reason:
+        fails.append(("wrapper: verdict keeps its highlighting", "", "SGR sequences",
+                      "none", reason[:120]))
+
+    # Guard unreachable: the degraded path must still emit valid JSON that asks.
+    tmp = tempfile.mkdtemp()
+    try:
+        shutil.copy(WRAPPER, tmp)  # deliberately WITHOUT rm_guard.py beside it
+        d, reason = run(["bash", os.path.join(tmp, os.path.basename(WRAPPER))],
+                        "rm -rf /etc/x")
+        want("wrapper: degraded path still asks", d, "ask")
+        if "could not run" not in reason:
+            fails.append(("wrapper: degraded path names the failure", "", "could not run",
+                          d, reason[:120]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return fails
+
+
+def main():
+    fails = []
+    for name, cmd, expected in CASES:
+        got, reason = verdict(cmd)
+        if got != expected:
+            fails.append((name, cmd, expected, got, reason))
+    fails += check_wrapper()
+
+    for name, cmd, expected, got, reason in fails:
+        first = reason.replace("\x1b", "\\e").splitlines()[0][:160] if reason else ""
+        print(f"FAIL {name}")
+        if cmd:
+            print(f"  cmd:  {cmd!r}")
+        print(f"  want: {expected}   got: {got}")
+        if first:
+            print(f"  why:  {first}")
+        print()
+
+    total = len(CASES) + 5
+    print(f"{total - len(fails)}/{total} passed")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
