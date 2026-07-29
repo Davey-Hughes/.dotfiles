@@ -61,14 +61,16 @@ if ! command_exists paru; then
     # Clone the paru AUR repository
     git clone https://aur.archlinux.org/paru.git
 
-    # Change to the paru directory
-    cd paru
+    # Change to the paru directory. `|| exit 1` is not ceremony: if the clone
+    # above failed, this cd fails, `cd ..` then climbs out of $HOME entirely and
+    # the `rm -rf paru` below deletes whatever `paru` happens to sit there.
+    cd paru || exit 1
 
     # Build and install paru
     makepkg -si --noconfirm
 
     # Go back to the home directory and remove the cloned repository
-    cd ..
+    cd .. || exit 1
     rm -rf paru
 
     echo "Paru installed successfully."

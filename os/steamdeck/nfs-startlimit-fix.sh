@@ -14,6 +14,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 created=0
+# `opts` and `rest` are positional placeholders: read has to consume fstab's 4th
+# and 5th-onward fields to leave the earlier ones correctly split.
+# shellcheck disable=SC2034
 while read -r src mnt fstype opts rest; do
   case "$src" in ''|\#*) continue ;; esac          # skip blanks / comments
   [ "$fstype" = "nfs" ] || [ "$fstype" = "nfs4" ] || continue
