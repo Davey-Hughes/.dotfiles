@@ -42,6 +42,29 @@ do NOT prevent it, because a variable that is *set but empty* is not an error:
 Quoting does not help either. Only ${W:?} (with the colon) aborts on empty.
 The suffix is the whole danger: bare "$W" is harmless when empty, "$W"/* is not.
 
+Command substitution is masked before tokenizing rather than bailed out on.
+shlex with punctuation_chars=True splits on `(` and `)`, which shatters an
+UNQUOTED substitution into pieces that each classify as a harmless literal:
+
+    rm -rf $(cat list)  ->  ['rm', '-rf', '$', '(', 'cat', 'list', ')']
+
+Four of those are operands as far as the scanner can tell, all of them relative
+paths, so the whole command comes back *allow* -- worse than no guard at all.
+Quoted `"$(pwd)/x"` and backticks survive shlex intact and were never the
+problem; the unquoted form is. Masking each span to a sentinel word keeps it
+whole AND keeps it glued to its neighbours, which naive re-joining cannot do:
+`$(pwd)/b` must stay one operand, because `/b` on its own reads as an absolute
+path that is nothing like what runs.
+
+Two things a substitution can hide that no operand check would catch, so both
+are refused outright:
+
+    $(...) in command position     which command runs is unknowable
+    $(...) among an rm's operands  it may expand to -rf, so recursion is assumed
+
+The second costs a prompt on `rm $(ls *.tmp)`, which cannot descend. That is
+the allowlist doing its job: unprovable reads as unsafe.
+
 Output shape: every dangerous operand becomes a Finding, and the verdict names
 the segment it came from rather than the whole command line, so `deploy.sh &&
 rm -rf $W/*` reports the `rm` half and not the deploy. Claude Code renders
@@ -235,6 +258,11 @@ MAX_SSH_DEPTH = 3
 # ELSE is on the line. Red and yellow carry the emphasis on their own.
 RED = "\x1b[1;31m"     # the command and its flags -- `rm -rf`, `git clean -fdx`
 YELLOW = "\x1b[1;33m"  # the operands that tripped the guard
+# A fourth role, painted INSIDE an operand rather than over a whole token. In
+# `$(cat list)/build` the two halves fail differently -- `/build` is readable and
+# the substitution is not -- and one flat yellow says only "something here is
+# wrong". Magenta marks the span whose value the guard genuinely cannot know.
+SUBST = "\x1b[1;35m"
 CONTEXT = ""           # everything else: left at the terminal's normal weight
 RESET = "\x1b[0m"
 MAX_ECHO = 160       # past this the echoed command elides its unflagged operands
@@ -403,6 +431,139 @@ def classify_operand(op, cwd, bare_var_ok=True):
         return classify_path(prefix, cwd)
 
     return classify_path(op, cwd)
+
+
+# --- command substitution ----------------------------------------------------
+# Found on the raw text, where the shell's own quoting rules still apply, and
+# replaced with a sentinel word so shlex cannot take the span apart. U+E000 is
+# private-use: it has no meaning to any shell and no legitimate command contains
+# it, but the input is stripped of it anyway rather than trusted.
+
+SENTINEL = "\ue000"
+
+
+def _close_paren(s, start):
+    """Index of the `)` matching the `(` at s[start], or None if unbalanced.
+
+    Quote-aware, because a `)` inside a quoted string closes nothing -- which is
+    the difference between masking `$(cat <<'EOF' ... fix(claude): x ... EOF )`
+    correctly and swallowing the rest of the command line.
+    """
+    depth, quote, i, n = 0, None, start, len(s)
+    while i < n:
+        c = s[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+        elif c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        elif quote == '"':
+            if c == '"':
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def _close_backtick(s, start):
+    """Index of the backtick closing the one at s[start]. Backticks do not nest."""
+    i = start + 1
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            i += 2
+            continue
+        if s[i] == "`":
+            return i
+        i += 1
+    return None
+
+
+def subst_spans(s):
+    """-> [(start, end)] of every substitution in s, outermost only.
+
+    Used both to mask (on the whole command) and to paint (on one token).
+    """
+    spans, i, n = [], 0, len(s)
+    while i < n:
+        end = None
+        if s[i] == "$" and i + 1 < n and s[i + 1] == "(":
+            end = _close_paren(s, i + 1)
+        elif s[i] == "`":
+            end = _close_backtick(s, i)
+        if end is not None:
+            spans.append((i, end + 1))
+            i = end + 1
+            continue
+        i += 1
+    return spans
+
+
+def mask_substitutions(cmd):
+    """-> (masked, {sentinel: original}). Unbalanced spans are left alone.
+
+    Single quotes suppress substitution entirely; double quotes do not. An
+    unterminated span is not masked, so it falls through to the ValueError arm
+    in analyse() rather than being masked to something that parses cleanly and
+    means nothing.
+    """
+    cmd = cmd.replace(SENTINEL, "")
+    out, subs, quote, i, n = [], {}, None, 0, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+            out.append(c)
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2])
+            i += 2
+            continue
+        if quote is None and c in "'\"":
+            quote = c
+            out.append(c)
+            i += 1
+            continue
+        if quote == '"' and c == '"':
+            quote = None
+            out.append(c)
+            i += 1
+            continue
+        # Unquoted or inside double quotes -- substitution is live in both.
+        end = None
+        if c == "$" and i + 1 < n and cmd[i + 1] == "(":
+            end = _close_paren(cmd, i + 1)
+        elif c == "`":
+            end = _close_backtick(cmd, i)
+        if end is not None:
+            ph = "%sSUB%d%s" % (SENTINEL, len(subs), SENTINEL)
+            subs[ph] = cmd[i:end + 1]
+            out.append(ph)
+            i = end + 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out), subs
+
+
+def unmask(tok, subs):
+    for ph, original in subs.items():
+        tok = tok.replace(ph, original)
+    return tok
+
+
+def has_subst(s):
+    """The same test classify_operand uses, so the two never disagree."""
+    return "$(" in s or "`" in s
 
 
 # --- segmentation ------------------------------------------------------------
@@ -698,15 +859,16 @@ def analyse(cmd, cwd, depth=0):
     # so `ls | xargs rm` goes straight to the token scan instead of prompting.
     danger = danger_hint(text)
 
-    # Check the RAW string for constructs tokenizing would destroy the evidence of.
-    if danger and ("`" in text or "$(" in text):
-        return [bare("ask", "command substitution near a destructive command "
-                            "cannot be resolved statically")]
+    # Mask substitutions first: punctuation_chars=True splits on ( and ), which
+    # takes an unquoted $(...) apart into literals that each look harmless. The
+    # sentinel keeps the span whole and keeps it attached to whatever follows it,
+    # so classify_operand sees `$(pwd)/b` rather than `$(pwd)` and a stray `/b`.
+    masked, subs = mask_substitutions(cmd)
 
     try:
-        lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lex = shlex.shlex(masked, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
-        toks = list(lex)
+        toks = [unmask(t, subs) for t in lex]
     except ValueError as e:
         # Same gate as every other bail-out: unreadable only matters if there is
         # something destructive to hide. shlex is stricter than the shell it
@@ -721,6 +883,15 @@ def analyse(cmd, cwd, depth=0):
     # source builtin at the start of a segment and a jq filter in `jq -r . f`;
     # matching it positionally is the difference between the two.
     if danger:
+        # A substitution in command position hides which command runs, so nothing
+        # the operand checks below can prove says anything about it. Located via
+        # command_word rather than "first token in the segment", so a substitution
+        # behind a wrapper (`sudo $(x) -rf /`) is caught too.
+        for start, end in segment_bounds(toks):
+            j, _ = command_word(toks[start:end])
+            if start + j < end and has_subst(toks[start + j]):
+                return [bare("ask", "a command substitution runs in command "
+                                    "position, so which command runs is unknowable")]
         for i, t in enumerate(toks):
             base = os.path.basename(t)
             in_cmd_pos = i == 0 or toks[i - 1] in SEPARATORS
@@ -770,7 +941,10 @@ def analyse(cmd, cwd, depth=0):
             else:
                 operands.append(t)
             i += 1
-        if not recursive:
+        # A literal argument list settles whether this rm recurses. A substitution
+        # in it does not: `rm $(echo -rf) /tmp/x` carries no -r the scanner can
+        # see, and recursion is exactly what makes rm dangerous, so assume it.
+        if not recursive and not any(has_subst(o) for o in operands):
             continue
         if not operands:
             continue
@@ -803,6 +977,26 @@ def paint(style, s):
     # An empty style means "leave it alone" -- emitting a bare RESET there would
     # litter the echoed command with no-op escapes.
     return f"{style}{s}{RESET}" if style else s
+
+
+def paint_token(style, tok):
+    """Paint tok in `style`, except for its substitution spans, which go SUBST.
+
+    Callers clip first, so a span cut in half by the truncation simply fails to
+    parse and comes back in the base style -- never as a severed escape.
+    """
+    spans = subst_spans(tok)
+    if not spans:
+        return paint(style, tok)
+    out, prev = [], 0
+    for s, e in spans:
+        if s > prev:
+            out.append(paint(style, tok[prev:s]))
+        out.append(paint(SUBST, tok[s:e]))
+        prev = e
+    if prev < len(tok):
+        out.append(paint(style, tok[prev:]))
+    return "".join(out)
 
 
 def clip(s, n=MAX_TOKEN):
@@ -850,7 +1044,7 @@ def echo_line(toks, flagged):
                 kept.append((None, "…"))
                 elided = True
         pieces = kept
-    return " ".join(paint(style(i), p) for i, p in pieces)
+    return " ".join(paint_token(style(i), p) for i, p in pieces)
 
 
 def blocks(findings):
@@ -899,9 +1093,12 @@ def render(headline, findings):
             if not f.operand:
                 out.append("  " + f.reason)
                 continue
-            # Yellow again, so the row keys back to the operand in the echo.
+            # Painted the same way again, so the row keys back to the operand in
+            # the echo. Padding measures the unpainted text, which is what the
+            # terminal actually renders once the escapes are consumed.
             op = clip(f.operand)
-            out.append("  " + paint(YELLOW, op) + " " * (width - len(op) + 2) + f.reason)
+            out.append("  " + paint_token(YELLOW, op)
+                       + " " * (width - len(op) + 2) + f.reason)
     return "\n".join(out)
 
 

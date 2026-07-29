@@ -130,6 +130,29 @@ CASES = [
     ("docker run --rm is not rm", "docker run --rm -it ubuntu", "pass"),
     ("jq -r is not a recursion flag", "jq -r . file.json", "pass"),
     ("prose that merely mentions rm", 'echo "did my rm get logged?"', "pass"),
+
+    # --- command substitution ------------------------------------------------
+    # Masked before tokenizing. Without that, shlex splits on ( and ) and the
+    # first case here comes back *allow*: four shards that each read as a
+    # literal relative path. It is the one case in this file where the guard
+    # actively approved a catastrophe rather than merely missing it.
+    ("unquoted substitution shatters under shlex", "rm -rf $(cat list)", "ask"),
+    ("quoted substitution", 'rm -rf "$(pwd)/build"', "ask"),
+    ("backtick substitution", "rm -rf `pwd`/x", "ask"),
+    ("nested substitution", "rm -rf $(dirname $(pwd))/x", "ask"),
+    # Adjacency is the reason for masking rather than re-joining tokens: split
+    # here, `/b` reads as an absolute path and `$(pwd)` as a separate operand,
+    # and neither is what runs.
+    ("substitution keeps its literal suffix", "rm -rf $(pwd)/b", "ask"),
+    # Two things no operand check can see.
+    ("substitution in command position", "$(echo rm) -rf /", "ask"),
+    ("substitution in command position behind a wrapper",
+     "sudo $(echo rm) -rf /", "ask"),
+    ("substitution may expand to -rf", "rm $(echo -rf) /tmp/x", "ask"),
+    # ...and the case the old blanket bail-out got wrong: a substitution in a
+    # segment that destroys nothing, next to an rm whose target is provable.
+    ("substitution in an unrelated segment", "echo $(date) && rm -rf ./build", "allow"),
+    ("substitution with no destructive command anywhere", "echo $(date)", "pass"),
 ]
 
 
@@ -169,6 +192,33 @@ def check_wrapper():
     return fails
 
 
+RENDER_CHECKS = 4
+
+
+def check_render():
+    """The three colour roles must survive into the reason, on the right spans.
+
+    Verdicts alone would pass with every escape stripped out. What makes the
+    prompt readable at a glance is that the parts fail differently and look
+    different: `rm -rf` is what destroys, `/build` is a path you can read, and
+    `$(pwd)` is the part whose value nothing here can know.
+    """
+    fails = []
+    _, reason = verdict('rm -rf "$(pwd)/build"')
+    for what, want in (
+            ("command is red", "\x1b[1;31mrm\x1b[0m"),
+            ("substitution is magenta", "\x1b[1;35m$(pwd)\x1b[0m"),
+            ("literal suffix stays yellow", "\x1b[1;33m/build\x1b[0m"),
+            ("operand row repeats the split",
+             "\x1b[1;35m$(pwd)\x1b[0m\x1b[1;33m/build\x1b[0m  command substitution"),
+    ):
+        if want not in reason:
+            fails.append((f"render: {what}", 'rm -rf "$(pwd)/build"',
+                          want.replace("\x1b", "\\e"), "absent",
+                          reason.replace("\x1b", "\\e")))
+    return fails
+
+
 def main():
     fails = []
     for name, cmd, expected in CASES:
@@ -176,6 +226,7 @@ def main():
         if got != expected:
             fails.append((name, cmd, expected, got, reason))
     fails += check_wrapper()
+    fails += check_render()
 
     for name, cmd, expected, got, reason in fails:
         first = reason.replace("\x1b", "\\e").splitlines()[0][:160] if reason else ""
@@ -187,7 +238,7 @@ def main():
             print(f"  why:  {first}")
         print()
 
-    total = len(CASES) + 5
+    total = len(CASES) + 5 + RENDER_CHECKS
     print(f"{total - len(fails)}/{total} passed")
     return 1 if fails else 0
 
