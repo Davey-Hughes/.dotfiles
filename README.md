@@ -20,10 +20,12 @@ The repository is organized cleanly by symlink target location rather than scatt
 Simply clone the repository and run the install script:
 
 ```bash
-git clone https://github.com/Davey-Hughes/.dotfiles.git ~/.dotfiles
+git clone https://git.daveynet.xyz/davey/dotfiles.git ~/.dotfiles
 cd ~/.dotfiles
 ./install.sh
 ```
+
+The clone path matters: `install.sh` resolves everything from `$HOME/.dotfiles`, so cloning it elsewhere and running it will stow the wrong tree.
 
 **What `install.sh` does:**
 1. Validates `stow` is installed.
@@ -49,9 +51,30 @@ Hardware/state files (monitor layout, file-index state, KDE Connect pairing keys
 activity stats) are intentionally **not** tracked.
 
 ## Shell environment & XDG
-`config/shell/xdg-env.sh` (POSIX, for `bash`/`zsh`), `config/fish/conf.d/xdg.fish` (fish), and `config/environment.d/xdg.conf` (systemd user session, Linux) define the XDG base directories and redirect many tools' cache/data/config out of `$HOME` into XDG locations. The three files are kept in sync. See `docs/xdg-home-audit.md` for the full inventory of what is redirected versus intentionally left in place.
+`config/shell/xdg-env.sh` (POSIX, for `bash`/`zsh`), `config/fish/conf.d/xdg.fish` (fish), and `config/environment.d/xdg.conf` (systemd user session, Linux) define the XDG base directories and redirect many tools' cache/data/config out of `$HOME` into XDG locations. The three files are kept in sync — `tests/test-xdg-sync.sh` enforces that, and lists the one documented exemption.
 
 The env vars only redirect *future* writes. On a fresh machine, run `scripts/xdg-migrate.sh` (dry-run) and then `scripts/xdg-migrate.sh --apply` to move any pre-existing tool dirs (`~/.cargo`, `~/.npm`, …) into their XDG homes. It is idempotent and skips anything already migrated.
+
+## Tests
+
+```bash
+./tests/run-all.sh
+```
+
+The same set `.forgejo/workflows/ci.yml` runs on every push. There is nothing to
+build here, so the checks cover the three ways a dotfiles repo actually breaks:
+
+| Check | What it catches |
+| --- | --- |
+| `config/.claude/hooks/test_rm_guard.py` | The `rm` guard hook approving something it should have asked about. Runs on every push because its regressions are measured in deleted files. |
+| `tests/test-tracked-files.sh` | Anything tracked that must not be. `config/.claude/` is a live tool directory — sessions, transcripts and OAuth state sit untracked inside a tracked parent, held back by a `.gitignore` allowlist. Also verifies the `kde-wallpaper` clean filter stripped the local wallpaper paths. |
+| `tests/test-syntax.sh` | A file that will not parse in the shell or program that reads it — `bash -n`, `zsh -n`, `fish --no-execute`, JSON/TOML/YAML, plus `shellcheck` at warning level on the scripts. |
+| `tests/test-xdg-sync.sh` | The three XDG env files drifting apart, which silently gives one shell a different environment than the others. |
+| `tests/test-docs.sh` | A path this README names that no longer exists. |
+| `tests/test-install.sh` | `install.sh` failing on a machine that is not already set up. Runs it twice against a throwaway `$HOME` — stow's directory folding, the conflict/backup path, and idempotence. |
+
+A checker that is not installed locally (`fish`, `shellcheck`, PyYAML) prints
+`skip`; in CI the same absence is a hard failure, so nothing goes unchecked there.
 
 ## ZSH
 The custom ZSH theme included is originally based on the `bira`, `gnzh`, `phil!`'s, and `nanotech` themes.

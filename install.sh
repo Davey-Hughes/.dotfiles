@@ -58,8 +58,8 @@ backup_target() {
 # for a clean, conflict-free stow.
 backup_conflicts() {
   local stow_dir="$1" target="$2" pkg="$3"
-  local pass rel conflicts
-  for pass in 1 2 3 4 5; do
+  local rel conflicts
+  for _ in 1 2 3 4 5; do
     conflicts=$(stow -n -v2 -d "$stow_dir" -t "$target" "$pkg" 2>&1 | sed -n \
       -e 's/.* over existing target \(.*\) since .*/\1/p' \
       -e 's/.* over existing directory target \(.*\)/\1/p' \
@@ -142,7 +142,7 @@ symlinks() {
     done < <(find "$DOTFDIR/os/$layer/config" -mindepth 1 -type d)
   done
 
-  pushd "$DOTFDIR" >/dev/null
+  pushd "$DOTFDIR" >/dev/null || exit 1
 
   # Common configs (all platforms)
   stow_pkg "$DOTFDIR" "$XDG_CONFIG_HOME" config
@@ -154,7 +154,7 @@ symlinks() {
     [ -d "$DOTFDIR/os/$layer/home" ]   && stow_pkg "$DOTFDIR/os/$layer" "$HOME" home
   done
 
-  popd >/dev/null
+  popd >/dev/null || exit 1
 
   if [ "$BACKUP_COUNT" -gt 0 ]; then
     echo "Moved $BACKUP_COUNT pre-existing file(s) aside into $BACKUP_DIR"
