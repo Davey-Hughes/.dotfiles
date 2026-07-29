@@ -20,7 +20,7 @@ The repository is organized cleanly by symlink target location rather than scatt
 Simply clone the repository and run the install script:
 
 ```bash
-git clone https://git.daveynet.xyz/davey/dotfiles.git ~/.dotfiles
+git clone https://git.daveynet.xyz/davey/.dotfiles.git ~/.dotfiles
 cd ~/.dotfiles
 ./install.sh
 ```
