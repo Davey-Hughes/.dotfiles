@@ -80,3 +80,8 @@ set -q GEM_SPEC_CACHE; or set -gx GEM_SPEC_CACHE $XDG_CACHE_HOME/gem
 if test -d $XDG_CONFIG_HOME/.claude
     set -q CLAUDE_CONFIG_DIR; or set -gx CLAUDE_CONFIG_DIR $XDG_CONFIG_HOME/.claude
 end
+
+# antigravity (gemini cli) — config dir under XDG. Unguarded, unlike Claude
+# above: the CLI creates the directory itself when it is missing, so pointing at
+# a not-yet-existing path costs nothing.
+set -q ANTIGRAVITY_CONFIG_DIR; or set -gx ANTIGRAVITY_CONFIG_DIR $XDG_CONFIG_HOME/.gemini/antigravity-cli
