@@ -58,7 +58,8 @@ The env vars only redirect *future* writes. On a fresh machine, run `scripts/xdg
 ## Tests
 
 ```bash
-./tests/run-all.sh
+./tests/run-all.sh        # everything, ~30s
+./tests/test-install.sh   # or any single suite, on its own
 ```
 
 The same set `.forgejo/workflows/ci.yml` runs on every push. There is nothing to
