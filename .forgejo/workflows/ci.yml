@@ -1,0 +1,117 @@
+# Forgejo Actions CI for the dotfiles (self-hosted runner on git.daveynet.xyz).
+#
+# A dotfiles repo has no build and no test binary: what it ships are files that
+# some other program parses at login, on a machine you are usually in the middle
+# of setting up. So the pipeline asks the three questions that repo can get
+# wrong, and nothing else:
+#
+#   secrets   is anything tracked that must not be?  config/.claude/ is a LIVE
+#             tool directory, and only a .gitignore allowlist keeps its sessions,
+#             transcripts and OAuth state out of a published repo
+#   parses    will every file this stows actually parse in the shell or program
+#             that reads it, before that program is your login shell
+#   installs  does install.sh work on a machine that is not already converged
+#
+# Forgejo specifics (vs GitHub): actions come from the code.forgejo.org mirror
+# and are pinned by commit, and the job images are bare -- no fat preinstalled
+# runner, so each job apt-gets exactly what it checks. Every job runs the same
+# tests/*.sh you can run on a laptop; nothing is duplicated in YAML here.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The guard that decides whether a recursive rm on this machine gets a
+  # confirmation prompt. Its own job, and first, because it is the one thing
+  # here whose regression is measured in deleted files -- see the header of
+  # config/.claude/hooks/rm-guard.sh for the three days it silently did nothing.
+  rm-guard:
+    runs-on: docker
+    container:
+      image: node:24-bookworm        # node + git, which the checkout action needs
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install python3
+        run: apt-get update && apt-get install -y --no-install-recommends python3
+      # The suite shells out to bash for the wrapper's degraded path, so bash
+      # must be the real one, not the image's dash-as-sh.
+      - name: Verdicts the guard must produce
+        run: python3 config/.claude/hooks/test_rm_guard.py
+
+  # Everything that reads the tree without writing to it. One job: they share an
+  # apt install and none takes long enough to be worth its own container.
+  checks:
+    runs-on: docker
+    container:
+      image: node:24-bookworm
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # test-tracked-files.sh reads the committed blob of the Plasma
+          # appletsrc to prove the wallpaper clean filter ran. A depth-1 clone
+          # still has HEAD, which is all it needs -- but fetch-depth: 0 keeps
+          # that true if the check ever grows to walk history.
+          fetch-depth: 0
+      - name: Install the parsers
+        # python3-yaml, not pip: the check refuses to skip YAML in CI.
+        # xz-utils for the shellcheck tarball below.
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3 python3-yaml zsh fish xz-utils
+      # Pinned to a release asset and checksummed BEFORE it reaches PATH, rather
+      # than apt's shellcheck: the Debian version moves independently of the one
+      # the tree was made clean against, and a lint gate that reports different
+      # findings than the laptop did is a gate people stop believing. Update
+      # both values together when bumping.
+      - name: Install shellcheck
+        env:
+          SHELLCHECK_VERSION: "0.11.0"
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/sc.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  /tmp/sc.tar.xz" | sha256sum -c - \
+            || { echo "shellcheck checksum mismatch -- refusing to install" >&2; exit 1; }
+          tar xJf /tmp/sc.tar.xz -C /tmp
+          install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+      # Deliberately the FIRST check to run and its own step: it is the only
+      # failure here that a later commit cannot undo.
+      - name: Nothing sensitive is tracked
+        run: ./tests/test-tracked-files.sh
+      - name: Documentation references resolve
+        run: ./tests/test-docs.sh
+      - name: The three XDG env files agree
+        run: ./tests/test-xdg-sync.sh
+      - name: Everything parses, and the scripts lint
+        run: ./tests/test-syntax.sh
+
+  # The only job that runs install.sh. Container-only by nature: it provisions a
+  # throwaway $HOME and stows into it, which is not something to do on a laptop
+  # by accident -- though tests/test-install.sh is safe to run there too, since
+  # it confines itself to a mktemp dir.
+  install:
+    runs-on: docker
+    container:
+      image: node:24-bookworm
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install stow
+        run: apt-get update && apt-get install -y --no-install-recommends stow
+      # Debian ships stow 2.3.1 where macOS Homebrew has 2.4.x, and install.sh
+      # parses stow's conflict messages by hand (backup_conflicts). Those strings
+      # are not a stable interface, so running the older one here is coverage,
+      # not an accident of the base image.
+      - name: install.sh against a fresh $HOME
+        run: ./tests/test-install.sh

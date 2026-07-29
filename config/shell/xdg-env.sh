@@ -5,6 +5,11 @@
 # KEEP THE TWO IN SYNC when adding or changing a variable.
 #
 # Spec: https://specifications.freedesktop.org/basedir-spec/latest/
+#
+# Sourced, so it has no shebang and shellcheck cannot infer a dialect. Declared
+# as `sh` and not `bash`: bash and zsh both source this, so it may only use what
+# both accept.
+# shellcheck shell=sh
 
 # --- XDG base directories (only set if the session did not already provide them) ---
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
