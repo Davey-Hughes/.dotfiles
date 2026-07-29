@@ -23,6 +23,11 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GUARD = os.path.join(HERE, "rm_guard.py")
+sys.path.insert(0, HERE)
+# The only thing imported rather than exercised through the CLI: a literal copy
+# here would keep passing after the guard changed the character.
+from rm_guard import MARK  # noqa: E402
+
 WRAPPER = os.path.join(HERE, "rm-guard.sh")
 # Deep, absolute, and outside every safe root, so `.` resolves to something
 # bounded and /etc still reads as out of bounds.
@@ -192,7 +197,7 @@ def check_wrapper():
     return fails
 
 
-RENDER_CHECKS = 4
+RENDER_CHECKS = 17
 
 
 def check_render():
@@ -215,6 +220,63 @@ def check_render():
         if want not in reason:
             fails.append((f"render: {what}", 'rm -rf "$(pwd)/build"',
                           want.replace("\x1b", "\\e"), "absent",
+                          reason.replace("\x1b", "\\e")))
+
+    # A bail-out echoes its segment like every other verdict, and the arguments
+    # are the point of it: naming `xargs` says which word stopped the guard and
+    # nothing about what xargs was told to do. So the construct comes back red,
+    # everything it hides comes back yellow, and the sentence below marks the
+    # construct again to key the two together. Markers never survive into text.
+    for what, cmd, want in (
+            ("opaque construct is red", "ls | xargs rm -rf /etc",
+             "\x1b[1;31mxargs\x1b[0m"),
+            ("...and its hidden arguments are all lit", "ls | xargs rm -rf /etc",
+             "\x1b[1;31mxargs\x1b[0m \x1b[1;33mrm\x1b[0m "
+             "\x1b[1;33m-rf\x1b[0m \x1b[1;33m/etc\x1b[0m"),
+            ("bail-out flag is red", "rm -rf --no-preserve-root /",
+             "\x1b[1;31m--no-preserve-root\x1b[0m"),
+            ("...and the flag and its target are lit, not the rest of the rm",
+             "rm -rf --no-preserve-root /",
+             "\x1b[1;31mrm\x1b[0m \x1b[1;31m-rf\x1b[0m "
+             "\x1b[1;33m--no-preserve-root\x1b[0m \x1b[1;33m/\x1b[0m"),
+            # Named rather than described, so you can see it is a string awk
+            # prints and not a command anything runs.
+            ("unparsed rm names the fragment", 'awk \'{print "rm -rf /"}\'',
+             "\x1b[1;31mrm -rf\x1b[0m"),
+            ("...and lights the token it is buried in", 'awk \'{print "rm -rf /"}\'',
+             '\x1b[1;31mawk\x1b[0m \x1b[1;33m{print "rm -rf /"}\x1b[0m'),
+            # A marked span renders as it would inside an echoed command, so a
+            # substitution keeps the colour that means "value unknowable".
+            ("marked substitution stays magenta", "`echo rm` -rf /",
+             "\x1b[1;35m`echo rm`\x1b[0m"),
+            ("...in the echo as well as the sentence", "`echo rm` -rf /",
+             "\x1b[1;35m`echo rm`\x1b[0m \x1b[1;33m-rf\x1b[0m \x1b[1;33m/\x1b[0m"),
+
+            # The split this guard exists for. `$W`/* is the exact command that
+            # wiped the machine, and one flat colour over it says only "this
+            # operand", when the point is that the two halves fail differently:
+            # $W is unknowable and /* is what turns empty into /.
+            ("unguarded expansion splits from its suffix", 'rm -rf "$W"/*',
+             "\x1b[1;35m$W\x1b[0m\x1b[1;33m/*\x1b[0m"),
+            # ...and the restriction that keeps that honest. $HOME is flagged
+            # for what the guard KNOWS it is, so it must not be dimmed to
+            # "cannot know" -- it stays one yellow operand.
+            ("a whole-token expansion is not split", 'rm -rf "$HOME"',
+             "\x1b[1;33m$HOME\x1b[0m"),
+            # The guarded form is the fix, and painting the fix like the fault
+            # undercuts it -- it stays plain between two painted neighbours.
+            ("a ${VAR:?}-guarded operand is left alone", 'rm -rf "${W:?}"/* /etc/y',
+             "\x1b[0m ${W:?}/* \x1b[1;33m"),
+            # The one span in the verdict that is not a complaint.
+            ("the fix is cyan", 'rm -rf "$W"/*', '\x1b[1;36m"${W:?}"\x1b[0m'),
+            # A deny and an ask are otherwise told apart by wording alone.
+            ("only the deny headline is painted", "rm -rf /",
+             "\x1b[1;31mrefusing catastrophic delete\x1b[0m"),
+    ):
+        _, reason = verdict(cmd)
+        if want not in reason or MARK in reason:
+            fails.append((f"render: {what}", cmd, want.replace("\x1b", "\\e"),
+                          "absent" if want not in reason else "markers left in",
                           reason.replace("\x1b", "\\e")))
     return fails
 
