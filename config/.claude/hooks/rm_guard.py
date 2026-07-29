@@ -67,9 +67,14 @@ the allowlist doing its job: unprovable reads as unsafe.
 
 Output shape: every dangerous operand becomes a Finding, and the verdict names
 the segment it came from rather than the whole command line, so `deploy.sh &&
-rm -rf $W/*` reports the `rm` half and not the deploy. Claude Code renders
-permissionDecisionReason through an ANSI-aware component, so the flagged
-operands are bold red and the rest of the echoed command is dim.
+rm -rf $W/*` reports the `rm` half and not the deploy. Bail-outs echo their
+segment too -- `xargs` alone says which word stopped the guard and nothing about
+what xargs was told to do, so what it hides is echoed and lit up with it.
+
+Claude Code renders permissionDecisionReason through an ANSI-aware component, so
+the colours below survive into the permission dialog: the command bold red, what
+is at risk bold yellow, anything the guard cannot resolve bold magenta, and the
+${VAR:?} it wants you to write instead bold cyan.
 """
 import json
 import os
@@ -105,12 +110,33 @@ def passthrough() -> NoReturn:
 #             destination"). None for rm, where the operands speak for themselves
 #   operand   the flagged token, or None for a whole-segment complaint
 #   reason    the explanation from classify_operand
-Finding = namedtuple("Finding", "decision segment label operand reason")
+#   highlight extra tokens to light up in the echo that are NOT operands and get
+#             no row of their own -- the arguments of a construct that hides what
+#             it runs, where the complaint is the whole invocation and not one
+#             token in it
+Finding = namedtuple("Finding", "decision segment label operand reason highlight",
+                     defaults=((),))
 
 
 def bare(decision, reason):
     """A verdict with no operand to point at -- a parse failure or a bail-out."""
     return Finding(decision, None, None, None, reason)
+
+
+# Every other verdict gets its emphasis from the echoed command. A bail-out has
+# no command to echo -- it is one sentence, and "command contains xargs, which
+# hides its arguments" buries the only word that explains it mid-sentence. So a
+# reason marks that span, and the renderer paints what is marked.
+#
+# A private-use character rather than backticks, because a marked span is often a
+# fragment of the command itself and `pwd` -rf / puts backticks in that fragment.
+# Stripped from the input alongside SENTINEL, so nothing a user types can forge
+# a mark or split one in half.
+MARK = "\ue001"
+
+
+def mark(s):
+    return f"{MARK}{s}{MARK}"
 
 # --- policy ------------------------------------------------------------------
 
@@ -136,8 +162,11 @@ RM_WORD_RE = re.compile(r"(?<![\w-])rm(?![\w-])")
 # Used when the raw text mentions rm but no rm *command* survived parsing. Prose
 # ("did my rm get logged?") must not prompt; a real recursive rm hiding inside a
 # construct we failed to parse must.
+# The trailing [a-zA-Z]* changes nothing about *whether* this matches -- the
+# [rR] before it already decided that. It is there so the match is the whole
+# flag, because the verdict echoes it back and `rm -r` is not what was written.
 RM_RECURSIVE_RE = re.compile(
-    r"(?<![\w-])rm\s+(?:-[a-zA-Z]*[rR]|--recursive|--no-preserve-root)")
+    r"(?<![\w-])rm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|--no-preserve-root)")
 # `git rm` and its option-bearing forms (`git -C /path rm`). The token class
 # excludes the shell separators on purpose: without that, `git status && rm -rf
 # /` would match end to end and the real rm would be blanked out with it.
@@ -259,10 +288,18 @@ MAX_SSH_DEPTH = 3
 RED = "\x1b[1;31m"     # the command and its flags -- `rm -rf`, `git clean -fdx`
 YELLOW = "\x1b[1;33m"  # the operands that tripped the guard
 # A fourth role, painted INSIDE an operand rather than over a whole token. In
-# `$(cat list)/build` the two halves fail differently -- `/build` is readable and
-# the substitution is not -- and one flat yellow says only "something here is
-# wrong". Magenta marks the span whose value the guard genuinely cannot know.
-SUBST = "\x1b[1;35m"
+# `$(cat list)/build` and in `$W/*` the two halves fail differently -- the
+# literal one is readable and the other is not -- and one flat yellow says only
+# "something here is wrong". Magenta marks the span whose value the guard
+# genuinely cannot know; see unknown_spans for which halves qualify.
+UNKNOWN = "\x1b[1;35m"
+# ...and a fifth, for the one span in the whole verdict that is not a complaint.
+# A reason that ends "Use "${W:?}" instead" is the only thing here you can act
+# on, and it sits at the end of the longest line on screen. Cyan rather than
+# green: green reads as "this is fine" in a dialog whose entire job is to say
+# that it is not, and it is the one hue that survives red/green colourblindness
+# without colliding with a role that means danger.
+FIX = "\x1b[1;36m"
 CONTEXT = ""           # everything else: left at the terminal's normal weight
 RESET = "\x1b[0m"
 MAX_ECHO = 160       # past this the echoed command elides its unflagged operands
@@ -514,7 +551,7 @@ def mask_substitutions(cmd):
     in analyse() rather than being masked to something that parses cleanly and
     means nothing.
     """
-    cmd = cmd.replace(SENTINEL, "")
+    cmd = cmd.replace(SENTINEL, "").replace(MARK, "")
     out, subs, quote, i, n = [], {}, None, 0, len(cmd)
     while i < n:
         c = cmd[i]
@@ -879,6 +916,33 @@ def analyse(cmd, cwd, depth=0):
             return []
         return [bare("ask", f"command could not be parsed ({e})")]
 
+    bounds = segment_bounds(toks)
+
+    def segment_at(i):
+        """The pipeline segment token i belongs to, for echoing back."""
+        for s, e in bounds:
+            if s <= i < e:
+                return toks[s:e]
+        return list(toks)
+
+    def bail(decision, i, reason, hi=None):
+        """A bail-out that still echoes the command it choked on.
+
+        Naming the construct is not enough by itself: `xargs` says which word
+        stopped the guard and nothing at all about what xargs was told to do. So
+        the segment goes back too, with everything from `hi` onward lit up --
+        defaulting to the tokens AFTER the construct, because for something that
+        hides what it runs, those arguments are the entire complaint.
+
+        Falls back to a bare verdict if the token is somehow in no segment, which
+        keeps a bail-out a bail-out rather than trading it for an IndexError.
+        """
+        for s, e in bounds:
+            if s <= i < e:
+                return [Finding(decision, toks[s:e], None, None, reason,
+                                tuple(toks[(i + 1 if hi is None else hi):e]))]
+        return [bare(decision, reason)]
+
     # Opaque constructs bail -- but only in *command position*. `.` is the POSIX
     # source builtin at the start of a segment and a jq filter in `jq -r . f`;
     # matching it positionally is the difference between the two.
@@ -887,31 +951,31 @@ def analyse(cmd, cwd, depth=0):
         # the operand checks below can prove says anything about it. Located via
         # command_word rather than "first token in the segment", so a substitution
         # behind a wrapper (`sudo $(x) -rf /`) is caught too.
-        for start, end in segment_bounds(toks):
+        for start, end in bounds:
             j, _ = command_word(toks[start:end])
             if start + j < end and has_subst(toks[start + j]):
-                return [bare("ask", "a command substitution runs in command "
-                                    "position, so which command runs is unknowable")]
+                return bail("ask", start + j,
+                            f"{mark(toks[start + j])} runs in command position, "
+                            "so which command runs is unknowable")
         for i, t in enumerate(toks):
             base = os.path.basename(t)
             in_cmd_pos = i == 0 or toks[i - 1] in SEPARATORS
             if in_cmd_pos and base in OPAQUE:
-                return [bare("ask", f"command contains `{base}`, which hides its arguments")]
+                return bail("ask", i, f"{mark(base)} hides its arguments -- what "
+                                      "it runs on is not in the command")
             if base in SHELLS and i + 1 < len(toks) and toks[i + 1] == "-c":
-                return [bare("ask", f"command contains `{base} -c`, which hides its arguments")]
+                return bail("ask", i, f"{mark(base + ' -c')} hides its arguments "
+                                      "-- the script is re-parsed, not run as written")
     if "--no-preserve-root" in toks:
-        return [bare("deny", "--no-preserve-root defeats rm's own safety net")]
+        # The flag itself is the danger, so it is highlighted along with what
+        # follows it rather than left to read as one more red flag among -rf.
+        i = toks.index("--no-preserve-root")
+        return bail("deny", i,
+                    f"{mark('--no-preserve-root')} defeats rm's own safety net",
+                    hi=i)
 
     in_git = git_segments(toks)
-    bounds = segment_bounds(toks)
     findings = []
-
-    def segment_at(i):
-        """The pipeline segment token i belongs to, for echoing back."""
-        for s, e in bounds:
-            if s <= i < e:
-                return toks[s:e]
-        return list(toks)
 
     # --- rm itself. Scanned across all tokens, not just command position, so
     # `sudo rm -rf` and `xargs rm -r` are both seen.
@@ -965,8 +1029,20 @@ def analyse(cmd, cwd, depth=0):
         # rm, in which case we failed to parse something real and must not
         # approve it. Searched against the git-stripped text, so an exempted
         # `git -C /path rm -r` does not read as unparsed.
-        if RM_RECURSIVE_RE.search(text):
-            return [bare("ask", "text reads as a recursive rm the guard could not parse")]
+        m = RM_RECURSIVE_RE.search(text)
+        if m:
+            frag = " ".join(m.group(0).split())  # the match may span a newline
+            reason = (f"{mark(frag)} reads as a recursive rm, but no rm command "
+                      "survived parsing")
+            # Point at the token the rm is buried in. Reaching here means no
+            # token's basename was `rm` -- a bare one would have been found --
+            # so the match is inside a larger token, and that token is the whole
+            # explanation: it shows `awk '{print "rm -rf /"}'` as a string awk
+            # prints rather than as something anything is about to run.
+            for i, t in enumerate(toks):
+                if RM_RECURSIVE_RE.search(t):
+                    return bail("ask", i, reason, hi=i)
+            return [bare("ask", reason)]
         return []
     return findings
 
@@ -979,20 +1055,49 @@ def paint(style, s):
     return f"{style}{s}{RESET}" if style else s
 
 
+def unknown_spans(tok):
+    """-> sorted [(start, end)] of the spans in tok whose value is unknowable.
+
+    A substitution always qualifies. An expansion qualifies only when it is NOT
+    the whole token, and that restriction is the rule rather than an exception:
+
+        $W/*     $W is unknowable, and /* is what turns "empty" into "/"
+        $HOME    the guard knows exactly what this is -- that is why it denies
+        $X       bare, so empty makes it an error, not a catastrophe
+
+    Only the first has a half worth separating. The other two are flagged for
+    what the guard DOES know about them, and dimming that to "cannot know" would
+    misreport the finding sitting next to it.
+
+    ${V:?}-guarded forms are skipped outright: they cannot be empty, they are
+    what the reason tells you to write, and painting the fix like the fault
+    undercuts the advice.
+    """
+    spans = subst_spans(tok)
+    for m in EXPANSION_RE.finditer(tok):
+        s, e = m.span()
+        if e - s == len(tok) or GUARDED_RE.match(m.group(0)):
+            continue
+        if any(a <= s < b for a, b in spans):
+            continue  # already inside a substitution: $(cat $F) is one opaque span
+        spans.append((s, e))
+    return sorted(spans)
+
+
 def paint_token(style, tok):
-    """Paint tok in `style`, except for its substitution spans, which go SUBST.
+    """Paint tok in `style`, except for its unknowable spans, which go UNKNOWN.
 
     Callers clip first, so a span cut in half by the truncation simply fails to
     parse and comes back in the base style -- never as a severed escape.
     """
-    spans = subst_spans(tok)
+    spans = unknown_spans(tok)
     if not spans:
         return paint(style, tok)
     out, prev = [], 0
     for s, e in spans:
         if s > prev:
             out.append(paint(style, tok[prev:s]))
-        out.append(paint(SUBST, tok[s:e]))
+        out.append(paint(UNKNOWN, tok[s:e]))
         prev = e
     if prev < len(tok):
         out.append(paint(style, tok[prev:]))
@@ -1001,6 +1106,30 @@ def paint_token(style, tok):
 
 def clip(s, n=MAX_TOKEN):
     return s if len(s) <= n else s[:n - 1] + "…"
+
+
+MARK_RE = re.compile("%s([^%s]+)%s" % (MARK, MARK, MARK))
+# The fix a reason hands you, always the ${VAR:?} form this guard exists to sell.
+# Matched on the rendered text rather than marked at the source because it is
+# built by one format string in classify_operand and never varies.
+FIX_RE = re.compile(r'"\$\{[A-Za-z_][A-Za-z0-9_]*:\?\}"')
+
+
+def paint_marks(reason):
+    """Paint a reason's marked spans and its fix, and drop the markers.
+
+    Marks are RED, because a marked span is a command name or a flag, which is
+    what RED already means in echo_line. Yellow is for an operand about to be
+    destroyed, and a bail-out has not identified one -- that is what makes it a
+    bail-out.
+
+    Painted through paint_token so a marked span renders exactly as it would
+    inside an echoed command: `pwd` -rf / bails with the substitution named, and
+    the substitution stays magenta there for the same reason it is magenta
+    everywhere else -- it is the part whose value nothing here can know.
+    """
+    reason = MARK_RE.sub(lambda m: paint_token(RED, clip(m.group(1))), reason)
+    return FIX_RE.sub(lambda m: paint(FIX, m.group(0)), reason)
 
 
 def command_head(toks):
@@ -1063,7 +1192,7 @@ def blocks(findings):
         # segment is a list, so the Finding itself is unhashable -- key on a
         # tuple-ised copy rather than on f.
         ident = (f.decision, tuple(f.segment) if f.segment else None,
-                 f.label, f.operand, f.reason)
+                 f.label, f.operand, f.reason, f.highlight)
         if ident in seen:
             continue
         seen.add(ident)
@@ -1077,13 +1206,15 @@ def blocks(findings):
 
 def render(headline, findings):
     if len(findings) == 1 and findings[0].segment is None:
-        return f"{headline} -- {findings[0].reason}"   # nothing to point at
+        # Nothing to point at, so the marked token carries all the emphasis.
+        return f"{headline} -- {paint_marks(findings[0].reason)}"
     out = [headline]
     for segment, label, group in blocks(findings):
         out.append("")
         if segment:
-            out.append("  " + echo_line(list(segment),
-                                        {f.operand for f in group if f.operand}))
+            lit = {f.operand for f in group if f.operand}
+            lit.update(t for f in group for t in f.highlight)
+            out.append("  " + echo_line(list(segment), lit))
             if label:
                 out.append("  " + paint(CONTEXT, label))
             out.append("")
@@ -1091,14 +1222,14 @@ def render(headline, findings):
         width = max((len(o) for o in ops), default=0)
         for f in group:
             if not f.operand:
-                out.append("  " + f.reason)
+                out.append("  " + paint_marks(f.reason))
                 continue
             # Painted the same way again, so the row keys back to the operand in
             # the echo. Padding measures the unpainted text, which is what the
             # terminal actually renders once the escapes are consumed.
             op = clip(f.operand)
             out.append("  " + paint_token(YELLOW, op)
-                       + " " * (width - len(op) + 2) + f.reason)
+                       + " " * (width - len(op) + 2) + paint_marks(f.reason))
     return "\n".join(out)
 
 
@@ -1121,12 +1252,15 @@ def main():
     if worst == RANK["allow"]:
         # Nothing was blocked, so there is nothing to point at. Stay on one line.
         emit("allow", "destructive command on a provably safe target -- "
-                      f"{findings[0].reason}")
+                      f"{paint_marks(findings[0].reason)}")
     # Only the operands that actually held the command up. A proven-safe operand
     # sitting next to a dangerous one is noise in a prompt about the dangerous one.
     blocked = [f for f in findings if f.decision != "allow"]
     if worst == RANK["deny"]:
-        emit("deny", render("refusing catastrophic delete", blocked))
+        # The only headline that is painted. A deny and an ask are told apart by
+        # their wording alone otherwise, and the wording is the part you read
+        # last; leaving the ask plain is what makes this one carry.
+        emit("deny", render(paint(RED, "refusing catastrophic delete"), blocked))
     emit("ask", render("destructive recursive command needs confirmation", blocked))
 
 
