@@ -4,7 +4,9 @@
 
 **Goal:** Let `rm_guard.py` clear a destructive operand whose variable the command itself assigns to a literal, so `W=/tmp/build; rm -rf "$W"/*` returns `allow` instead of `ask`.
 
-**Architecture:** A pure function walks `segment_bounds` for a leading run of segments that are each a single `NAME=VALUE` token, filters the result through two disqualifiers, and hands the surviving map to `classify_operand`, which substitutes and re-classifies. This works at the token level only because `mask_opaque` now normalises unquoted newlines to `;` (commit `e3c8e72`) — before that, the sequential and env-prefix forms tokenized identically and the scan had to be done on raw text.
+**Architecture:** A pure function reads the leading run of literal assignments from the masked command with one anchored regex, filters the result through two disqualifiers, and hands the surviving map to `classify_operand`, which substitutes and re-classifies.
+
+> **Task 2 was redesigned during execution.** Its body below describes the token-level scan that was originally dispatched: a walk over `segment_bounds` cross-checked against a hand-written quote-aware reader of the same command. Four review rounds found four wrong-`allow` defects in it, every one a divergence between those two readings of one string. It was replaced with the single-parser design above, which surrenders five shapes (quoted, escaped and tilde values) so that no second reading exists to disagree. **The spec, not Task 2's body, is authoritative** — `docs/superpowers/specs/2026-07-29-rm-guard-assignment-tracking-design.md`. Task 2's text is kept as the record of what was dispatched.
 
 **Tech Stack:** Python 3 stdlib only (`re`, `shlex`, `posixpath`, `os`, `json`). No third-party packages, no test framework — `test_rm_guard.py` is a plain script.
 
@@ -13,7 +15,7 @@
 - **Never execute any command string from this plan or from the test tables.** Every dangerous string here is *data*: `test_rm_guard.py` serialises it into a JSON payload and writes it to the guard's stdin, and the guard only classifies text. A `rm -rf /` in `CASES` is safe precisely because nothing runs it. Do not paste these strings into a shell to "check" them.
 - Full paths: guard is `config/.claude/hooks/rm_guard.py`, tests are `config/.claude/hooks/test_rm_guard.py`. `~/.config/.claude` is a folded symlink to `config/.claude`, so editing the repo file edits the live hook — no install step, and a broken guard affects the running session immediately.
 - Run the suite with `python3 config/.claude/hooks/test_rm_guard.py` from the repo root. It prints `N/M passed` and exits non-zero on any failure.
-- Baseline before you start: **80/80 passed** (`len(CASES)`=58 + wrapper 5 + `RENDER_CHECKS`=17). Confirm this before Task 1 and treat any drop as a regression you caused.
+- Baseline moved as Tasks 1 and 2 landed. The plan started at **80/80** (`len(CASES)`=58 + wrapper 5 + `RENDER_CHECKS`=17). Tasks 1–2 are complete and the suite is now **125/125** (`CASES`=62 + 5 + `RENDER_CHECKS`=17 + `BINDING_CASES`=41), after four fix rounds that hardened the binding scanner. Each task below states the count it starts from and the count it must reach; confirm the starting number before you change anything and treat any drop as a regression you caused.
 - Existing style is load-bearing: every non-obvious rule in this file carries a comment explaining *why*, in prose, referencing the failure it prevents. Match it. Do not add comments that restate the code.
 - Do not add attribution to commit messages (no `Co-Authored-By`, no `Generated with`).
 - `git status` must be clean at the end of each task's commit.
@@ -309,7 +311,7 @@ EOF
 - Modify: `config/.claude/hooks/test_rm_guard.py` — add verdict rows to `CASES`
 
 **Interfaces:**
-- Consumes: `proven_bindings(toks, bounds)` and `SUBST_NAME_RE` from Task 2
+- Consumes: `proven_bindings(cmd)` and `SUBST_NAME_RE` from Task 2. It takes the raw command and nothing else: it reads the masked source with one anchored regex rather than the token stream, because shlex's quote removal makes a real `W=/x` and a quoted `'W=/x'` — which bash runs as a failed command name — the same token.
 - Produces: `classify_operand(op, cwd, bare_var_ok=True, assigned=None)` and `analyse_segment(argv, cwd, depth, assigned=None)` — the new parameter is last and defaulted, so no other caller changes
 
 - [ ] **Step 1: Write the failing test**
@@ -357,7 +359,7 @@ Append to `CASES`, after the command-substitution block:
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: `102/119 passed`, with 5 `FAIL` lines — the five rows expecting `allow`/`deny` that still come back `ask`:
+Expected: `137/142 passed`, with 5 `FAIL` lines — the five rows expecting `allow`/`deny` that still come back `ask`:
 
 ```
 FAIL binding: literal assignment, then a suffixed use
@@ -457,7 +459,7 @@ def analyse_segment(argv, cwd, depth, assigned=None):
 
 ```python
     # What the command proves about its own variables.
-    assigned = proven_bindings(toks, bounds)
+    assigned = proven_bindings(cmd)
 
     in_git = git_segments(toks)
 ```
@@ -480,7 +482,7 @@ and the segment loop:
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: `119/119 passed`, no `FAIL` lines.
+Expected: `142/142 passed`, no `FAIL` lines.
 
 Then spot-check the reason text, which the verdict table does not cover:
 
@@ -517,6 +519,13 @@ EOF
 
 ### Task 4: stop painting a bound name unknowable
 
+> **Task 4 was never implemented, deliberately.** It existed to stop a *bound*
+> name being painted as unresolvable — a distinction that only mattered while a
+> binding could clear an operand. Bindings are now deny-only, so no operand is
+> ever cleared by one and there is no colour to correct. `Finding.bound` and the
+> `unknown_spans`/`paint_token`/`echo_line` threading below were never added. The
+> counts in these steps are stale; the suite is well past them.
+
 **Files:**
 - Modify: `config/.claude/hooks/rm_guard.py` — `Finding`; `unknown_spans`; `paint_token`; `echo_line`; `render`; the three Finding sites that carry a resolved operand
 - Modify: `config/.claude/hooks/test_rm_guard.py` — two rows in `check_render()`, bump `RENDER_CHECKS`
@@ -550,7 +559,7 @@ RENDER_CHECKS = 19
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: `120/121 passed` with one `FAIL`:
+Expected: `143/144 passed` with one `FAIL`:
 
 ```
 FAIL render: a bound name is not painted unknowable
@@ -651,7 +660,7 @@ In `render`, derive it per block and pass it to both painters:
 ```python
     for segment, label, group in blocks(findings):
         out.append("")
-        bound = frozenset().union(*(f.bound for f in group)) if group else frozenset()
+        bound = frozenset().union(*(f.bound for f in group))
         if segment:
             lit = {f.operand for f in group if f.operand}
             lit.update(t for f in group for t in f.highlight)
@@ -670,7 +679,7 @@ In `render`, derive it per block and pass it to both painters:
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: `121/121 passed`, no `FAIL` lines. The existing render rows matter most here — `("unguarded expansion splits from its suffix", 'rm -rf "$W"/*', ...)` must still find `$W` magenta, because that command binds nothing.
+Expected: `144/144 passed`, no `FAIL` lines. The existing render rows matter most here — `("unguarded expansion splits from its suffix", 'rm -rf "$W"/*', ...)` must still find `$W` magenta, because that command binds nothing.
 
 Then look at the deny by eye, since colour is the whole point of this task:
 
@@ -707,7 +716,7 @@ EOF
 
 | Spec section | Task |
 |---|---|
-| Where bindings come from (token-level leading run, separator rule, literal value, `tokenize` helper) | 1, 2 |
+| Where bindings come from (leading run, separator rule, literal value charset, `tokenize` helper) | 1, 2 — Task 2 as redesigned; see the note under Architecture |
 | What disqualifies a binding (other-mention, `DANGEROUS_VARS`) | 2 |
 | How a binding is used (substitute, re-classify, fall through, escalation) | 3 |
 | ssh (bindings withheld) | 3, step 3d |
@@ -718,4 +727,4 @@ EOF
 
 **2. Placeholders.** None — every code step carries the complete text to insert, every run step names the command and its expected output, and the two hand-checks give exact `printf` invocations.
 
-**3. Type consistency.** `proven_bindings(toks, bounds)` returns `{name: literal}` and is called with that signature in Task 2's test (`proven_bindings(toks, segment_bounds(toks))`) and in Task 3 (`proven_bindings(toks, bounds)`). `assigned` is the parameter name in `classify_operand`, `analyse_segment`, and `rate` throughout. `bound` is a `frozenset` everywhere: built via `frozenset(assigned or ())` at the three Finding sites, defaulted in `unknown_spans` / `paint_token` / `echo_line`, unioned in `render`. `tokenize` is defined in Task 1 and used in Tasks 1 and 2. `SUBST_NAME_RE` is defined in Task 2 and first used in Task 3. Test counts chain: 80 → 80 → 102 → 119 → 121.
+**3. Type consistency.** `proven_bindings(cmd)` returns `{name: literal}` and takes the raw command only — it reads the masked source rather than the token stream, for the reasons in the spec. `assigned` is the parameter name in `classify_operand`, `analyse_segment`, and `rate` throughout. `bound` is a `frozenset` everywhere: built via `frozenset(assigned or ())` at the three Finding sites, defaulted in `unknown_spans` / `paint_token` / `echo_line`, unioned in `render`. `tokenize` is defined in Task 1 and has exactly one caller, `analyse`. `SUBST_NAME_RE` is defined in Task 2 and first used in Task 3. Test counts chain: 80 → 80 (T1, pure refactor) → 125 (T2, after four fix rounds) → 142 (T3) → 144 (T4).

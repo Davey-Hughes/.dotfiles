@@ -26,7 +26,7 @@ GUARD = os.path.join(HERE, "rm_guard.py")
 sys.path.insert(0, HERE)
 # The only thing imported rather than exercised through the CLI: a literal copy
 # here would keep passing after the guard changed the character.
-from rm_guard import MARK  # noqa: E402
+from rm_guard import MARK, proven_bindings  # noqa: E402
 
 WRAPPER = os.path.join(HERE, "rm-guard.sh")
 # Deep, absolute, and outside every safe root, so `.` resolves to something
@@ -142,6 +142,26 @@ CASES = [
     ("no continuation inside single quotes",
      "rm -rf '/tmp/build/a\\\nb'", "allow"),
 
+    # shlex's commenters default to `#`, and on reaching one it reads to the end
+    # of the LINE -- but the arm above turned every newline into ";", so there
+    # was no line end left and a comment swallowed every statement after it.
+    # These three came back *allow*, with the real rm never tokenized.
+    ("a comment does not hide the next statement",
+     "rm -rf ./build # tidy up\nrm -rf /", "deny"),
+    # ...and bash starts a comment only at a word boundary, so this `#` is part
+    # of a filename; shlex cut the word there regardless.
+    ("a mid-word # is a filename, not a comment",
+     "rm -rf ./build#x\nrm -rf /", "deny"),
+    ("a comment does not hide --no-preserve-root",
+     "rm -rf ./build # x\nrm -rf --no-preserve-root /", "deny"),
+    # ...while a quoted # is data in both shells and must survive.
+    ("a # inside double quotes is not a comment",
+     'echo "a # b"; rm -rf /tmp/x', "allow"),
+    ("a # inside single quotes belongs to the filename",
+     "rm -rf '/tmp/a#b'", "allow"),
+    ("a comment before a real rm still reaches it",
+     "git status # note\nrm -rf /", "deny"),
+
     # --- a message argument must not shield a real command -------------------
     ("commit then a real rm", 'git commit -m "chore: clean up" && rm -rf /', "deny"),
     ("commit then a real git clean", 'git commit -m "wip" && git clean -fdx', "ask"),
@@ -196,7 +216,185 @@ CASES = [
     # segment that destroys nothing, next to an rm whose target is provable.
     ("substitution in an unrelated segment", "echo $(date) && rm -rf ./build", "allow"),
     ("substitution with no destructive command anywhere", "echo $(date)", "pass"),
+
+    # A quoted assignment word proves nothing -- see BINDING_CASES. Passes
+    # today because nothing consumes bindings yet; it is here so wiring them
+    # into the classifier cannot turn this into an allow.
+    ("quoted assignment word proves nothing",
+     "'W=/tmp/build'; rm -rf \"$W\"/*", "ask"),
+    # ...and an earlier real assignment to the same name must not vouch for it.
+    ("earlier assignment does not vouch for a quoted one",
+     "W=/tmp/ok; 'W=/tmp/evil'; rm -rf \"$W\"/*", "ask"),
+    # An escaped separator keeps the assignment in ONE token; a scanner that
+    # splits there shifts every later index onto an earlier fragment.
+    ("escaped separator does not shift the binding scan",
+     "A=x\\;W=/tmp/ok; 'W=/tmp/evil'; rm -rf \"$W\"/*", "ask"),
+    # A wrapper hides eval from the command-position bail, and the mention rule
+    # cannot see a rebinding that never names its target. Nothing consumes the
+    # binding map yet, so this and a plain unprovable "$W"/* land on the same
+    # "ask" either way -- it is forward-looking, not a pin on this fix, and it
+    # only starts discriminating once the classifier is wired to the map.
+    ("eval behind a wrapper can rebind without naming it",
+     'W=/tmp/x; command eval "$C"; rm -rf "$W"/*', "ask"),
+
+    # --- a binding may condemn an operand, never clear one -------------------
+    # proven_bindings produced six wrong-`allow` defects across six review
+    # rounds, every one a stale binding trusted to prove safety. Consulted only
+    # to escalate, a stale binding costs a missed deny -- a prompt -- instead.
+    ("binding escalates a fatal literal", 'W=/; rm -rf "$W"/*', "deny"),
+    ("binding does not clear a safe literal",
+     'W=/tmp/build; rm -rf "$W"/*', "ask"),
+    ("binding does not clear an out-of-bounds literal",
+     'W=/etc; rm -rf "$W"/*', "ask"),
+    ("binding escalates through the find arm", 'W=/; find "$W" -delete', "deny"),
+    # A bare expansion with no suffix normally clears, on the grounds that an
+    # empty one makes `rm -rf ""` -- an error, not a catastrophe. The escalation
+    # sits ahead of that heuristic, so a binding proven fatal overrides it.
+    ("binding escalates a bare operand too", 'W=/; rm -rf "$W"', "deny"),
+    # ...and the gap that leaves, pinned so it cannot change silently. The guard
+    # can see W=/etc here and still clears, because only `deny` propagates and
+    # /etc merely asks. `rm -rf /etc` written literally asks. Widening this to
+    # propagate `ask` as well would be a tightening, not a loosening -- it is
+    # left alone only because it is the same "a bare expansion cannot be
+    # catastrophic" assumption that `rm -rf "$W"` already rests on, which
+    # predates bindings and deserves its own decision.
+    ("a bare operand still clears when merely out of bounds",
+     'W=/etc; rm -rf "$W"', "allow"),
 ]
+
+
+# (command, the bindings it proves)
+#
+# Unit-level rather than driven through the CLI, because a binding changes no
+# verdict on its own -- it changes what classify_operand is able to resolve, and
+# pinning the map directly is what localises a failure to the scanner instead of
+# to the classifier downstream of it.
+BINDING_CASES = [
+    # --- proven --------------------------------------------------------------
+    ('W=/tmp/build; rm -rf "$W"/*', {"W": "/tmp/build"}),
+    # Tokenized identically to the env-prefix form below until mask_opaque began
+    # normalising unquoted newlines to ";".
+    ('W=/tmp/build\nrm -rf "$W"/*', {"W": "/tmp/build"}),
+    ('W=/tmp/build && rm -rf "$W"/*', {"W": "/tmp/build"}),
+    ('A=/tmp; B=x; rm -rf "$A/$B"/*', {"A": "/tmp", "B": "x"}),
+    # Last wins, exactly as the shell does.
+    ('W=/tmp/x; W=/; rm -rf "$W"/*', {"W": "/"}),
+    # A plain read does not disqualify. This is the permissive edge of the
+    # other-mention rule and it is deliberate: the alternative is deciding which
+    # commands are read-only, which is the reasoning this guard refuses to do.
+    ('W=/tmp/x; echo "$W"; rm -rf "$W"/*', {"W": "/tmp/x"}),
+    # ...and the control: a different name, so no vouching is possible and the
+    # real assignment still proves itself.
+    ("X=/tmp/other; 'W=/tmp/evil'; rm -rf \"$W\"/*", {"X": "/tmp/other"}),
+
+    # --- not proven ----------------------------------------------------------
+    # An env prefix is expanded from the OUTER scope before the assignment
+    # applies, so it proves nothing. One segment, not two.
+    ('W=/tmp/x rm -rf "$W"/*', {}),
+    ('export W=/tmp/x; rm -rf "$W"/*', {}),
+    # The run must start at the first segment: proving `echo hi` cannot touch W
+    # means reasoning about arbitrary commands.
+    ('echo hi; W=/tmp/x; rm -rf "$W"/*', {}),
+    # A pipeline segment runs in a subshell, so the assignment never escapes.
+    ('W=/tmp/x | cat; rm -rf "$W"/*', {}),
+    # ...and `||` runs what follows only if the assignment FAILED.
+    ('W=/tmp/x || rm -rf "$W"/*', {}),
+    # The leading-run rule requires the FIRST segment to be a lone assignment;
+    # under BINDING_RE that means matching at position 0, and `if x` fails
+    # that match immediately because `if` is not followed by `=`. The run
+    # never starts, so `then W=/tmp/x` is never looked at, let alone parsed.
+    ('if x; then W=/tmp/x; fi; rm -rf "$W"/*', {}),
+    ('W=$HOME; rm -rf "$W"/*', {}),
+    ('W=$(pwd); rm -rf "$W"/*', {}),
+    ('W=`pwd`; rm -rf "$W"/*', {}),
+    # Every rebinding path names the variable, which is the whole rule.
+    ('W=/tmp/x; unset W; rm -rf "$W"/*', {}),
+    ('W=/tmp/x; W=$1; rm -rf "$W"/*', {}),
+    ('W=/tmp/x; for W in a b; do echo $W; done', {}),
+    ('W=/tmp/x; rm -rf "${W:-/}"/*', {}),
+    # The deny list is absolute: a same-line reassignment does not unlock it.
+    ('HOME=/tmp/fake; rm -rf "$HOME"', {}),
+    # mask_opaque reduced the body to one sentinel token, so a heredoc can never
+    # supply a binding -- no leading-run rule needed to exclude it.
+    ("cat <<'EOF' > /tmp/f\nW=/tmp/safe\nEOF\nrm -rf \"$W\"/*", {}),
+    # shlex performs quote removal, so 'W=/tmp/build', "W=/tmp/build",
+    # "W"=/tmp/build, and 'W'=/tmp/build all arrive here as the identical token
+    # W=/tmp/build. Bash decides assignment-ness BEFORE quote removal, though,
+    # and in all four of these the name or the `=` is quoted, which makes the
+    # word a COMMAND, not an assignment. That command's lookup fails (no such
+    # file or directory) and W is never set -- so `rm -rf "$W"/*` runs against
+    # an empty W, i.e. `rm -rf /*`. Confirmed against bash.
+    ("'W=/tmp/build'; rm -rf \"$W\"/*", {}),
+    ('"W=/tmp/build"; rm -rf "$W"/*', {}),
+    ('"W"=/tmp/build; rm -rf "$W"/*', {}),
+    ("'W'=/tmp/build; rm -rf \"$W\"/*", {}),
+    # An earlier genuine assignment must not vouch for a later quoted one. bash
+    # leaves W at /tmp/ok here: the quoted word is a command whose lookup fails.
+    ("W=/; 'W=/tmp/build'; rm -rf \"$W\"/*", {}),
+    ("W=/tmp/ok; 'W=/tmp/evil'; rm -rf \"$W\"/*", {}),
+
+    # Every one of these IS a real assignment -- bash sets W (or A) to exactly
+    # the literal shlex would hand back. What disqualifies each is that the
+    # VALUE needed a quote or a backslash to survive: BINDING_RE's charset
+    # excludes every character that would, on purpose, because that is exactly
+    # the set on which a second reading of the source could disagree with
+    # shlex's -- which is what the two-parser design did, and each of its three
+    # Critical findings was one such disagreement. A single reading cannot
+    # vouch for a value it cannot read, so this costs a prompt rather than a
+    # wrong allow.
+    ('W="/tmp/my build"; rm -rf "$W"/*', {}),
+    ("W='/tmp/build'; rm -rf \"$W\"/*", {}),
+    ('W=/tmp/"build"; rm -rf "$W"/*', {}),
+    ("W=/tmp/my\\ build; rm -rf \"$W\"/*", {}),
+    ("A=x\\;W=/tmp/ok; 'W=/tmp/evil'; rm -rf \"$W\"/*", {}),
+    ("A=x\\;B=1; 'W=/tmp/evil'; rm -rf \"$W\"/*", {}),
+
+    # eval/source/. rebind without ever writing the variable's name in this
+    # command's text -- the name lives in $C or in the sourced file, both
+    # invisible to a mention scan. `command`/`builtin` change nothing about
+    # that; they are here because analyse()'s OWN command-position bail-out
+    # misses `eval` behind either wrapper, so proven_bindings cannot lean on
+    # that check catching these first and must refuse them itself.
+    ('W=/tmp/x; eval "$C"; rm -rf "$W"/*', {}),
+    ('W=/tmp/x; command eval "$C"; rm -rf "$W"/*', {}),
+    ('W=/tmp/x; builtin eval "$C"; rm -rf "$W"/*', {}),
+    ('W=/tmp/x; . ./setenv; rm -rf "$W"/*', {}),
+    # bash tilde-expands an assignment's RHS at its start and after every
+    # unquoted `:`, so `~` in the value is not the literal character it looks
+    # like -- W ends up $HOME, not the one-character string "~".
+    ('W=~; rm -rf "$W"/x', {}),
+    ('W=/a:~/b; rm -rf "$W"/x', {}),
+    # $((W=1)) is arithmetic that assigns W, masked by mask_opaque to a
+    # sentinel so shlex is not shattered by it -- but the mention scan must
+    # read the UNMASKED text back in, or the rebinding is invisible behind
+    # its own placeholder.
+    ('W=/tmp/x; echo $((W=1)); rm -rf "$W"/*', {}),
+    # The old check split the RAW remainder and tested each word verbatim, so
+    # quoting or escaping the word walked straight past it -- the raw text
+    # never spells "eval" in most of these; a shlex reading is what actually
+    # sees it. The last two evade analyse()'s own command-position bail as
+    # well: a wrapper hides the word from that check, and `builtin` was never
+    # even in WRAPPERS.
+    ('W=/tmp/x; \\eval "$C"; rm -rf "$W"/*', {}),
+    ('W=/tmp/x; "eval" "$C"; rm -rf "$W"/*', {}),
+    ('W=/tmp/x; eval$IFS"$C"; rm -rf "$W"/*', {}),
+    ('W=/tmp/build; command \\eval "$C"; rm -rf "$W"/*', {}),
+    ('W=/tmp/build; builtin "eval" "$C"; rm -rf "$W"/*', {}),
+    # xargs cannot rebind the parent shell at all, unlike the other three --
+    # this documents that the refusal covers the whole shared OPAQUE set, not
+    # only the members that can actually rebind.
+    ('W=/tmp/x; xargs -0 ls; rm -rf "$W"/*', {}),
+]
+
+
+def check_bindings():
+    """proven_bindings() in isolation. Nothing here is executed -- see module doc."""
+    fails = []
+    for cmd, want in BINDING_CASES:
+        got = proven_bindings(cmd)
+        if got != want:
+            fails.append(("bindings", cmd, want, got, ""))
+    return fails
 
 
 def check_wrapper():
@@ -317,8 +515,6 @@ def check_render():
                           "absent" if want not in reason else "markers left in",
                           reason.replace("\x1b", "\\e")))
     return fails
-
-
 def main():
     fails = []
     for name, cmd, expected in CASES:
@@ -327,6 +523,7 @@ def main():
             fails.append((name, cmd, expected, got, reason))
     fails += check_wrapper()
     fails += check_render()
+    fails += check_bindings()
 
     for name, cmd, expected, got, reason in fails:
         first = reason.replace("\x1b", "\\e").splitlines()[0][:160] if reason else ""
@@ -338,7 +535,7 @@ def main():
             print(f"  why:  {first}")
         print()
 
-    total = len(CASES) + 5 + RENDER_CHECKS
+    total = len(CASES) + 5 + RENDER_CHECKS + len(BINDING_CASES)
     print(f"{total - len(fails)}/{total} passed")
     return 1 if fails else 0
 
