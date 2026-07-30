@@ -615,6 +615,18 @@ def mask_opaque(cmd):
             i += 1
             continue
         if c == "\\" and i + 1 < n:
+            # A line continuation is DELETED by the shell -- `rm -rf \<nl>/` runs
+            # as `rm -rf /`. shlex with posix=True disagrees: it unescapes the
+            # pair into a literal newline still glued to what followed, handing
+            # back the operand "\n/". posixpath.isabs() calls that relative, so
+            # it classified as a bounded relative path and the guard returned
+            # *allow* for a filesystem wipe. Deleting the pair here is both what
+            # bash does and the only place with the quote state to know it
+            # applies: single quotes are handled above, where a backslash is
+            # literal and no continuation exists.
+            if cmd[i + 1] == "\n":
+                i += 2
+                continue
             out.append(cmd[i:i + 2])
             i += 2
             continue
