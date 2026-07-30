@@ -33,6 +33,33 @@ Within that scope it is an allowlist, not a blocklist: an operand must be
 unknown construct, and unhandled case lands on `ask`, so a bug here costs a
 prompt rather than a filesystem.
 
+Known gaps, left open on purpose. Both are the same question -- ${VAR:?} proves
+a variable is NON-EMPTY, not that its target is safe -- and both clear a command
+that can still delete something catastrophic:
+
+    rm -rf "${W:?}"/*    allow. The author wrote the guarded form, which this
+                         file reads as an assertion of intent and defers to. If
+                         W=/etc it wipes /etc anyway.
+    W=/etc; rm -rf "$W"  allow, via the bare-expansion rule below: an empty $W
+                         makes `rm -rf ""`, an error rather than a catastrophe.
+                         True, and it says nothing about W being SET to /etc --
+                         which this command can see and clears regardless.
+                         Pinned by a test row so it cannot change silently.
+
+Closing either means deciding the guard should distrust an explicit assertion of
+intent, or should propagate `ask` from a binding as well as `deny`. Both are
+policy calls that cost prompts, not bugs with a fix left in them.
+
+A third approach was built and withdrawn: prepending a runtime validator to the
+command through the hook's `updatedInput`, so that approving a prompt would be
+safe against an empty variable. Three designs, four review rounds, a Critical in
+every one -- the last being a validator attached to the OUTER value of a name
+bound by `for`/`read`/`local`, which made correct approved commands unrunnable
+while the prompt claimed they were protected. A prepended validator cannot see
+what the command will do: not the cwd after a `cd`, not a loop variable's value,
+not whether $HOME is safe (which depends on cwd, since safe_roots folds it in).
+See docs/superpowers/specs/2026-07-30-rm-guard-rewrite-and-deny-design.md.
+
 A previous unattended session ran `rm -rf` with a variable that expanded to /*
 and wiped the machine. Note the mechanism carefully -- `set -u`/`setopt nounset`
 do NOT prevent it, because a variable that is *set but empty* is not an error:
