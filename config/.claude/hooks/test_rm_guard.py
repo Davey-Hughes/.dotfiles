@@ -129,6 +129,18 @@ CASES = [
     # could not be proven, because the rm it belonged to was never scanned.
     ("newline does not hide a provable target",
      "git log --oneline\nrm -rf /tmp/build/out", "allow"),
+    # bash DELETES a backslash-newline. shlex with posix=True instead hands back
+    # a literal newline glued to whatever followed, so this arrived as the
+    # operand "\n/", which posixpath.isabs() calls relative -- so it read as a
+    # bounded relative path and the guard ALLOWED rm -rf /. Only the second
+    # command in this file's history that it actively approved rather than missed.
+    ("line continuation before the filesystem root", "rm -rf \\\n/", "deny"),
+    ("line continuation before a safe path",
+     "rm -rf \\\n/tmp/build/out", "allow"),
+    # Inside single quotes a backslash is literal and there is no continuation,
+    # so both characters belong to the filename and must survive.
+    ("no continuation inside single quotes",
+     "rm -rf '/tmp/build/a\\\nb'", "allow"),
 
     # --- a message argument must not shield a real command -------------------
     ("commit then a real rm", 'git commit -m "chore: clean up" && rm -rf /', "deny"),
