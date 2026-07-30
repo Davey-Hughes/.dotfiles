@@ -90,11 +90,10 @@ from typing import NoReturn
 # terminal rather than as fallthrough.
 
 def emit(decision, reason) -> NoReturn:
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": decision,
-        "permissionDecisionReason": reason,
-    }}))
+    out = {"hookEventName": "PreToolUse",
+           "permissionDecision": decision,
+           "permissionDecisionReason": reason}
+    print(json.dumps({"hookSpecificOutput": out}))
     sys.exit(0)
 
 def passthrough() -> NoReturn:
@@ -114,7 +113,8 @@ def passthrough() -> NoReturn:
 #             no row of their own -- the arguments of a construct that hides what
 #             it runs, where the complaint is the whole invocation and not one
 #             token in it
-Finding = namedtuple("Finding", "decision segment label operand reason highlight",
+Finding = namedtuple("Finding",
+                     "decision segment label operand reason highlight",
                      defaults=((),))
 
 
@@ -226,6 +226,10 @@ ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # thing as git's business, and the rm was never scanned.
 SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
 REDIRECTS = {">", ">>", "<", "<<", ">&", "<&", "2>", "|&"}
+# What may precede an unquoted `#` for it to start a comment. Bash requires the
+# start of a word, so `./build#x` is a filename and not a comment -- a
+# distinction shlex does not make, which is the other half of the same bug.
+COMMENT_BOUNDARY = " \t\n;&|("
 # Constructs we cannot statically reason about.
 OPAQUE = {"eval", "exec", "source", "xargs", "."}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
@@ -416,7 +420,7 @@ def classify_path(p, cwd):
     return "ask", f"absolute path outside safe roots: {norm}"
 
 
-def classify_operand(op, cwd, bare_var_ok=True):
+def classify_operand(op, cwd, bare_var_ok=True, assigned=None):
     """-> (decision, reason). Anything not provably safe returns ask/deny.
 
     bare_var_ok encodes an rm-specific fact: `rm -rf $X` with X unset or empty
@@ -426,6 +430,25 @@ def classify_operand(op, cwd, bare_var_ok=True):
     """
     if "`" in op or "$(" in op:
         return "ask", "command substitution cannot be statically resolved"
+
+    # A binding is consulted to CONDEMN an operand and never to clear one. The
+    # map is built by static inference over shell text, and six review rounds
+    # found six ways to make it claim a binding the shell had already
+    # overwritten -- each of which would have been a wrong `allow` on
+    # `rm -rf /*`. Escalation inverts that: a stale binding here costs a missed
+    # deny, which is a prompt. So `deny` propagates and every other verdict
+    # falls through to the unresolved operand's own classification.
+    if assigned:
+        resolved = SUBST_NAME_RE.sub(
+            lambda m: assigned.get(m.group(1) or m.group(2), m.group(0)), op)
+        if resolved != op and not EXPANSION_RE.search(resolved):
+            d, r = classify_operand(resolved, cwd, bare_var_ok)
+            if d == "deny":
+                used = [n for n in dict.fromkeys(
+                    m.group(1) or m.group(2) for m in SUBST_NAME_RE.finditer(op))
+                    if n in assigned]
+                shown = ", ".join("%s=%s" % (n, assigned[n]) for n in used)
+                return d, f"{shown} in this command, so this reads as {resolved}; {r}"
 
     # A masked heredoc body. Unreachable from any sensible command -- a heredoc is
     # a redirect, not a path -- but the sentinel word would otherwise read as a
@@ -640,6 +663,18 @@ def mask_opaque(cmd):
             out.append(c)
             i += 1
             continue
+        # An unquoted `#` at a word boundary comments out the rest of the line.
+        # It has to be removed HERE, while the newline that bounds it is still a
+        # newline: the arm below turns newlines into ";", and shlex's own
+        # commenters then had no line end to stop at, so a comment swallowed
+        # every statement after it -- `rm -rf ./build # x` and an `rm -rf /` on
+        # the next line came back *allow*, with the second rm never tokenized.
+        # Bash starts a comment only at the start of a word, which is why the
+        # boundary test is here and not left to shlex.
+        if quote is None and c == "#" and (not out or out[-1][-1:] in COMMENT_BOUNDARY):
+            nl = cmd.find("\n", i)
+            i = n if nl < 0 else nl
+            continue
         # An unquoted newline separates statements exactly as ";" does, and this
         # is the only place that can tell the two apart from a newline inside a
         # quoted string or one escaped as a line continuation -- the quote state
@@ -675,6 +710,27 @@ def unmask(tok, subs):
 def has_subst(s):
     """The same test classify_operand uses, so the two never disagree."""
     return "$(" in s or "`" in s
+
+
+def tokenize(cmd):
+    """-> tokens, with opaque spans masked and unquoted newlines normalised.
+
+    Raises ValueError on an unbalanced quote, which analyse() turns into a
+    bail-out. A named function rather than inline code in analyse() because
+    the mask-then-lex-then-unmask sequence is exactly the shape mask_opaque's
+    own docstring assumes a reader already understands, and spelling it out
+    here once keeps analyse() itself reading as segmentation and classification
+    rather than shlex plumbing. proven_bindings does not call this -- it reads
+    the masked source directly, never the token stream -- but
+    _indirection_present does, as the second of the two readings it unions.
+    """
+    masked, subs = mask_opaque(cmd)
+    lex = shlex.shlex(masked, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    lex.commenters = ""   # mask_opaque already removed real comments; leaving
+                          # this at its default `#` would also cut `./build#x`
+                          # mid-word, which bash treats as a filename.
+    return [unmask(t, subs) for t in lex]
 
 
 # --- segmentation ------------------------------------------------------------
@@ -717,6 +773,175 @@ def git_segments(toks):
             for k in range(start, end):
                 flags[k] = True
     return flags
+
+
+# --- bindings the command proves about itself --------------------------------
+# `rm -rf "$W"/*` is unprovable on its own and rightly asks. It stops being
+# unprovable when the same command assigns W a literal first:
+#
+#     W=/tmp/build; rm -rf "$W"/*
+#
+# See proven_bindings for what restricting this to a leading run buys. The one
+# precondition worth flagging up here, because it is easy to miss reading
+# proven_bindings alone, is that it depends on mask_opaque having already
+# normalised unquoted newlines to ";". Before that runs, these two are the same
+# text to anything that only looks at whitespace:
+#
+#     W=/tmp/build\nrm -rf "$W"/*    sequential -- the binding holds
+#     W=/tmp/build rm -rf "$W"/*     env prefix -- it does NOT, because the shell
+#                                    expands $W from the OUTER scope before the
+#                                    assignment takes effect
+#
+# and it is the ";" that mask_opaque puts in the first one's place that makes
+# BINDING_RE stop the run after `W=/tmp/build` instead of swallowing `rm` as
+# part of a second, bogus assignment attempt.
+SUBST_NAME_RE = re.compile(
+    r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+# NAME=VALUE where VALUE needs no interpretation. The charset excludes every
+# character that would require a quote, an escape or an expansion to survive,
+# which is exactly the set on which a second reading of the source could have
+# disagreed with shlex's. That is the point: the previous design cross-checked
+# the token stream against a hand-written scanner, and all three holes it sprang
+# were divergences between the two readings.
+#
+# `~` is excluded for the same reason despite needing none of those: bash
+# tilde-expands the right-hand side of an assignment at its start and after
+# every unquoted `:`, so `W=~` and `W=/a:~/b` are not the literals they look
+# like -- they are $HOME and "/a:$HOME/b". A charset that let `~` through would
+# vouch for a value the shell does not actually produce.
+BINDING_RE = re.compile(
+    r"[ \t]*([A-Za-z_][A-Za-z0-9_]*)=([^\s'\"\\;&|()<>$`~" + SENTINEL + r"]*)"
+    r"[ \t]*(;|&&|\Z)")
+
+
+def _read_only_mentions(name, rest):
+    """Is every mention of `name` in the rest of the command a plain read?
+
+    Anything that is not `$name` or `${name}` drops the binding. One blunt rule
+    stands in for a catalogue of every way a shell can rebind a variable BY
+    NAMING IT -- it does not, and cannot, cover a rebinding that never names
+    its target at all:
+
+        unset W    read W    W+=/x    export W=/x    ((W=1))    for W in ...
+        declare W  local W   W=other  eval "W=/"     (W=/)      ${W:-/}
+
+    It over-rejects -- `echo "$W"` keeps its binding but `echo W` loses it --
+    which is the direction that costs a prompt rather than a filesystem.
+
+    `eval "$C"`, `source ./f` and `. ./f` rebind without ever writing the
+    variable's name in this command's text -- the name lives in $C or in the
+    sourced file, both invisible here. That hole is not this function's to
+    close: proven_bindings refuses the whole command when _indirection_present
+    flags eval/source/./exec/xargs in EITHER a raw split or a shlex reading of
+    what follows the bindings -- a union of two readings, not a reconciliation,
+    so a disagreement between them can only refuse more. That closes the
+    wrapper and quoting forms neither reading alone caught, but not every
+    indirection: a shell FUNCTION that reassigns the variable in its body
+    names nothing but the function at the call site, and there is no cheap
+    check for what runs inside one.
+    """
+    for m in re.finditer(r"(?<!\w)%s(?!\w)" % re.escape(name), rest):
+        s = m.start()
+        if s >= 1 and rest[s - 1] == "$":
+            continue
+        if s >= 2 and rest[s - 2:s] == "${" and rest[m.end():m.end() + 1] == "}":
+            continue
+        return False
+    return True
+
+
+def _indirection_present(rest):
+    """Does the rest of the command reach eval / source / . / exec / xargs?
+
+    Those rebind without ever naming the variable, so _read_only_mentions is
+    blind to them by construction. analyse() bails on them too, but only in
+    command position -- `command eval "$C"` hides the word from that check, and
+    `builtin` is not even a recognised wrapper.
+
+    Two readings, and either one is enough to refuse. That is deliberately a
+    union rather than a reconciliation: this function used to cross-check two
+    readings of the source POSITIONALLY, and every defect it shipped came from
+    one reading vouching for the other when they disagreed. Here a disagreement
+    can only reject more. The raw split catches `eval$IFS"$C"`, where shlex
+    keeps the word glued together; the shlex pass catches `\\eval`, `"eval"` and
+    `ev"a"l`, where the raw text never spells the word. An unreadable remainder
+    refuses outright, which is also what `$'eval'` lands on.
+
+    Over-rejects freely, and that costs a prompt: `git add .`, `find . -name y`
+    and `cp -r . /dst` all end the run because `.` is in the set. `exec` and
+    `xargs` cannot rebind the parent shell at all -- they are refused because
+    the set is shared with analyse()'s bail-out and a narrower copy here would
+    be one more thing to keep in step.
+    """
+    words = re.split(r"[\s;&|()<>$]+", rest)
+    try:
+        words += [w.lstrip("$") for w in tokenize(rest)]
+    except ValueError:
+        return True
+    return any(os.path.basename(w) in OPAQUE for w in words)
+
+
+def proven_bindings(cmd):
+    """-> {name: literal} the command proves about its own variables.
+
+    Only the LEADING run of assignments counts, which buys three properties a
+    general dataflow pass would each have to earn: they are unconditional,
+    because nothing has run before them; a heredoc body cannot supply one,
+    because mask_opaque has already reduced it to a sentinel the value charset
+    excludes; and `echo hi; W=/tmp/x; ...` proves nothing, because clearing it
+    would mean proving `echo hi` cannot touch W.
+
+    Read from the masked SOURCE rather than the token stream, and that is the
+    whole design. shlex performs quote removal, but bash recognises an
+    assignment BEFORE it -- so `'W=/x'` is a command name whose lookup fails,
+    leaving W unset, while arriving as the same token a real `W=/x` produces.
+    Reconstructing that from the source alongside the tokens needs two readings
+    kept in lockstep, and every divergence between them was a wrong *allow* on
+    `rm -rf /*`: an existence check let a genuine `W=/tmp/ok` vouch for a later
+    quoted `'W=/tmp/evil'`, and a scanner blind to backslashes split
+    `A=x\\;W=/tmp/ok` where shlex did not.
+
+    So a value that needed quoting is a value this cannot vouch for, and it
+    falls through to `ask`. That is the allowlist rule applied to the scanner
+    itself, and it costs a prompt rather than a filesystem.
+
+    Separator handling falls out of BINDING_RE: only `;`, `&&` and end of input
+    continue the run. `|` and `&` are outside the value charset and end the
+    match, which is right -- a pipeline segment's assignment never escapes its
+    subshell, and `A=x || rm ...` runs the rm only if the assignment failed.
+    """
+    masked, subs = mask_opaque(cmd)
+    bindings, pos = {}, 0
+    while True:
+        m = BINDING_RE.match(masked, pos)
+        if not m:
+            break
+        bindings[m.group(1)] = m.group(2)   # last wins, exactly as the shell does
+        pos = m.end()
+        if not m.group(3):                  # matched \Z; nothing follows
+            break
+    # Unmasked, not the raw `masked[pos:]`: mask_opaque hides a command
+    # substitution behind a sentinel so shlex cannot be shattered by it, but
+    # that sentinel also hides a rebinding written INSIDE one -- `$((W=1))` is
+    # arithmetic that assigns, and with the mask left in place the mention scan
+    # below sees only an opaque placeholder and calls the binding untouched.
+    # Substituting the original text back in is safe here in a way it is not
+    # for tokenizing: this is a linear mention scan, not shlex, so a
+    # substitution's own quotes and parens cannot shatter it. A shell function
+    # that reassigns the variable in its body is the same class of hole -- a
+    # rebind with no textual mention out here -- and there is no equally cheap
+    # fix for it; it is a known limit of this scan, not a case it covers.
+    rest = unmask(masked[pos:], subs)
+
+    # eval, source and `.` rebind without ever naming the variable, which is
+    # the one hole _read_only_mentions cannot see. Deciding it here keeps the
+    # map's safety inside the function that builds it; see _indirection_present
+    # for why a single raw split over the remainder was not enough to decide it.
+    if _indirection_present(rest):
+        return {}
+
+    return {n: v for n, v in bindings.items()
+            if n not in DANGEROUS_VARS and _read_only_mentions(n, rest)}
 
 
 # --- per-command target extraction -------------------------------------------
@@ -869,7 +1094,7 @@ def ssh_remote_command(argv):
 
 # --- analysis ----------------------------------------------------------------
 
-def analyse_segment(argv, cwd, depth):
+def analyse_segment(argv, cwd, depth, assigned=None):
     """-> [Finding] for the non-rm commands in one segment."""
     out = []
     segment = argv
@@ -884,7 +1109,7 @@ def analyse_segment(argv, cwd, depth):
             out.append(Finding("ask", segment, label, None, missing))
             return
         for t in targets:
-            d, r = classify_operand(t, cwd, bare_var_ok=bare_var_ok)
+            d, r = classify_operand(t, cwd, bare_var_ok=bare_var_ok, assigned=assigned)
             out.append(Finding(d, segment, label, t, r))
 
     if base == "find":
@@ -923,7 +1148,7 @@ def analyse_segment(argv, cwd, depth):
             label = ("git clean removes untracked and ignored files, "
                      "which are not in history and cannot be restored")
             for t in paths:
-                d, r = classify_operand(t, cwd, bare_var_ok=False)
+                d, r = classify_operand(t, cwd, bare_var_ok=False, assigned=assigned)
                 # Untracked and ignored files are not in history. Even a "safe"
                 # path only earns a prompt, never a silent pass -- and saying
                 # "literal relative path" there would read like a clean bill.
@@ -932,6 +1157,11 @@ def analyse_segment(argv, cwd, depth):
                                    "under it is recoverable")
                 out.append(Finding(d, segment, label, t, r))
     elif base == "ssh":
+        # assigned is deliberately NOT passed into the recursion. The local shell
+        # expands a double-quoted remote command before ssh runs, and shlex has
+        # stripped the quotes by now, so `ssh h "rm -rf $W/*"` and
+        # `ssh h 'rm -rf $W/*'` are indistinguishable here. analyse() re-reads
+        # the remote string's own bindings instead.
         remote = ssh_remote_command(argv)
         if remote and depth < MAX_SSH_DEPTH:
             # No local cwd applies on the far end, so pass cwd="": only /tmp and
@@ -974,12 +1204,8 @@ def analyse(cmd, cwd, depth=0):
     # takes an unquoted $(...) apart into literals that each look harmless. The
     # sentinel keeps the span whole and keeps it attached to whatever follows it,
     # so classify_operand sees `$(pwd)/b` rather than `$(pwd)` and a stray `/b`.
-    masked, subs = mask_opaque(cmd)
-
     try:
-        lex = shlex.shlex(masked, posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        toks = [unmask(t, subs) for t in lex]
+        toks = tokenize(cmd)
     except ValueError as e:
         # Same gate as every other bail-out: unreadable only matters if there is
         # something destructive to hide. shlex is stricter than the shell it
@@ -1048,6 +1274,9 @@ def analyse(cmd, cwd, depth=0):
                     f"{mark('--no-preserve-root')} defeats rm's own safety net",
                     hi=i)
 
+    # Consulted only to escalate; see classify_operand.
+    assigned = proven_bindings(cmd)
+
     in_git = git_segments(toks)
     findings = []
 
@@ -1087,14 +1316,14 @@ def analyse(cmd, cwd, depth=0):
         if not operands:
             continue
         for op in operands:
-            d, r = classify_operand(op, cwd)
+            d, r = classify_operand(op, cwd, assigned=assigned)
             # No label: for rm every operand is a target, which the echoed
             # command already makes obvious.
             findings.append(Finding(d, segment, None, op, r))
 
     # --- everything else, one segment at a time.
     for start, end in bounds:
-        findings.extend(analyse_segment(toks[start:end], cwd, depth))
+        findings.extend(analyse_segment(toks[start:end], cwd, depth, assigned))
 
     if not found_rm and not findings:
         # Nothing survived parsing. Every construct that could execute a string
@@ -1305,8 +1534,6 @@ def render(headline, findings):
             out.append("  " + paint_token(YELLOW, op)
                        + " " * (width - len(op) + 2) + paint_marks(f.reason))
     return "\n".join(out)
-
-
 def main():
     try:
         payload = json.load(sys.stdin)

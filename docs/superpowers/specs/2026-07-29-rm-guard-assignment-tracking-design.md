@@ -46,27 +46,57 @@ newline as whitespace, so
                                       shell expands $W from the outer scope
                                       before the assignment takes effect)
 
-tokenized to the same list, and only the first proves anything -- which forced a
-raw-text scanner. Commit `e3c8e72` made `mask_opaque` normalise unquoted newlines
-to `;`, so the sequential forms are now two segments and the env-prefix form is
-one. The distinction that needed its own quote-aware parser is a
-`len(segment) == 1` test.
+tokenized to the same list, and only the first proves anything. Commit `e3c8e72`
+made `mask_opaque` normalise unquoted newlines to `;`, which is what lets the
+sequential form read as two statements and the env-prefix form as one -- so the
+regex below sees `W=/tmp/build` terminated by a `;` in the first case, and a
+value running on into `rm` in the second.
 
-`proven_bindings(toks, bounds) -> {name: literal}`:
+`proven_bindings(cmd) -> {name: literal}`, read from the masked **source** with
+one anchored regex, applied repeatedly from position 0:
 
-1. Walk `bounds` from the first segment. A segment qualifies only if it is
-   exactly one token matching `^[A-Za-z_][A-Za-z0-9_]*=`. Quoting is already
-   handled: shlex delivers `W="/tmp/my build"` as the single token
-   `W=/tmp/my build`.
-2. Check the separator that **follows** it, `toks[stop]`. Only `;` and `&&`
-   continue the run, and end-of-string counts. `|` and `&` mean the assignment
-   ran in a subshell it never escapes, and `A=x || rm ...` runs the rm only if
-   the assignment failed.
-3. The value must contain no `$`, no backtick, and no `SENTINEL`, so
-   substituting it cannot introduce a fresh expansion, a substitution, or a
-   masked heredoc body.
-4. Stop at the first segment failing any of the above. The tokens from there on
-   are the remainder, scanned for other mentions.
+    [ \t]*(NAME)=(VALUE)[ \t]*(;|&&|\Z)
+
+where `VALUE` excludes every character that would need a quote, an escape or an
+expansion to survive: whitespace, `'`, `"`, `\`, `;`, `&`, `|`, `(`, `)`, `<`,
+`>`, `$`, a backtick, and `SENTINEL`. Each match binds a name (last wins, as the
+shell does) and advances the cursor; the first non-match ends the run, and the
+remaining text is scanned for other mentions.
+
+**Why one parser, and not the token stream.** A token-level scan looked simpler
+and cost three consecutive holes, each a wrong `allow` on `rm -rf /*`:
+
+1. shlex performs quote removal, but bash recognises an assignment **before**
+   it. So `'W=/x'`, `"W=/x"`, `"W"=/x` and `'W'=/x` are all command names whose
+   lookup fails, leaving `W` unset -- while arriving as the same token a real
+   `W=/x` produces.
+2. Recovering that from the source by asking whether `NAME=` appears unquoted
+   *anywhere* let a genuine `W=/tmp/ok` vouch for a later quoted `'W=/tmp/evil'`
+   that assigns nothing.
+3. Making it positional required a second parser kept in lockstep with shlex,
+   and a scanner blind to backslashes split `A=x\;W=/tmp/ok` into two words
+   where shlex made one -- shifting every later index so one segment's source
+   vouched for another's.
+
+All three are divergences between two readings of the same string. One reading
+cannot diverge from itself. The restricted value charset is what makes a single
+reading sufficient: it is exactly the set of values on which the two readings
+could never have disagreed.
+
+The cost is real and is paid in prompts, never in wrong verdicts. These stop
+binding and fall through to `ask`:
+
+    W="/tmp/my build"     W='/tmp/build'     W=/tmp/"build"
+    W=/tmp/my\ build      A=x\;W=/tmp/ok
+
+A value that needed quoting is a value this cannot vouch for. That is the
+allowlist rule applied to the scanner itself.
+
+Separator handling falls out of the regex rather than needing `toks[stop]`:
+only `;`, `&&` and end-of-input continue the run. `|` and `&` are outside the
+value charset and terminate the match, which is correct -- a pipeline segment's
+assignment never escapes its subshell, and `A=x || rm ...` runs the rm only if
+the assignment failed.
 
 Repeated names take the last value: `A=/tmp; A=/; rm -rf "$A"/*` binds `/`, and
 denies. Last-wins is both what the shell does and the conservative direction.
@@ -76,9 +106,11 @@ Because the run must start at the first segment, `echo hi; W=/tmp/x; rm -rf
 touch `W` means reasoning about arbitrary commands, which is the thing this
 guard refuses to do.
 
-Tokenizing moves into a `tokenize(cmd)` helper, so the tests can build the same
-token list `analyse` does without duplicating the `mask_opaque` + `shlex`
-incantation. It raises `ValueError`, which `analyse` already handles.
+Tokenizing moves into a `tokenize(cmd)` helper. It was introduced so the binding
+scan and its tests could share `analyse`'s token stream; the single-parser
+redesign removed that need, and the helper now has one caller. It stays because
+one construction site for the `mask_opaque` + `shlex` incantation is worth
+keeping regardless. It raises `ValueError`, which `analyse` already handles.
 
 ### What disqualifies a binding
 
@@ -160,13 +192,14 @@ bug there costs a prompt; a bug in binding discovery costs a filesystem.
 Three structural properties keep that bounded, and they are the reason the
 design is shaped this way rather than as general dataflow:
 
-1. Bindings come only from a leading run of lone-assignment segments, so they
-   are unconditional. A heredoc body cannot supply one because `mask_opaque`
-   has already reduced it to a single sentinel token; a subshell cannot because
-   `|` and `&` end the run; a conditional branch cannot because `then W=/tmp/x`
-   is two tokens, not one.
-2. A literal value contains no `$`, backtick, or sentinel, so substituting it
-   cannot introduce a new expansion.
+1. Bindings come only from a leading run of assignments, so they are
+   unconditional. A heredoc body cannot supply one because `mask_opaque` has
+   already reduced it to a sentinel, which the value charset excludes; a
+   subshell cannot because `|` and `&` end the run; a conditional branch cannot
+   because `if x` does not match `NAME=`.
+2. The value charset excludes `$`, backtick, sentinel, quotes and backslash, so
+   substituting a value cannot introduce a new expansion -- and no second
+   reading of the source exists to disagree with the first.
 3. Any other mention of the name disqualifies it.
 
 ## Not doing

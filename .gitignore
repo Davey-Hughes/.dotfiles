@@ -66,3 +66,6 @@ os/arch/config/ksmserverrc
 # $XDG_CONFIG_HOME/git/config -- this directory once stowed. That is machine
 # state; only `ignore` next to it belongs to the repo.
 config/git/config
+
+# Subagent-driven-development scratch: task briefs, reports, progress ledger.
+.superpowers/
