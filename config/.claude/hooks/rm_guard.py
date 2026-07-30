@@ -351,8 +351,10 @@ def danger_hint(text):
 def strip_data(text):
     """Blank the regions of a command line the shell treats as data, not code.
 
-    Only the raw-text heuristics read this. Tokenizing still runs on the
-    original command, so the per-command analysis below sees everything.
+    Only the raw-text heuristics read this. Tokenizing runs on the original
+    command, so the per-command analysis below still sees a message flag's
+    value -- mask_opaque covers the one region that has to be hidden from the
+    tokenizer too, because prose in a heredoc body breaks shlex outright.
     """
     text = HEREDOC_RE.sub(" HEREDOC ", text)
     return MSG_FLAG_RE.sub(" MESSAGE ", text)
@@ -419,6 +421,13 @@ def classify_operand(op, cwd, bare_var_ok=True):
     if "`" in op or "$(" in op:
         return "ask", "command substitution cannot be statically resolved"
 
+    # A masked heredoc body. Unreachable from any sensible command -- a heredoc is
+    # a redirect, not a path -- but the sentinel word would otherwise read as a
+    # plain relative operand and classify as *allow*, and the rule in this file
+    # is that anything not proven safe asks.
+    if SENTINEL in op:
+        return "ask", "operand is a heredoc body, which is data and not a path"
+
     if REMOTE_SPEC_RE.match(op):
         return "ask", "remote path -- the guard cannot see what is on the far end"
 
@@ -470,7 +479,7 @@ def classify_operand(op, cwd, bare_var_ok=True):
     return classify_path(op, cwd)
 
 
-# --- command substitution ----------------------------------------------------
+# --- spans the tokenizer must not read ---------------------------------------
 # Found on the raw text, where the shell's own quoting rules still apply, and
 # replaced with a sentinel word so shlex cannot take the span apart. U+E000 is
 # private-use: it has no meaning to any shell and no legitimate command contains
@@ -543,8 +552,31 @@ def subst_spans(s):
     return spans
 
 
-def mask_substitutions(cmd):
+def mask_opaque(cmd):
     """-> (masked, {sentinel: original}). Unbalanced spans are left alone.
+
+    Two kinds of span must not reach shlex, for the same underlying reason:
+    neither is shell that a tokenizer can read.
+
+    A QUOTED heredoc body is data -- the shell expands nothing inside <<'EOF' --
+    and what goes in one is prose. Prose carries apostrophes, and shlex reads
+    `plan the guard's pass` as an unterminated quote. strip_data already keeps
+    such a body away from the raw-text heuristics; the tokenizer needs the same.
+    Without it a plain `git commit -F - <<'EOF'` came back "command could not be
+    parsed", and the cost was never only that prompt: a parse failure REPLACES
+    the analysis, so an `rm -rf /` after the terminator reported as a vague ask
+    instead of a deny. The suite hid this for as long as it existed, because
+    every heredoc case in it arrives through a `"$(cat <<'EOF' ...)"` wrapper
+    whose substitution masking already covered the body.
+
+    Heredoc bodies are deliberately NOT in the returned map. Unmasking prose back
+    into a token is the one thing this must not do, and classify_operand refuses
+    any operand still carrying a sentinel.
+
+    A SUBSTITUTION must survive shlex whole; see the module docstring for what
+    happens when it does not. Heredocs are masked first, so
+    `$(cat <<'EOF' ... fix(x): y ... EOF )` has its prose quotes and parentheses
+    gone before _close_paren has to balance around them.
 
     Single quotes suppress substitution entirely; double quotes do not. An
     unterminated span is not masked, so it falls through to the ValueError arm
@@ -552,6 +584,14 @@ def mask_substitutions(cmd):
     means nothing.
     """
     cmd = cmd.replace(SENTINEL, "").replace(MARK, "")
+    parts, last = [], 0
+    for hd, m in enumerate(HEREDOC_RE.finditer(cmd)):
+        parts.append(cmd[last:m.start()])
+        parts.append("%sHD%d%s" % (SENTINEL, hd, SENTINEL))
+        last = m.end()
+    parts.append(cmd[last:])
+    cmd = "".join(parts)
+
     out, subs, quote, i, n = [], {}, None, 0, len(cmd)
     while i < n:
         c = cmd[i]
@@ -900,7 +940,7 @@ def analyse(cmd, cwd, depth=0):
     # takes an unquoted $(...) apart into literals that each look harmless. The
     # sentinel keeps the span whole and keeps it attached to whatever follows it,
     # so classify_operand sees `$(pwd)/b` rather than `$(pwd)` and a stray `/b`.
-    masked, subs = mask_substitutions(cmd)
+    masked, subs = mask_opaque(cmd)
 
     try:
         lex = shlex.shlex(masked, posix=True, punctuation_chars=True)
