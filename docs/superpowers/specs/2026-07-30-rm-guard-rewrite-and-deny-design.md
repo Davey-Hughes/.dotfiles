@@ -187,17 +187,21 @@ The verdict stays `ask`.
 Only one verdict changes: `W=/; rm -rf "$W"/*` from `ask` to `deny`. Everything
 else keeps its verdict and some commands gain a validator ahead of them.
 
-## Recorded here, addressed in the addendum
+## Recorded here, and STILL OPEN
 
-`rm -rf "${W:?}"/*` returns `allow` today and wipes `/etc` just as readily if
+`rm -rf "${W:?}"/*` returns `allow` and wipes `/etc` just as readily if
 `W=/etc`. That is the same "form is not the warrant" question one level down, and
 it predates this work -- the guard treats the author's `:?` as sufficient proof.
 
-Downgrading it to `ask` would make the guard distrust an explicit assertion of
-intent, and would cost a prompt. The addendum's item 2 takes the other route:
-keep the `allow` and attach the same runtime validator, which closes the hole for
-free. Recorded here so the sequence is legible -- this was a known gap before it
-had a cheap answer.
+The addendum's item 2 proposed keeping the `allow` and attaching a runtime
+validator, which would have closed it for free. **That validator was withdrawn**
+(see the banner at the top of this file), so the gap is open. Downgrading the
+verdict to `ask` instead would make the guard distrust an explicit assertion of
+intent and would cost a prompt -- a policy call, not a bug fix.
+
+The same applies to `W=/etc; rm -rf "$W"`, which clears via the bare-expansion
+rule. Both are restated in `rm_guard.py`'s module docstring, which is where a
+maintainer will actually look.
 
 ---
 
