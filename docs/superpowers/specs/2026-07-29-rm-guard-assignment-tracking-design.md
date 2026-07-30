@@ -91,7 +91,7 @@ All of them mention `W`. The rule is intentionally over-broad -- it also drops
 **`DANGEROUS_VARS`.** A name in that set is never substituted, whatever the
 command assigns to it:
 
-    HOME=/tmp/fake; rm -rf "$HOME"/x    ->  deny
+    HOME=/tmp/fake; rm -rf "$HOME"      ->  deny
 
 The deny list stays absolute. A same-line reassignment of `HOME`, `PWD`,
 `OLDPWD`, `ROOT`, `USER`, or `TMPDIR` next to a recursive delete is either
@@ -192,7 +192,7 @@ the verdict. `CWD` is the existing synthetic `/home/u/project`.
 | `W=/tmp/x; find "$W" -delete` | allow | clears the `bare_var_ok=False` class |
 | `W=/; rm -rf "$W"/*` | deny | escalation via the substituted literal |
 | `W=/tmp/x; W=/; rm -rf "$W"/*` | deny | last-wins |
-| `HOME=/tmp/fake; rm -rf "$HOME"/x` | deny | `DANGEROUS_VARS` stays absolute |
+| `HOME=/tmp/fake; rm -rf "$HOME"` | deny | `DANGEROUS_VARS` stays absolute. The bare form, because `BARE_VAR_RE` only matches a whole-token expansion -- `"$HOME"/x` asks today, with or without this change |
 | `W=/etc; rm -rf "$W"/*` | ask | substitution is not a blanket pass |
 | `W=/tmp/x rm -rf "$W"/*` | ask | env prefix proves nothing |
 | `W=/tmp/x; unset W; rm -rf "$W"/*` | ask | other-mention rule |
