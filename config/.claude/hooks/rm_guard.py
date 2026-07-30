@@ -218,6 +218,12 @@ MSG_FLAG_RE = re.compile(
     r"(?:[ \t]+|=)"
     r"(?:\$'(?:\\.|[^'\\])*'|'[^']*'|\"(?:\\.|[^\"\\])*\")")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# "\n" is listed for completeness and matches nothing by itself: shlex consumes a
+# newline as whitespace, so no token is ever equal to one. mask_opaque normalises
+# unquoted newlines to ";" before tokenizing, and that is what actually makes a
+# statement on the next line its own segment. Without it, `git commit -m x` and
+# an `rm -rf /` on the line below were ONE segment, git_segments() read the whole
+# thing as git's business, and the rm was never scanned.
 SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
 REDIRECTS = {">", ">>", "<", "<<", ">&", "<&", "2>", "|&"}
 # Constructs we cannot statically reason about.
@@ -578,6 +584,13 @@ def mask_opaque(cmd):
     `$(cat <<'EOF' ... fix(x): y ... EOF )` has its prose quotes and parentheses
     gone before _close_paren has to balance around them.
 
+    Unquoted NEWLINES are normalised to ";" on the way past, for a related
+    reason: shlex consumes them as whitespace, so a statement on the next line
+    joined the one above it into a single segment. This is the only place in the
+    file that can distinguish a separating newline from one inside a quoted
+    string or one escaped as a line continuation, because it is the only place
+    that tracks quote state over the raw text.
+
     Single quotes suppress substitution entirely; double quotes do not. An
     unterminated span is not masked, so it falls through to the ValueError arm
     in analyse() rather than being masked to something that parses cleanly and
@@ -613,6 +626,15 @@ def mask_opaque(cmd):
         if quote == '"' and c == '"':
             quote = None
             out.append(c)
+            i += 1
+            continue
+        # An unquoted newline separates statements exactly as ";" does, and this
+        # is the only place that can tell the two apart from a newline inside a
+        # quoted string or one escaped as a line continuation -- the quote state
+        # lives here. A `\` + newline never reaches this branch, because the
+        # escape arm above consumed both characters and left the join intact.
+        if quote is None and c == "\n":
+            out.append(" ; ")
             i += 1
             continue
         # Unquoted or inside double quotes -- substitution is live in both.

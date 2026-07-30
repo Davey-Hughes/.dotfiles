@@ -117,6 +117,19 @@ CASES = [
     ("bare heredoc prose, then a real rm",
      "cat <<'EOF' > /tmp/f\ndocs: the guard's pass\nEOF\nrm -rf /", "deny"),
 
+    # --- a newline separates statements, exactly as ; does -------------------
+    # shlex consumes a newline as whitespace, so no token is ever equal to one
+    # and SEPARATORS listed "\n" against nothing. Two statements on two lines
+    # were therefore ONE segment, and git_segments() exempts a whole segment
+    # whose command word is git -- so a real rm on the next line was skipped as
+    # git's business, and only the RM_RECURSIVE_RE fallback caught it.
+    ("newline does not extend git's exemption",
+     'git commit -m "wip"\nrm -rf /', "deny"),
+    # ...and the same confusion in the other direction: a provably safe target
+    # could not be proven, because the rm it belonged to was never scanned.
+    ("newline does not hide a provable target",
+     "git log --oneline\nrm -rf /tmp/build/out", "allow"),
+
     # --- a message argument must not shield a real command -------------------
     ("commit then a real rm", 'git commit -m "chore: clean up" && rm -rf /', "deny"),
     ("commit then a real git clean", 'git commit -m "wip" && git clean -fdx', "ask"),
