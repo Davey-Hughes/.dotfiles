@@ -4,45 +4,104 @@
 
 **Goal:** Let `rm_guard.py` clear a destructive operand whose variable the command itself assigns to a literal, so `W=/tmp/build; rm -rf "$W"/*` returns `allow` instead of `ask`.
 
-**Architecture:** A new pure function reads the *raw command text* for the leading run of lone `NAME=VALUE` statements, filters the result through two disqualifiers, and hands the surviving map to `classify_operand`, which substitutes and re-classifies. Raw text rather than the token stream is forced, not stylistic: `shlex` consumes newlines as whitespace, so the sequential form and the env-prefix form tokenize identically and only the first proves anything.
+**Architecture:** A pure function walks `segment_bounds` for a leading run of segments that are each a single `NAME=VALUE` token, filters the result through two disqualifiers, and hands the surviving map to `classify_operand`, which substitutes and re-classifies. This works at the token level only because `mask_opaque` now normalises unquoted newlines to `;` (commit `e3c8e72`) — before that, the sequential and env-prefix forms tokenized identically and the scan had to be done on raw text.
 
 **Tech Stack:** Python 3 stdlib only (`re`, `shlex`, `posixpath`, `os`, `json`). No third-party packages, no test framework — `test_rm_guard.py` is a plain script.
 
 ## Global Constraints
 
 - **Never execute any command string from this plan or from the test tables.** Every dangerous string here is *data*: `test_rm_guard.py` serialises it into a JSON payload and writes it to the guard's stdin, and the guard only classifies text. A `rm -rf /` in `CASES` is safe precisely because nothing runs it. Do not paste these strings into a shell to "check" them.
-- Full paths: guard is `config/.claude/hooks/rm_guard.py`, tests are `config/.claude/hooks/test_rm_guard.py`. `~/.config/.claude` is a folded symlink to `config/.claude`, so editing the repo file edits the live hook — no install step, and a broken guard affects this session immediately.
+- Full paths: guard is `config/.claude/hooks/rm_guard.py`, tests are `config/.claude/hooks/test_rm_guard.py`. `~/.config/.claude` is a folded symlink to `config/.claude`, so editing the repo file edits the live hook — no install step, and a broken guard affects the running session immediately.
 - Run the suite with `python3 config/.claude/hooks/test_rm_guard.py` from the repo root. It prints `N/M passed` and exits non-zero on any failure.
-- Baseline before you start: **73/73 passed** (`len(CASES)`=51 + wrapper 5 + `RENDER_CHECKS`=17). Confirm this before Task 1 and treat any drop as a regression you caused.
+- Baseline before you start: **80/80 passed** (`len(CASES)`=58 + wrapper 5 + `RENDER_CHECKS`=17). Confirm this before Task 1 and treat any drop as a regression you caused.
 - Existing style is load-bearing: every non-obvious rule in this file carries a comment explaining *why*, in prose, referencing the failure it prevents. Match it. Do not add comments that restate the code.
 - Do not add attribution to commit messages (no `Co-Authored-By`, no `Generated with`).
 - `git status` must be clean at the end of each task's commit.
 
 ---
 
-### Task 1: `proven_bindings` — read what the command proves about its own variables
+### Task 1: `tokenize` — one place that builds the token stream
 
 **Files:**
-- Modify: `config/.claude/hooks/rm_guard.py` — insert a new section after the command-substitution section (after `has_subst`, before `# --- segmentation ---` at line 606)
+- Modify: `config/.claude/hooks/rm_guard.py` — add `tokenize` next to `mask_opaque`; call it from `analyse`
+
+**Interfaces:**
+- Consumes: `mask_opaque(cmd) -> (masked, subs)`, `unmask(tok, subs)`
+- Produces: `tokenize(cmd) -> [str]`, raising `ValueError` on an unparseable command
+
+This is a pure refactor with no behaviour change. It exists so Task 2's tests can build the same token list `analyse` does without copying the incantation.
+
+- [ ] **Step 1: Add the helper**
+
+Insert after `has_subst` in `config/.claude/hooks/rm_guard.py`:
+
+```python
+def tokenize(cmd):
+    """-> tokens, with opaque spans masked and unquoted newlines normalised.
+
+    Raises ValueError on an unbalanced quote, which analyse() turns into a
+    bail-out. Split out so the binding scan and its tests read the same stream
+    analyse() does; two copies of this would drift.
+    """
+    masked, subs = mask_opaque(cmd)
+    lex = shlex.shlex(masked, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    return [unmask(t, subs) for t in lex]
+```
+
+- [ ] **Step 2: Use it in `analyse`**
+
+Replace the tokenizing block in `analyse` — the four lines from `masked, subs = mask_opaque(cmd)` through `toks = [unmask(t, subs) for t in lex]`, keeping the surrounding `try` and its comment intact:
+
+```python
+    try:
+        toks = tokenize(cmd)
+    except ValueError as e:
+```
+
+- [ ] **Step 3: Run the suite to verify nothing moved**
+
+Run: `python3 config/.claude/hooks/test_rm_guard.py`
+
+Expected: `80/80 passed`. A pure refactor must not change a single verdict; any change means the two code paths were not equivalent.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add config/.claude/hooks/rm_guard.py
+git commit -F - <<'EOF'
+refactor(claude): give the token stream one construction site
+
+No behaviour change. The binding scan in the next commit needs the same
+tokens analyse() sees, and a second copy of the mask_opaque + shlex
+incantation would drift from this one.
+EOF
+```
+
+---
+
+### Task 2: `proven_bindings` — read what the command proves about its own variables
+
+**Files:**
+- Modify: `config/.claude/hooks/rm_guard.py` — new section after `segment_bounds` / `command_word` / `git_segments`, before `# --- per-command target extraction ---`
 - Modify: `config/.claude/hooks/test_rm_guard.py` — add `BINDING_CASES` + `check_bindings()`, wire into `main()`
 
 **Interfaces:**
-- Consumes: `mask_substitutions(cmd) -> (masked, subs)` and `SENTINEL` (both already in `rm_guard.py`); `DANGEROUS_VARS` (line 145)
+- Consumes: `tokenize(cmd)` from Task 1; `segment_bounds(toks) -> [(start, end)]`; `ENV_ASSIGN_RE` (line ~220); `DANGEROUS_VARS` (line ~145); `SENTINEL`
 - Produces:
-  - `leading_bindings(cmd) -> ({name: literal}, rest_text)`
-  - `proven_bindings(cmd) -> {name: literal}` — the only entry point Task 2 uses
-  - `_statement_end(s, i) -> (end, sep)`, `_lone_assignment(stmt) -> (name, value)`, `_read_only_mentions(name, rest) -> bool`
-  - `ASSIGN_RE`, `BINDING_SEPS`, `SUBST_NAME_RE` (module constants; `SUBST_NAME_RE` is unused until Task 2)
+  - `proven_bindings(toks, bounds) -> {name: literal}` — the entry point Task 3 uses
+  - `_read_only_mentions(name, toks) -> bool`
+  - `BINDING_SEPS`, `SUBST_NAME_RE` (module constants; `SUBST_NAME_RE` is unused until Task 3)
 
 - [ ] **Step 1: Write the failing test**
 
-In `config/.claude/hooks/test_rm_guard.py`, extend the import at line 29:
+Extend the import in `config/.claude/hooks/test_rm_guard.py`:
 
 ```python
-from rm_guard import MARK, proven_bindings  # noqa: E402
+from rm_guard import MARK, proven_bindings, segment_bounds, tokenize  # noqa: E402
 ```
 
-Add this block immediately after the `CASES` list ends (after line 161, before `def check_wrapper():`):
+Add this block immediately after the `CASES` list ends, before `def check_wrapper():`:
 
 ```python
 # (command, the bindings it proves)
@@ -54,11 +113,12 @@ Add this block immediately after the `CASES` list ends (after line 161, before `
 BINDING_CASES = [
     # --- proven --------------------------------------------------------------
     ('W=/tmp/build; rm -rf "$W"/*', {"W": "/tmp/build"}),
-    # The case that forces raw-text scanning: shlex eats the newline, so this
-    # tokenizes exactly like the env-prefix form two rows below.
+    # Tokenized identically to the env-prefix form below until mask_opaque began
+    # normalising unquoted newlines to ";".
     ('W=/tmp/build\nrm -rf "$W"/*', {"W": "/tmp/build"}),
     ('W=/tmp/build && rm -rf "$W"/*', {"W": "/tmp/build"}),
     ('A=/tmp; B=x; rm -rf "$A/$B"/*', {"A": "/tmp", "B": "x"}),
+    # shlex has already stripped the quotes, so the value arrives whole.
     ('W="/tmp/my build"; rm -rf "$W"/*', {"W": "/tmp/my build"}),
     # Last wins, exactly as the shell does.
     ('W=/tmp/x; W=/; rm -rf "$W"/*', {"W": "/"}),
@@ -69,16 +129,18 @@ BINDING_CASES = [
 
     # --- not proven ----------------------------------------------------------
     # An env prefix is expanded from the OUTER scope before the assignment
-    # applies, so it proves nothing at all.
+    # applies, so it proves nothing. One segment, not two.
     ('W=/tmp/x rm -rf "$W"/*', {}),
     ('export W=/tmp/x; rm -rf "$W"/*', {}),
-    # The run must start at offset 0: proving `echo hi` cannot touch W means
-    # reasoning about arbitrary commands.
+    # The run must start at the first segment: proving `echo hi` cannot touch W
+    # means reasoning about arbitrary commands.
     ('echo hi; W=/tmp/x; rm -rf "$W"/*', {}),
     # A pipeline segment runs in a subshell, so the assignment never escapes.
     ('W=/tmp/x | cat; rm -rf "$W"/*', {}),
     # ...and `||` runs what follows only if the assignment FAILED.
     ('W=/tmp/x || rm -rf "$W"/*', {}),
+    # `then W=/tmp/x` is two tokens, so a conditional branch cannot bind.
+    ('if x; then W=/tmp/x; fi; rm -rf "$W"/*', {}),
     ('W=$HOME; rm -rf "$W"/*', {}),
     ('W=$(pwd); rm -rf "$W"/*', {}),
     ('W=`pwd`; rm -rf "$W"/*', {}),
@@ -89,8 +151,8 @@ BINDING_CASES = [
     ('W=/tmp/x; rm -rf "${W:-/}"/*', {}),
     # The deny list is absolute: a same-line reassignment does not unlock it.
     ('HOME=/tmp/fake; rm -rf "$HOME"', {}),
-    # A heredoc body cannot begin the run, so it can never manufacture a
-    # binding. This is the hole that forced the leading-run design.
+    # mask_opaque reduced the body to one sentinel token, so a heredoc can never
+    # supply a binding -- no leading-run rule needed to exclude it.
     ("cat <<'EOF' > /tmp/f\nW=/tmp/safe\nEOF\nrm -rf \"$W\"/*", {}),
 ]
 
@@ -99,16 +161,16 @@ def check_bindings():
     """proven_bindings() in isolation. Nothing here is executed -- see module doc."""
     fails = []
     for cmd, want in BINDING_CASES:
-        got = proven_bindings(cmd)
+        toks = tokenize(cmd)
+        got = proven_bindings(toks, segment_bounds(toks))
         if got != want:
             fails.append(("bindings", cmd, want, got, ""))
     return fails
 ```
 
-In `main()`, add the call after line 291 and fold the count into `total`:
+In `main()`, add the call after `fails += check_render()` and fold the count into `total`:
 
 ```python
-    fails += check_render()
     fails += check_bindings()
 ```
 
@@ -120,117 +182,49 @@ In `main()`, add the call after line 291 and fold the count into `total`:
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: a traceback, not a test failure — `ImportError: cannot import name 'proven_bindings' from 'rm_guard'`. That is the correct failure for this step; the function does not exist yet.
+Expected: a traceback, not a test failure — `ImportError: cannot import name 'proven_bindings' from 'rm_guard'`. That is the correct failure here; the function does not exist yet.
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `config/.claude/hooks/rm_guard.py`, insert this section after `has_subst` (line 603) and before the `# --- segmentation ---` banner (line 606):
+Insert after `git_segments` in `config/.claude/hooks/rm_guard.py`, before the `# --- per-command target extraction ---` banner:
 
 ```python
 # --- bindings the command proves about itself --------------------------------
 # `rm -rf "$W"/*` is unprovable on its own and rightly asks. It stops being
-# unprovable when the same command string assigns W a literal first:
+# unprovable when the same command assigns W a literal first:
 #
 #     W=/tmp/build; rm -rf "$W"/*
 #
-# Read from the RAW TEXT, which is forced rather than stylistic. shlex consumes
-# newlines as whitespace, so these two produce an identical token list:
+# Only the LEADING run of lone-assignment segments counts, which is a narrow rule
+# that buys three properties a general dataflow pass would each have to earn:
 #
-#     W=/tmp/build\nrm -rf "$W"/*    sequential -- the binding holds
-#     W=/tmp/build rm -rf "$W"/*     env prefix -- it does NOT, because the
-#                                    shell expands $W from the OUTER scope
-#                                    before the assignment takes effect
-#
-# The first proves the operand and the second proves nothing. "\n" is in
-# SEPARATORS but no token is ever equal to it, so a token-level scan cannot tell
-# these apart and would have to refuse both -- and the newline form is the one
-# that actually gets written.
-#
-# Only the LEADING run of lone assignments counts. That is a narrow rule that
-# buys three properties a general dataflow pass would each have to earn:
-#
-#   unconditional   nothing has run before them, so no `if` branch, no loop and
-#                   no subshell can have skipped them or contained them
-#   not data        a heredoc body can never BEGIN the run, so the hole where
-#                   `cat <<'EOF' ... W=/tmp/safe ... EOF` manufactures a binding
-#                   for an unset variable never opens
+#   unconditional   nothing has run before them, so no branch and no loop can
+#                   have skipped them
+#   not data        a heredoc body arrives as one sentinel token, so it cannot
+#                   supply a binding no matter what it says
 #   no re-entry     `echo hi; W=/tmp/x; ...` proves nothing, because clearing it
 #                   would mean proving `echo hi` cannot touch W
-ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
-# The bare read forms, and the only ones substituted. `${W:-/}` is deliberately
-# absent: it is not a plain read, and _read_only_mentions rejects the binding
-# outright rather than leaving a half-resolved operand behind.
+#
+# This reads the token stream, which only works because mask_opaque normalises
+# unquoted newlines to ";". Before that, shlex consumed a newline as whitespace
+# and these two were the same token list:
+#
+#     W=/tmp/build\nrm -rf "$W"/*    sequential -- the binding holds
+#     W=/tmp/build rm -rf "$W"/*     env prefix -- it does NOT, because the shell
+#                                    expands $W from the OUTER scope before the
+#                                    assignment takes effect
+#
+# Now the first is two segments and the second is one, so telling them apart is a
+# length test rather than a second parser.
 SUBST_NAME_RE = re.compile(
     r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
-# Separators that can terminate a statement and still leave the binding
-# standing. `|` and `&` put the assignment in a subshell it never escapes, and
-# `||` runs what follows only when the assignment failed.
-BINDING_SEPS = (";", "&&", "\n")
+# Separators that continue the run. `|` and `&` put the assignment in a subshell
+# it never escapes; `||` runs what follows only when the assignment failed.
+BINDING_SEPS = (";", "&&")
 
 
-def _statement_end(s, i):
-    """-> (end, sep) for the statement starting at s[i], quote-aware.
-
-    end is one past the statement's last character. sep is what terminated it:
-    ";", "&&", "\\n", "" at end of string, or one of "|", "||", "&" -- which the
-    caller must treat as ending the run rather than as another boundary.
-    """
-    quote, n = None, len(s)
-    while i < n:
-        c = s[i]
-        if quote == "'":
-            if c == "'":
-                quote = None
-            i += 1
-            continue
-        if quote == '"':
-            if c == "\\" and i + 1 < n:
-                i += 2
-                continue
-            if c == '"':
-                quote = None
-            i += 1
-            continue
-        if c == "\\" and i + 1 < n:
-            i += 2
-            continue
-        if c in "'\"":
-            quote = c
-            i += 1
-            continue
-        if c in ";\n":
-            return i, c
-        if c in "|&":
-            two = s[i:i + 2]
-            return i, two if two in ("&&", "||") else c
-        i += 1
-    return n, ""
-
-
-def _lone_assignment(stmt):
-    """-> (name, value), or (None, None) if stmt is not one literal assignment.
-
-    `export W=/x`, `read W` and the env-prefix `W=/x rm -rf ...` all fail the
-    one-word test. The value must be fully literal -- no expansion, no
-    substitution (a masked sentinel counts as one) -- so that substituting it
-    cannot introduce a fresh expansion for the classifier to resolve again.
-    """
-    if not ASSIGN_RE.match(stmt):
-        return None, None
-    try:
-        words = shlex.split(stmt)
-    except ValueError:
-        return None, None
-    if len(words) != 1:
-        return None, None
-    name, _, value = words[0].partition("=")
-    if any(c in value for c in ("$", "`", SENTINEL)):
-        return None, None
-    return name, value
-
-
-def _read_only_mentions(name, rest):
-    """Is every mention of `name` in `rest` a plain $name / ${name} read?
+def _read_only_mentions(name, toks):
+    """Is every mention of `name` in toks a plain $name / ${name} read?
 
     Anything else drops the binding. One blunt rule stands in for a catalogue of
     every way a shell can rebind a variable, because all of them name it:
@@ -241,49 +235,42 @@ def _read_only_mentions(name, rest):
     It over-rejects -- `echo "$W"` keeps its binding but `echo W` loses it --
     which is the direction that costs a prompt rather than a filesystem.
     """
-    for m in re.finditer(r"(?<!\w)%s(?!\w)" % re.escape(name), rest):
-        s = m.start()
-        if s >= 1 and rest[s - 1] == "$":
-            continue
-        if s >= 2 and rest[s - 2:s] == "${" and rest[m.end():m.end() + 1] == "}":
-            continue
-        return False
+    word = re.compile(r"(?<!\w)%s(?!\w)" % re.escape(name))
+    for t in toks:
+        for m in word.finditer(t):
+            s = m.start()
+            if s >= 1 and t[s - 1] == "$":
+                continue
+            if s >= 2 and t[s - 2:s] == "${" and t[m.end():m.end() + 1] == "}":
+                continue
+            return False
     return True
 
 
-def leading_bindings(cmd):
-    """-> ({name: literal}, rest) for the leading run of lone assignments.
-
-    rest is the remainder of the masked command, which the caller scans for any
-    other mention of a bound name.
-    """
-    masked, _ = mask_substitutions(cmd)
-    bindings, i, n = {}, 0, len(masked)
-    while i < n:
-        while i < n and masked[i] in " \t\n":
-            i += 1                      # blank lines between assignments
-        if i >= n:
-            break
-        end, sep = _statement_end(masked, i)
-        if sep and sep not in BINDING_SEPS:
-            break                       # see _statement_end
-        name, value = _lone_assignment(masked[i:end].strip())
-        if name is None:
-            break
-        bindings[name] = value          # last wins, exactly as the shell does
-        i = end + len(sep)
-    return bindings, masked[i:]
-
-
-def proven_bindings(cmd):
+def proven_bindings(toks, bounds):
     """-> {name: literal} the command proves, after both disqualifiers.
 
     DANGEROUS_VARS is checked here rather than at the point of use, so the deny
     list stays absolute: a same-line `HOME=/tmp/fake` does not unlock
-    `rm -rf "$HOME"`. One unexplained exception in that list would cost more
-    than the prompt it saves.
+    `rm -rf "$HOME"`. One unexplained exception in that list would cost more than
+    the prompt it saves.
     """
-    bindings, rest = leading_bindings(cmd)
+    bindings, rest_at = {}, 0
+    for start, stop in bounds:
+        seg = toks[start:stop]
+        if len(seg) != 1 or not ENV_ASSIGN_RE.match(seg[0]):
+            break
+        # The separator AFTER the segment; end of input terminates it cleanly.
+        if stop < len(toks) and toks[stop] not in BINDING_SEPS:
+            break
+        name, _, value = seg[0].partition("=")
+        # A literal value cannot reintroduce something to resolve. SENTINEL
+        # catches a masked heredoc body or substitution that unmask left behind.
+        if any(c in value for c in ("$", "`", SENTINEL)):
+            break
+        bindings[name] = value          # last wins, exactly as the shell does
+        rest_at = stop + 1
+    rest = toks[rest_at:]
     return {n: v for n, v in bindings.items()
             if n not in DANGEROUS_VARS and _read_only_mentions(n, rest)}
 ```
@@ -292,7 +279,7 @@ def proven_bindings(cmd):
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: `94/94 passed` (73 baseline + 21 `BINDING_CASES`). No `FAIL` lines. If a binding case fails, the printed `want:` / `got:` are the two dicts — fix the scanner, not the expectation.
+Expected: `102/102 passed` (80 baseline + 22 `BINDING_CASES`). No `FAIL` lines. If a binding case fails, the printed `want:` / `got:` are the two dicts — fix the scanner, not the expectation.
 
 - [ ] **Step 5: Commit**
 
@@ -301,32 +288,33 @@ git add config/.claude/hooks/rm_guard.py config/.claude/hooks/test_rm_guard.py
 git commit -F - <<'EOF'
 feat(claude): read the bindings a command proves about itself
 
-Nothing consumes these yet. Scanning the raw text rather than the token
-stream is the part worth review: shlex eats newlines, so the sequential
-form and the env-prefix form tokenize identically, and only the first
-proves anything about $W.
+Nothing consumes these yet. A leading run of lone-assignment segments is
+a narrow enough rule to be worth the reach: the bindings are
+unconditional, a heredoc body cannot supply one because it arrives as a
+single sentinel token, and any other mention of the name drops it.
 
-Taking just the leading run of lone assignments also makes the binding
-unconditional for free, which is what closes the hole where a heredoc
-body manufactures one for a variable that is actually unset.
+Reads the token stream rather than the raw text, which only became
+possible once mask_opaque started normalising newlines -- until then the
+sequential form and the env-prefix form, which prove opposite things,
+tokenized to the same list.
 EOF
 ```
 
 ---
 
-### Task 2: substitute and re-classify
+### Task 3: substitute and re-classify
 
 **Files:**
-- Modify: `config/.claude/hooks/rm_guard.py:411` (`classify_operand` signature and body), `:807` (`rate` inside `analyse_segment`), `:798` (`analyse_segment` signature), `:852` (the `git clean` call site), `:977` (`analyse`, before `in_git = git_segments(toks)`), `:1016` (the `rm` loop call site), `:1023` (the `analyse_segment` call site)
+- Modify: `config/.claude/hooks/rm_guard.py` — `classify_operand` signature and body; `analyse_segment` signature and its `rate` helper; the `git clean` call site; the `ssh` branch comment; `analyse` (compute the map, two call sites)
 - Modify: `config/.claude/hooks/test_rm_guard.py` — add verdict rows to `CASES`
 
 **Interfaces:**
-- Consumes: `proven_bindings(cmd) -> {name: literal}` and `SUBST_NAME_RE` from Task 1
-- Produces: `classify_operand(op, cwd, bare_var_ok=True, assigned=None)` and `analyse_segment(argv, cwd, depth, assigned=None)` — both with the new parameter last and defaulted, so no other caller changes
+- Consumes: `proven_bindings(toks, bounds)` and `SUBST_NAME_RE` from Task 2
+- Produces: `classify_operand(op, cwd, bare_var_ok=True, assigned=None)` and `analyse_segment(argv, cwd, depth, assigned=None)` — the new parameter is last and defaulted, so no other caller changes
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `CASES` in `config/.claude/hooks/test_rm_guard.py`, after the command-substitution block (after line 160):
+Append to `CASES`, after the command-substitution block:
 
 ```python
     # --- a binding the command itself proves ---------------------------------
@@ -334,9 +322,8 @@ Append to `CASES` in `config/.claude/hooks/test_rm_guard.py`, after the command-
     # stdin. Nothing here is executed.
     ("binding: literal assignment, then a suffixed use",
      'W=/tmp/build; rm -rf "$W"/*', "allow"),
-    ("binding: newline form, which tokenizes like an env prefix",
-     'W=/tmp/build\nrm -rf "$W"/*', "allow"),
-    ("binding: && terminates a statement", 'W=/tmp/build && rm -rf "$W"/*', "allow"),
+    ("binding: newline form", 'W=/tmp/build\nrm -rf "$W"/*', "allow"),
+    ("binding: && continues the run", 'W=/tmp/build && rm -rf "$W"/*', "allow"),
     ("binding: two names in one operand", 'A=/tmp; B=x; rm -rf "$A/$B"/*', "allow"),
     # The payoff past rm: every non-rm command is classified with
     # bare_var_ok=False, because `find $W -delete` with W unset is `rm -rf .`.
@@ -352,7 +339,7 @@ Append to `CASES` in `config/.claude/hooks/test_rm_guard.py`, after the command-
     ("binding: env prefix proves nothing", 'W=/tmp/x rm -rf "$W"/*', "ask"),
     ("binding: a later mention disqualifies it",
      'W=/tmp/x; unset W; rm -rf "$W"/*', "ask"),
-    ("binding: the run must start at offset 0",
+    ("binding: the run must start at the first segment",
      'echo hi; W=/tmp/x; rm -rf "$W"/*', "ask"),
     ("binding: a pipeline puts the assignment in a subshell",
      'W=/tmp/x | cat; rm -rf "$W"/*', "ask"),
@@ -361,9 +348,8 @@ Append to `CASES` in `config/.claude/hooks/test_rm_guard.py`, after the command-
     # and shlex has stripped the quotes by now -- so the two cases are
     # indistinguishable and the binding is withheld from the far end.
     ("binding: does not cross ssh", "W=/tmp/x; ssh box 'rm -rf $W/*'", "ask"),
-    ("binding: only one name of two resolves",
-     'A=/tmp; rm -rf "$A/$B"/*', "ask"),
-    ("binding: a heredoc body cannot begin the run",
+    ("binding: only one name of two resolves", 'A=/tmp; rm -rf "$A/$B"/*', "ask"),
+    ("binding: a heredoc body cannot bind",
      "cat <<'EOF' > /tmp/f\nW=/tmp/safe\nEOF\nrm -rf \"$W\"/*", "ask"),
 ```
 
@@ -371,7 +357,7 @@ Append to `CASES` in `config/.claude/hooks/test_rm_guard.py`, after the command-
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: `94/111 passed`, with 5 `FAIL` lines — the five rows expecting `allow`/`deny` that still come back `ask`:
+Expected: `102/119 passed`, with 5 `FAIL` lines — the five rows expecting `allow`/`deny` that still come back `ask`:
 
 ```
 FAIL binding: literal assignment, then a suffixed use
@@ -379,11 +365,11 @@ FAIL binding: literal assignment, then a suffixed use
   want: allow   got: ask
 ```
 
-The 12 rows expecting `ask` pass already; they are pinning the disqualifiers, and they must keep passing after Step 3.
+The 12 rows expecting `ask` pass already; they pin the disqualifiers, and they must keep passing after Step 3.
 
 - [ ] **Step 3: Write minimal implementation**
 
-**3a.** Change the `classify_operand` signature at line 411 and insert the resolution block right after the command-substitution check (after line 420):
+**3a.** Change the `classify_operand` signature and insert the resolution block after the sentinel check:
 
 ```python
 def classify_operand(op, cwd, bare_var_ok=True, assigned=None):
@@ -397,17 +383,19 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None):
     assigned holds the names the command itself bound to a literal; see
     proven_bindings.
     """
-    if "`" in op or "$(" in op:
-        return "ask", "command substitution cannot be statically resolved"
+```
 
+Then, immediately after the `if SENTINEL in op:` arm:
+
+```python
     # A name the command bound to a literal is not an unknown. Substituting and
     # re-classifying puts the result on the same path a hand-written literal
     # takes, which is what makes escalation fall out for free rather than
     # needing a rule of its own: `W=/` resolves to a glob under the root and
     # denies, exactly as `rm -rf /*` does.
     #
-    # Recursed WITHOUT assigned, so a literal value that somehow still looks
-    # like an expansion cannot loop.
+    # Recursed WITHOUT assigned, so a value that somehow still looks like an
+    # expansion cannot loop.
     if assigned:
         resolved = SUBST_NAME_RE.sub(
             lambda m: assigned.get(m.group(1) or m.group(2), m.group(0)), op)
@@ -420,9 +408,9 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None):
             return d, f"{shown} in this command, so this reads as {resolved}; {r}"
 ```
 
-Leave the rest of the function body unchanged. A partially-resolved operand — `$A/$B` with only `A` bound — fails the `EXPANSION_RE` test and falls through to today's logic on the original `op`, which is what the "only one name of two resolves" row pins.
+Leave the rest of the function unchanged. A partially-resolved operand — `$A/$B` with only `A` bound — fails the `EXPANSION_RE` test and falls through to today's logic on the original `op`, which is what the "only one name of two resolves" row pins.
 
-**3b.** Thread the parameter through `analyse_segment`. Change its signature at line 798 and its `rate` helper at line 807:
+**3b.** Thread the parameter through `analyse_segment` and its `rate` helper:
 
 ```python
 def analyse_segment(argv, cwd, depth, assigned=None):
@@ -445,14 +433,14 @@ def analyse_segment(argv, cwd, depth, assigned=None):
             out.append(Finding(d, segment, label, t, r))
 ```
 
-**3c.** The `git clean` branch calls `classify_operand` directly. At line 852:
+**3c.** The `git clean` branch calls `classify_operand` directly:
 
 ```python
                 d, r = classify_operand(t, cwd, bare_var_ok=False,
                                         assigned=assigned)
 ```
 
-**3d.** Leave the `ssh` branch's `analyse(remote, "", depth + 1)` call alone, and record why. Insert this comment above it (line 861, inside `elif base == "ssh":`, before `remote = ssh_remote_command(argv)`):
+**3d.** Leave the `ssh` branch's `analyse(remote, "", depth + 1)` alone, and record why. Insert above `remote = ssh_remote_command(argv)`:
 
 ```python
     elif base == "ssh":
@@ -465,24 +453,23 @@ def analyse_segment(argv, cwd, depth, assigned=None):
         remote = ssh_remote_command(argv)
 ```
 
-**3e.** In `analyse`, compute the map once. Insert immediately before `in_git = git_segments(toks)` at line 977:
+**3e.** In `analyse`, compute the map once. Insert immediately before `in_git = git_segments(toks)`:
 
 ```python
-    # What the command proves about its own variables, read from the raw text
-    # rather than these tokens -- see leading_bindings for why that is forced.
-    assigned = proven_bindings(cmd)
+    # What the command proves about its own variables.
+    assigned = proven_bindings(toks, bounds)
 
     in_git = git_segments(toks)
 ```
 
-**3f.** Pass it at the two call sites. In the `rm` loop, line 1016:
+**3f.** Pass it at the two call sites — the `rm` loop:
 
 ```python
         for op in operands:
             d, r = classify_operand(op, cwd, assigned=assigned)
 ```
 
-And the segment loop, line 1023:
+and the segment loop:
 
 ```python
     for start, end in bounds:
@@ -493,9 +480,9 @@ And the segment loop, line 1023:
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: `111/111 passed`, no `FAIL` lines.
+Expected: `119/119 passed`, no `FAIL` lines.
 
-Then spot-check the reason text by hand, which the verdict table does not cover:
+Then spot-check the reason text, which the verdict table does not cover:
 
 ```bash
 printf '%s' '{"tool_input":{"command":"W=/tmp/build; rm -rf \"$W\"/*"},"cwd":"/home/u/project"}' \
@@ -521,26 +508,26 @@ with bare_var_ok=False, because `find $W -delete` with W unset becomes
 `find -delete` -- and a proven binding clears that whole class.
 
 Bindings stop at ssh. The local shell expands a double-quoted remote
-command before ssh runs and shlex has dropped the quotes by then, so
-the two forms are indistinguishable and the far end stays unproven.
+command before ssh runs and shlex has dropped the quotes by then, so the
+two forms are indistinguishable and the far end stays unproven.
 EOF
 ```
 
 ---
 
-### Task 3: stop painting a bound name unknowable
+### Task 4: stop painting a bound name unknowable
 
 **Files:**
-- Modify: `config/.claude/hooks/rm_guard.py:117` (`Finding`), `:1058` (`unknown_spans`), `:1087` (`paint_token`), `:1176` + `:1217` + `:1231` (`echo_line` / `render` call sites), and the three Finding construction sites that carry a resolved operand
+- Modify: `config/.claude/hooks/rm_guard.py` — `Finding`; `unknown_spans`; `paint_token`; `echo_line`; `render`; the three Finding sites that carry a resolved operand
 - Modify: `config/.claude/hooks/test_rm_guard.py` — two rows in `check_render()`, bump `RENDER_CHECKS`
 
 **Interfaces:**
-- Consumes: `classify_operand(..., assigned=...)` and `analyse_segment(..., assigned)` from Task 2
-- Produces: `Finding` gains a trailing `bound` field (`frozenset` of proven names, default empty); `unknown_spans(tok, bound=frozenset())`; `paint_token(style, tok, bound=frozenset())`
+- Consumes: `classify_operand(..., assigned=...)` and `analyse_segment(..., assigned)` from Task 3
+- Produces: `Finding` gains a trailing `bound` field (`frozenset` of proven names, default empty); `unknown_spans(tok, bound=frozenset())`; `paint_token(style, tok, bound=frozenset())`; `echo_line(toks, flagged, bound=frozenset())`
 
 - [ ] **Step 1: Write the failing test**
 
-In `check_render()`, add two rows to the second `for` tuple-list (after the `("the fix is cyan", ...)` row at line 271):
+Add two rows to the second tuple-list in `check_render()`, after the `("the fix is cyan", ...)` row:
 
 ```python
             # Magenta means "the guard cannot know this value". Once the command
@@ -553,7 +540,7 @@ In `check_render()`, add two rows to the second `for` tuple-list (after the `("t
              "W=/ in this command, so this reads as //*"),
 ```
 
-Bump the constant at line 200:
+Bump the constant:
 
 ```python
 RENDER_CHECKS = 19
@@ -563,7 +550,7 @@ RENDER_CHECKS = 19
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: `112/113 passed` with one `FAIL`:
+Expected: `120/121 passed` with one `FAIL`:
 
 ```
 FAIL render: a bound name is not painted unknowable
@@ -571,17 +558,13 @@ FAIL render: a bound name is not painted unknowable
   want: \e[1;33m$W/*\e[0m   got: absent
 ```
 
-The reason row passes already — Task 2 built that string. Only the colour is wrong: `$W` still comes back `\e[1;35m` because `unknown_spans` cannot see the binding.
+The reason row passes already — Task 3 built that string. Only the colour is wrong: `$W` still comes back `\e[1;35m` because `unknown_spans` cannot see the binding.
 
 - [ ] **Step 3: Write minimal implementation**
 
-**3a.** Add the field to `Finding` at line 117, and document it in the field list above:
+**3a.** Add the field to `Finding`, documenting it in the field list above:
 
 ```python
-#   highlight extra tokens to light up in the echo that are NOT operands and get
-#             no row of their own -- the arguments of a construct that hides what
-#             it runs, where the complaint is the whole invocation and not one
-#             token in it
 #   bound     names this command proved to be literals, so the renderer knows
 #             which expansions in `operand` are NOT unknowable. Carried per
 #             finding rather than per verdict because an ssh'd operand's
@@ -591,7 +574,7 @@ Finding = namedtuple("Finding",
                      defaults=((), frozenset()))
 ```
 
-**3b.** Stamp it at the three sites that classify an operand with `assigned`. In `analyse_segment`'s `rate`:
+**3b.** Stamp it at the three sites that classify an operand with `assigned`. In `rate`:
 
 ```python
         for t in targets:
@@ -601,14 +584,14 @@ Finding = namedtuple("Finding",
                                frozenset(assigned or ())))
 ```
 
-In the `git clean` branch, replace the `out.append` at line 859:
+In the `git clean` branch:
 
 ```python
                 out.append(Finding(d, segment, label, t, r, (),
                                    frozenset(assigned or ())))
 ```
 
-In `analyse`'s `rm` loop, replace the `findings.append` at line 1019:
+In `analyse`'s `rm` loop:
 
 ```python
             findings.append(Finding(d, segment, None, op, r, (),
@@ -617,23 +600,13 @@ In `analyse`'s `rm` loop, replace the `findings.append` at line 1019:
 
 The `ssh` branch's `_replace(label=...)` is untouched, so a remote finding keeps the empty `bound` its own `analyse` gave it.
 
-**3c.** Teach `unknown_spans` about it (line 1058). Add the parameter and one skip, and extend the docstring:
+**3c.** Teach `unknown_spans` about it — add the parameter, one skip, and a docstring line:
 
 ```python
 def unknown_spans(tok, bound=frozenset()):
-    """-> sorted [(start, end)] of the spans in tok whose value is unknowable.
+```
 
-    A substitution always qualifies. An expansion qualifies only when it is NOT
-    the whole token, and that restriction is the rule rather than an exception:
-
-        $W/*     $W is unknowable, and /* is what turns "empty" into "/"
-        $HOME    the guard knows exactly what this is -- that is why it denies
-        $X       bare, so empty makes it an error, not a catastrophe
-
-    Only the first has a half worth separating. The other two are flagged for
-    what the guard DOES know about them, and dimming that to "cannot know" would
-    misreport the finding sitting next to it.
-
+```python
     ${V:?}-guarded forms are skipped outright: they cannot be empty, they are
     what the reason tells you to write, and painting the fix like the fault
     undercuts the advice. A name in `bound` is skipped for the same reason
@@ -653,19 +626,17 @@ def unknown_spans(tok, bound=frozenset()):
     return sorted(spans)
 ```
 
-**3d.** Thread it through `paint_token` (line 1087):
+**3d.** Thread it through `paint_token`:
 
 ```python
 def paint_token(style, tok, bound=frozenset()):
-    """Paint tok in `style`, except for its unknowable spans, which go UNKNOWN.
+```
 
-    Callers clip first, so a span cut in half by the truncation simply fails to
-    parse and comes back in the base style -- never as a severed escape.
-    """
+```python
     spans = unknown_spans(tok, bound)
 ```
 
-**3e.** Pass it from the two render paths. In `echo_line`, add the parameter and use it in the final join (line 1145 and line 1176):
+**3e.** Thread it through `echo_line` and `render`:
 
 ```python
 def echo_line(toks, flagged, bound=frozenset()):
@@ -675,7 +646,7 @@ def echo_line(toks, flagged, bound=frozenset()):
     return " ".join(paint_token(style(i), p, bound) for i, p in pieces)
 ```
 
-In `render`, derive it per block and pass it to both painters (lines 1213-1232):
+In `render`, derive it per block and pass it to both painters:
 
 ```python
     for segment, label, group in blocks(findings):
@@ -699,13 +670,14 @@ In `render`, derive it per block and pass it to both painters (lines 1213-1232):
 
 Run: `python3 config/.claude/hooks/test_rm_guard.py`
 
-Expected: `113/113 passed`, no `FAIL` lines. The existing render rows matter most here — `("unguarded expansion splits from its suffix", 'rm -rf "$W"/*', ...)` must still find `$W` magenta, because that command binds nothing.
+Expected: `121/121 passed`, no `FAIL` lines. The existing render rows matter most here — `("unguarded expansion splits from its suffix", 'rm -rf "$W"/*', ...)` must still find `$W` magenta, because that command binds nothing.
 
 Then look at the deny by eye, since colour is the whole point of this task:
 
 ```bash
 printf '%s' '{"tool_input":{"command":"W=/; rm -rf \"$W\"/*"},"cwd":"/home/u/project"}' \
-  | python3 config/.claude/hooks/rm_guard.py | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["permissionDecisionReason"])'
+  | python3 config/.claude/hooks/rm_guard.py \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["permissionDecisionReason"])'
 ```
 
 Expected: `$W/*` renders as one yellow token, and the reason reads `W=/ in this command, so this reads as //*; glob directly under the filesystem root`.
@@ -717,11 +689,10 @@ git add config/.claude/hooks/rm_guard.py config/.claude/hooks/test_rm_guard.py
 git commit -F - <<'EOF'
 fix(claude): stop dimming a bound name to "cannot know"
 
-Magenta is the one colour that means the guard cannot resolve a span,
-and it is what separates an operand nothing can read from one that
-resolved to something fatal. A name the command assigned a literal
-belongs on the $HOME side of that line: known, and flagged for what it
-is known to be.
+Magenta is the one colour that means the guard cannot resolve a span, and
+it is what separates an operand nothing can read from one that resolved
+to something fatal. A name the command assigned a literal belongs on the
+$HOME side of that line: known, and flagged for what it is known to be.
 
 Carried per finding rather than per verdict, because an operand reached
 over ssh is unproven even when the local segment's operands are not.
@@ -736,15 +707,15 @@ EOF
 
 | Spec section | Task |
 |---|---|
-| Where bindings come from (raw text, leading run, `_statement_end` separators, `_lone_assignment`) | 1 |
-| What disqualifies a binding (other-mention, `DANGEROUS_VARS`) | 1 |
-| How a binding is used (substitute, re-classify, fall through, escalation) | 2 |
-| ssh (bindings withheld) | 2, step 3d |
-| Rendering (`unknown_spans` suppression, reason text) | 2 builds the reason, 3 fixes the colour |
-| Verdict table (16 rows) | 2, plus 21 scanner-level rows in Task 1 |
-| Cost model (three structural properties) | comments in Task 1's `leading_bindings` header |
+| Where bindings come from (token-level leading run, separator rule, literal value, `tokenize` helper) | 1, 2 |
+| What disqualifies a binding (other-mention, `DANGEROUS_VARS`) | 2 |
+| How a binding is used (substitute, re-classify, fall through, escalation) | 3 |
+| ssh (bindings withheld) | 3, step 3d |
+| Rendering (`unknown_spans` suppression, reason text) | 3 builds the reason, 4 fixes the colour |
+| Verdict table (17 rows) | 3, plus 22 scanner-level rows in Task 2 |
+| Cost model (three structural properties) | comments in Task 2's section header |
 | Not doing (`CLAUDE.md`, non-literal values, `rclone` scope gap) | out of scope by design; no task |
 
 **2. Placeholders.** None — every code step carries the complete text to insert, every run step names the command and its expected output, and the two hand-checks give exact `printf` invocations.
 
-**3. Type consistency.** `proven_bindings` returns `{name: literal}` and is called with that name in Task 2 (`assigned = proven_bindings(cmd)`). `assigned` is the parameter name in `classify_operand`, `analyse_segment`, and `rate` throughout. `bound` is a `frozenset` everywhere: built via `frozenset(assigned or ())` at the three Finding sites, defaulted to `frozenset()` in `unknown_spans` / `paint_token` / `echo_line`, and unioned in `render`. `SUBST_NAME_RE` is defined in Task 1 and first used in Task 2. Test counts chain correctly: 73 → 94 → 111 → 113.
+**3. Type consistency.** `proven_bindings(toks, bounds)` returns `{name: literal}` and is called with that signature in Task 2's test (`proven_bindings(toks, segment_bounds(toks))`) and in Task 3 (`proven_bindings(toks, bounds)`). `assigned` is the parameter name in `classify_operand`, `analyse_segment`, and `rate` throughout. `bound` is a `frozenset` everywhere: built via `frozenset(assigned or ())` at the three Finding sites, defaulted in `unknown_spans` / `paint_token` / `echo_line`, unioned in `render`. `tokenize` is defined in Task 1 and used in Tasks 1 and 2. `SUBST_NAME_RE` is defined in Task 2 and first used in Task 3. Test counts chain: 80 → 80 → 102 → 119 → 121.

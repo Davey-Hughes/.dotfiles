@@ -35,51 +35,59 @@ The only tractable form is assignment and use in the same command string.
 
 ### Where bindings come from
 
-A binding is discovered from the **raw command text**, not the token stream.
-This is forced: `shlex` with `whitespace_split=True` consumes newlines as
-whitespace, so
+Bindings are read from the **token stream**, walking `segment_bounds` -- the same
+view every other rule in this file uses.
+
+That was not possible when this spec was first written. `shlex` consumed a
+newline as whitespace, so
 
     W=/tmp/build\nrm -rf "$W"/*      (sequential -- the binding holds)
-    W=/tmp/build rm -rf "$W"/*       (env prefix -- the binding does NOT hold;
-                                      the shell expands $W from the outer scope
+    W=/tmp/build rm -rf "$W"/*       (env prefix -- it does NOT, because the
+                                      shell expands $W from the outer scope
                                       before the assignment takes effect)
 
-tokenize to the same list. `SEPARATORS` contains `"\n"`, but no token is ever
-equal to it, so segment-level analysis cannot separate these two.
+tokenized to the same list, and only the first proves anything -- which forced a
+raw-text scanner. Commit `e3c8e72` made `mask_opaque` normalise unquoted newlines
+to `;`, so the sequential forms are now two segments and the env-prefix form is
+one. The distinction that needed its own quote-aware parser is a
+`len(segment) == 1` test.
 
-`leading_bindings(cmd) -> ({name: value}, rest_offset)`:
+`proven_bindings(toks, bounds) -> {name: literal}`:
 
-1. Mask substitutions first, reusing `mask_substitutions`, so a `$(...)` in the
-   leading run is one opaque sentinel rather than something with a `;` in it.
-2. From offset 0, repeatedly consume one statement, quote-aware, terminated by
-   a top-level `;`, `&&`, or newline. `|`, `&`, and `||` do not terminate a
-   statement here and therefore end the run: a pipeline segment executes in a
-   subshell, so its assignment would not escape, and `A=x || rm ...` runs the
-   rm only if the assignment failed.
-3. Accept a statement only if it is exactly one word matching
-   `^[A-Za-z_][A-Za-z0-9_]*=`, and its value contains no `$`, no backtick, and
-   no sentinel. Quotes are stripped via `shlex.split` on that statement alone,
-   so `W="/tmp/my build"` binds `/tmp/my build`.
-4. Stop at the first statement that is not such an assignment. Return the
-   bindings and the offset where the run ended.
+1. Walk `bounds` from the first segment. A segment qualifies only if it is
+   exactly one token matching `^[A-Za-z_][A-Za-z0-9_]*=`. Quoting is already
+   handled: shlex delivers `W="/tmp/my build"` as the single token
+   `W=/tmp/my build`.
+2. Check the separator that **follows** it, `toks[stop]`. Only `;` and `&&`
+   continue the run, and end-of-string counts. `|` and `&` mean the assignment
+   ran in a subshell it never escapes, and `A=x || rm ...` runs the rm only if
+   the assignment failed.
+3. The value must contain no `$`, no backtick, and no `SENTINEL`, so
+   substituting it cannot introduce a fresh expansion, a substitution, or a
+   masked heredoc body.
+4. Stop at the first segment failing any of the above. The tokens from there on
+   are the remainder, scanned for other mentions.
 
 Repeated names take the last value: `A=/tmp; A=/; rm -rf "$A"/*` binds `/`, and
 denies. Last-wins is both what the shell does and the conservative direction.
 
-Because the run must start at offset 0, `echo hi; W=/tmp/x; rm -rf "$W"/*`
-yields no bindings. That is deliberate. Proving that `echo hi` cannot touch `W`
-means reasoning about arbitrary commands, which is the thing this guard refuses
-to do.
+Because the run must start at the first segment, `echo hi; W=/tmp/x; rm -rf
+"$W"/*` yields no bindings. That is deliberate. Proving that `echo hi` cannot
+touch `W` means reasoning about arbitrary commands, which is the thing this
+guard refuses to do.
+
+Tokenizing moves into a `tokenize(cmd)` helper, so the tests can build the same
+token list `analyse` does without duplicating the `mask_opaque` + `shlex`
+incantation. It raises `ValueError`, which `analyse` already handles.
 
 ### What disqualifies a binding
 
 Two filters, applied to the map before it is used.
 
-**Any other mention of the name.** Tokenize the remainder text -- everything
-from `rest_offset` onward -- on its own, rather than trying to map raw-text
-offsets onto the main token stream. If the name appears in any of those tokens
-as anything other than `$NAME` or `${NAME}`, drop that binding. One blunt rule
-covers every rebinding path without cataloguing shell builtins:
+**Any other mention of the name.** Scan the remainder tokens. If the name
+appears in any of them as anything other than `$NAME` or `${NAME}`, drop that
+binding. One blunt rule covers every rebinding path without cataloguing shell
+builtins:
 
     unset W        read W         W+=/x          declare W
     W=other        export W=/x    ((W=1))        for W in ...
@@ -152,11 +160,13 @@ bug there costs a prompt; a bug in binding discovery costs a filesystem.
 Three structural properties keep that bounded, and they are the reason the
 design is shaped this way rather than as general dataflow:
 
-1. Bindings come only from a leading run of literal assignments, so they are
-   unconditional and cannot come from a heredoc body, a subshell, or a
-   conditional branch.
-2. A literal value contains no `$` and no backtick, so substituting it cannot
-   introduce a new expansion.
+1. Bindings come only from a leading run of lone-assignment segments, so they
+   are unconditional. A heredoc body cannot supply one because `mask_opaque`
+   has already reduced it to a single sentinel token; a subshell cannot because
+   `|` and `&` end the run; a conditional branch cannot because `then W=/tmp/x`
+   is two tokens, not one.
+2. A literal value contains no `$`, backtick, or sentinel, so substituting it
+   cannot introduce a new expansion.
 3. Any other mention of the name disqualifies it.
 
 ## Not doing
@@ -186,7 +196,7 @@ the verdict. `CWD` is the existing synthetic `/home/u/project`.
 | command | verdict | what it pins |
 |---|---|---|
 | `W=/tmp/build; rm -rf "$W"/*` | allow | the base case |
-| `W=/tmp/build\nrm -rf "$W"/*` | allow | newline form, which tokenizes like an env prefix |
+| `W=/tmp/build\nrm -rf "$W"/*` | allow | newline form; tokenized like an env prefix before `e3c8e72` |
 | `W=/tmp/build && rm -rf "$W"/*` | allow | `&&` terminates a statement |
 | `A=/tmp; B=x; rm -rf "$A/$B"/*` | allow | two bindings in one operand |
 | `W=/tmp/x; find "$W" -delete` | allow | clears the `bare_var_ok=False` class |
@@ -200,7 +210,7 @@ the verdict. `CWD` is the existing synthetic `/home/u/project`.
 | `W=/tmp/x \| cat; rm -rf "$W"/*` | ask | `\|` ends the run (subshell) |
 | `W=$HOME; rm -rf "$W"/*` | ask | value is not literal |
 | `W=/tmp/x; ssh h 'rm -rf $W/*'` | ask | bindings do not cross ssh |
-| heredoc body containing `W=/tmp/safe`, then `rm -rf "$W"/*` | ask | the hole that motivated the raw-text design |
+| heredoc body containing `W=/tmp/safe`, then `rm -rf "$W"/*` | ask | a body cannot bind: `mask_opaque` reduced it to one sentinel token |
 
 ## Build order
 
