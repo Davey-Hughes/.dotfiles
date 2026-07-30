@@ -103,6 +103,19 @@ CASES = [
     # be wrong.
     ("unquoted heredoc body is left in the scan",
      "cat <<EOF > /tmp/f\nrm -rf /\nEOF", "deny"),
+    # Every case above reaches the guard through heredoc(), whose
+    # "$(cat <<'EOF' ...)" wrapper masks the body as a substitution -- which hid
+    # this for as long as the suite existed. A BARE heredoc is what
+    # `git commit -F -` takes, and nothing masked its body before shlex read it.
+    # Prose is not shell: the apostrophe in "the guard's" is an unterminated
+    # quote, and the parse failure came back as the verdict.
+    ("commit: bare heredoc body with an apostrophe",
+     "git commit -q -F - <<'EOF'\ndocs: plan the guard's binding pass\nEOF\n"
+     'git log --oneline -2 && echo "clean"', "pass"),
+    # The cost was never only the prompt. A parse failure REPLACES the analysis,
+    # so a real catastrophe after the terminator reported as a vague ask.
+    ("bare heredoc prose, then a real rm",
+     "cat <<'EOF' > /tmp/f\ndocs: the guard's pass\nEOF\nrm -rf /", "deny"),
 
     # --- a message argument must not shield a real command -------------------
     ("commit then a real rm", 'git commit -m "chore: clean up" && rm -rf /', "deny"),
