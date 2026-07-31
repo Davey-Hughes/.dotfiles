@@ -46,6 +46,15 @@ jobs:
       # must be the real one, not the image's dash-as-sh.
       - name: Verdicts the guard must produce
         run: python3 config/.claude/hooks/test_rm_guard.py
+      # ...and the verdicts it DID produce, for commands that really ran. The
+      # suite asserts what somebody thought to write down; this replays a
+      # snapshot of real ones, and it is what caught every regression in the
+      # binding-clearing work -- three of them, all invisible to the suite.
+      # Hermetic: the fixture is committed, and $HOME/$TMPDIR are pinned by the
+      # script because safe_roots() folds both in and CI's $HOME is not the one
+      # the fixture was recorded under.
+      - name: Verdicts for real commands (anonymised corpus)
+        run: python3 config/.claude/hooks/test_rm_guard_corpus.py
 
   # Everything that reads the tree without writing to it. One job: they share an
   # apt install and none takes long enough to be worth its own container.
@@ -86,8 +95,54 @@ jobs:
           tar xJf /tmp/sc.tar.xz -C /tmp
           install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
           shellcheck --version
-      # Deliberately the FIRST check to run and its own step: it is the only
-      # failure here that a later commit cannot undo.
+      # A real secret scanner, alongside the credential-shape regexes in
+      # test-tracked-files.sh. Those regexes are this repo's own list of what a
+      # secret looks like; gitleaks carries a maintained ruleset and finds
+      # things the list does not. Pinned and checksummed for the same reason
+      # shellcheck is: a scanner whose findings move on their own is one people
+      # learn to ignore.
+      #
+      # It earns its place because of what the tree now holds. Most files here
+      # are hand-written config, but config/.claude/hooks/rm_guard_corpus.jsonl
+      # is 295 real commands lifted from session transcripts and rewritten --
+      # the one tracked file whose content nobody composed line by line, and so
+      # the one where a regex list is least likely to be enough.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.28.0"
+          GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/gl.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gl.tar.gz" | sha256sum -c - \
+            || { echo "gitleaks checksum mismatch -- refusing to install" >&2; exit 1; }
+          tar xzf /tmp/gl.tar.gz -C /tmp gitleaks
+          install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      # Scans a copy containing exactly the TRACKED files, which is not what
+      # `gitleaks dir .` does: that walks the working directory and ignores
+      # .gitignore entirely. On a CI checkout the two agree, so the bug would
+      # never have surfaced here -- but on a laptop it reads
+      # config/.claude/projects/, a gigabyte of session transcripts this repo
+      # exists to keep OUT, and reports their contents as findings against the
+      # repo. A gate that means something different on a developer's machine
+      # than in CI is one nobody trusts twice.
+      - name: No secrets in the tracked tree
+        run: |
+          set -eu
+          T=$(mktemp -d)
+          # -f skips the two submodule paths, which git ls-files reports as
+          # entries but which are directories on disk. Left to `cp` they error,
+          # and under `set -e` that aborts the step -- a scanner that fails to
+          # run looks exactly like a scanner that found nothing.
+          git ls-files -z | while IFS= read -r -d '' f; do
+            [ -f "$f" ] && cp --parents "$f" "$T"
+          done
+          gitleaks dir "$T" --no-banner --redact --exit-code 1
+          rm -rf "${T:?}"
+      # Deliberately the FIRST of the repo's own checks and its own step: it is
+      # the only failure here that a later commit cannot undo.
       - name: Nothing sensitive is tracked
         run: ./tests/test-tracked-files.sh
       - name: Documentation references resolve
