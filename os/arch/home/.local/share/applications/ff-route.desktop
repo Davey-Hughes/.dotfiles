@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Firefox (profile router)
+GenericName=Web Browser
+Comment=Routes links to the work or personal Firefox profile
+Exec=/home/davey/.local/bin/ff-route %u
+Icon=firefox-developer-edition
+Terminal=false
+StartupNotify=true
+StartupWMClass=firefox-developer-edition
+Categories=Network;WebBrowser;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;

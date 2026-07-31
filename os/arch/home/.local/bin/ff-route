@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# ff-route — send a URL to the right Firefox profile.
+#
+# Installed as the default http/https handler. Decides between the work and
+# personal profile using, in order: an explicit $FF_PROFILE env var, work-only
+# URL patterns, the tmux session the link came from, then a fallback.
+#
+# Rules live in ~/.config/ff-route/rules.conf.
+#   ff-route --explain <url>   show the decision, open nothing
+#   ff-route --test            run the built-in routing tests
+#   ff-route --log [n]         show the last n routing decisions
+
+set -uo pipefail
+
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/ff-route/rules.conf"
+FIREFOX_BIN="${FF_ROUTE_FIREFOX:-/usr/lib/firefox-developer-edition/firefox}"
+LOGFILE="${XDG_STATE_HOME:-$HOME/.local/state}/ff-route/decisions.log"
+
+# Defaults, overridden by rules.conf.
+PROFILE_WORK=beaver
+PROFILE_PERSONAL=dev-edition-default
+FALLBACK=personal
+WORK_TMUX_SESSIONS=()
+WORK_URL_PATTERNS=()
+PERSONAL_URL_PATTERNS=()
+
+# shellcheck source=/dev/null
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+die() { printf 'ff-route: %s\n' "$*" >&2; exit 1; }
+
+# Expand an array that may be unset/empty without tripping `set -u`.
+expand() { local -n _a=$1; printf '%s\n' ${_a[@]+"${_a[@]}"}; }
+
+# Name of the tmux session that owns the calling pane, or empty.
+#
+# The parent process chain is unavailable here: KDE launches URL handlers as
+# transient systemd units, so our PPID is systemd, not the caller. Environment
+# variables *are* inherited though, so $TMUX_PANE survives and is enough to ask
+# the tmux server which session that pane belongs to.
+tmux_session() {
+  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 0
+  command -v tmux >/dev/null 2>&1 || return 0
+  tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null
+}
+
+# Echo "<work|personal>|<human-readable reason>" for a URL.
+decide() {
+  local url="$1" pat sess s
+  shopt -s nocasematch
+
+  if [ -n "${FF_PROFILE:-}" ]; then
+    case "$FF_PROFILE" in
+      work|"$PROFILE_WORK")         echo "work|\$FF_PROFILE=$FF_PROFILE"; shopt -u nocasematch; return ;;
+      personal|"$PROFILE_PERSONAL") echo "personal|\$FF_PROFILE=$FF_PROFILE"; shopt -u nocasematch; return ;;
+      *) printf 'ff-route: ignoring unknown $FF_PROFILE=%s\n' "$FF_PROFILE" >&2 ;;
+    esac
+  fi
+
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    if [[ "$url" =~ $pat ]]; then
+      echo "personal|personal URL rule: $pat"; shopt -u nocasematch; return
+    fi
+  done < <(expand PERSONAL_URL_PATTERNS)
+
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    if [[ "$url" =~ $pat ]]; then
+      echo "work|work URL rule: $pat"; shopt -u nocasematch; return
+    fi
+  done < <(expand WORK_URL_PATTERNS)
+
+  shopt -u nocasematch
+
+  sess=$(tmux_session)
+  if [ -n "$sess" ]; then
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      if [ "$sess" = "$s" ]; then
+        echo "work|tmux session '$sess' is a work session"; return
+      fi
+    done < <(expand WORK_TMUX_SESSIONS)
+    echo "personal|tmux session '$sess' is not in WORK_TMUX_SESSIONS"; return
+  fi
+
+  case "$FALLBACK" in
+    work)     echo "work|fallback" ;;
+    personal) echo "personal|fallback" ;;
+    ask)      echo "ask|fallback" ;;
+    *)        echo "personal|fallback (unrecognised FALLBACK='$FALLBACK')" ;;
+  esac
+}
+
+# Prompt for a profile when FALLBACK=ask. Falls back to personal if no GUI
+# picker is installed, so a link never simply vanishes.
+pick() {
+  local url="$1" choice
+  if command -v zenity >/dev/null 2>&1; then
+    choice=$(zenity --list --title="Open link in…" \
+      --text="$(printf '%.120s' "$url")" \
+      --column=Profile Work Personal 2>/dev/null)
+    case "$choice" in
+      Work) echo work; return ;;
+      Personal) echo personal; return ;;
+    esac
+  fi
+  echo personal
+}
+
+profile_name_for() {
+  case "$1" in
+    work) echo "$PROFILE_WORK" ;;
+    *)    echo "$PROFILE_PERSONAL" ;;
+  esac
+}
+
+# Record what was decided, so a misroute can be diagnosed after the fact rather
+# than reproduced. Capped at 500 lines. Never allowed to block a launch.
+log_decision() {
+  local key="$1" reason="$2" url="$3" sess
+  sess=$(tmux_session)
+  mkdir -p "${LOGFILE%/*}" 2>/dev/null || return 0
+  printf '%s\t%s\tFF_PROFILE=%s\ttmux=%s\t%s\t%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$key" "${FF_PROFILE:-<unset>}" \
+    "${sess:-<none>}" "$reason" "$url" >> "$LOGFILE" 2>/dev/null || return 0
+  if [ "$(wc -l < "$LOGFILE" 2>/dev/null || echo 0)" -gt 500 ]; then
+    tail -n 400 "$LOGFILE" > "$LOGFILE.tmp" 2>/dev/null && mv "$LOGFILE.tmp" "$LOGFILE"
+  fi
+  return 0
+}
+
+run_tests() {
+  local pass=0 fail=0
+  # Each case: <expected>|<url>|<TMUX_PANE session override>|<FF_PROFILE>
+  local cases=(
+    'work|https://github.com/beaver-home/infra/pull/12||'
+    'personal|https://github.com/torvalds/linux||'
+    'work|https://GitHub.com/beaver-home||'
+    'personal|https://github.com/beaver-home-personal/x||'
+    'work|https://mail.beaverhealth.org/inbox||'
+    'work|https://beaverhealth.org||'
+    'personal|https://beaverhealth.org.evil.example.com/x||'
+    'work|https://mindchampion.org||'
+    'work|https://app.mindchampion.org/dashboard||'
+    'work|https://portal.azure.com/#home||'
+    'work|https://dev.azure.com/beaver/proj/_git/repo||'
+    'work|https://azure.com||'
+    'work|https://myapp.azurewebsites.net/||'
+    'work|https://azure.microsoft.com/en-us/pricing||'
+    'personal|https://azure.com.phish.example.com||'
+    'personal|https://notazure.com||'
+    'work|https://beaver.slack.com/archives/C123||'
+    'work|https://acme.atlassian.net/browse/AB-1||'
+    'work|https://app.asana.com/0/12345/67890||'
+    'work|https://asana.com||'
+    'personal|https://asana.com.phish.example.com/x||'
+    'personal|https://news.ycombinator.com||'
+    'personal|https://example.com||'
+    'work|https://example.com||beaver'
+    'personal|https://github.com/beaver-home/x||dev-edition-default'
+  )
+  local c expected url ffp got gotprofile
+  for c in "${cases[@]}"; do
+    IFS='|' read -r expected url _ ffp <<<"$c"
+    got=$(FF_PROFILE="$ffp" TMUX= TMUX_PANE= decide "$url")
+    gotprofile="${got%%|*}"
+    if [ "$gotprofile" = "$expected" ]; then
+      pass=$((pass + 1))
+      printf '  ok   %-9s %s\n' "$gotprofile" "$url"
+    else
+      fail=$((fail + 1))
+      printf '  FAIL want=%-9s got=%-9s %s\n      reason: %s\n' \
+        "$expected" "$gotprofile" "$url" "${got#*|}"
+    fi
+  done
+
+  echo
+  echo "profiles referenced by rules.conf:"
+  local ini="${XDG_CONFIG_HOME:-$HOME/.config}/mozilla/firefox/profiles.ini" p
+  for p in "$PROFILE_WORK" "$PROFILE_PERSONAL"; do
+    if grep -qx "Name=$p" "$ini" 2>/dev/null; then
+      printf '  ok   %s exists\n' "$p"
+    else
+      printf '  FAIL %s not found in %s\n' "$p" "$ini"; fail=$((fail + 1))
+    fi
+  done
+  [ -x "$FIREFOX_BIN" ] || { printf '  FAIL firefox binary not executable: %s\n' "$FIREFOX_BIN"; fail=$((fail + 1)); }
+
+  echo
+  printf '%d passed, %d failed\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]
+}
+
+main() {
+  case "${1:-}" in
+    --test) run_tests; exit $? ;;
+    --explain)
+      shift
+      [ $# -gt 0 ] || die "--explain needs a URL"
+      local d key reason sess
+      d=$(decide "$1"); key="${d%%|*}"; reason="${d#*|}"
+      [ "$key" = ask ] && key=$(pick "$1")
+      sess=$(tmux_session)
+      printf 'url      %s\n' "$1"
+      printf 'tmux     %s\n' "${sess:-<not in tmux>}"
+      printf 'reason   %s\n' "$reason"
+      printf 'profile  %s (%s)\n' "$key" "$(profile_name_for "$key")"
+      printf 'command  %s -P %s %s\n' "$FIREFOX_BIN" "$(profile_name_for "$key")" "$1"
+      exit 0 ;;
+    --log)
+      [ -r "$LOGFILE" ] || die "no decisions logged yet ($LOGFILE)"
+      tail -n "${2:-20}" "$LOGFILE"; exit 0 ;;
+    --help|-h)
+      sed -n '2,13p' "$0" | sed 's/^# \?//'; exit 0 ;;
+  esac
+
+  [ -x "$FIREFOX_BIN" ] || die "firefox binary not executable: $FIREFOX_BIN"
+
+  # No URL: just open the fallback profile.
+  if [ $# -eq 0 ]; then
+    exec "$FIREFOX_BIN" -P "$(profile_name_for "$FALLBACK")"
+  fi
+
+  local d key reason
+  d=$(decide "$1"); key="${d%%|*}"; reason="${d#*|}"
+  [ "$key" = ask ] && { key=$(pick "$1"); reason="$reason -> picked $key"; }
+  log_decision "$key" "$reason" "$1"
+  exec "$FIREFOX_BIN" -P "$(profile_name_for "$key")" "$@"
+}
+
+main "$@"

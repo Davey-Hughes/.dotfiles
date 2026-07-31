@@ -9,6 +9,32 @@ BACKUP_DIR="$HOME/.dotfiles-backup/$(date +%Y%m%d-%H%M%S)"
 BACKUP_COUNT=0
 STOW_FAILED=0
 
+# Directories stow must NOT fold into a single symlink.
+#
+# Folding is stow's default whenever the target does not exist yet, and it is
+# usually what you want: the whole directory becomes one link, so files added to
+# the repo later show up without re-stowing. It is wrong wherever other software
+# writes into the same directory, because those writes then land inside this
+# repo. Claude Code puts credentials and gigabytes of session state in
+# ~/.config/.claude; fish rewrites fish_variables; TPM installs plugins into
+# ~/.tmux/plugins; pacman, Steam and Lutris drop .desktop entries into
+# ~/.local/share/applications.
+#
+# Pre-creating these as real directories makes stow link per-file instead.
+# Deliberately a list rather than every directory in every package: anything
+# owned solely by the dotfiles is better off folded, and submodules
+# (home/.tmux/plugins/tpm, home/.zsh/zsh-autosuggestions) must stay whole so
+# they remain working git checkouts.
+#
+# `git` is here because git_settings() writes the global config to
+# $XDG_CONFIG_HOME/git/config; folded, that write would land in the repo, and
+# `ignore` needs to link in beside a real, untracked `config`.
+#
+# tests/test-install.sh asserts every entry below comes out a real directory on
+# a fresh machine, so this list is the single source of truth for the invariant.
+UNFOLD_HOME=(.local/bin .local/share/applications .tmux/plugins)
+UNFOLD_CONFIG=(.claude fish git)
+
 # Echoes the os/ layer(s) to stow for this machine, most-general first so a more
 # specific layer can override. Only layers that exist under os/ are stowed.
 # SteamOS is Arch-based, so the deck inherits the arch layer (paru, MangoHud).
@@ -109,14 +135,7 @@ symlinks() {
   prune_stray_links
 
   # Create base directories
-  mkdir -p "$HOME/.tmux"
   mkdir -p "$XDG_CONFIG_HOME"
-
-  # git_settings() writes the global git config to $XDG_CONFIG_HOME/git/config.
-  # Stow folds config/git/ into a single symlink when the target dir does not
-  # exist yet, which would send that write inside the repo. Pre-creating it real
-  # keeps it unfolded, so `ignore` links in beside a real, untracked `config`.
-  mkdir -p "$XDG_CONFIG_HOME/git"
 
   # Custom cross-linking. ~/.vim is a separate repo (github.com/Davey-Hughes/.vim);
   # NeoVim reads it through this link. On a fresh machine it dangles until that
@@ -141,6 +160,11 @@ symlinks() {
       [ -d "$DOTFDIR/config/$rel" ] && mkdir -p "$XDG_CONFIG_HOME/$rel"
     done < <(find "$DOTFDIR/os/$layer/config" -mindepth 1 -type d)
   done
+
+  # Keep the shared directories unfolded, whichever package provides them.
+  # Leaf paths only: mkdir -p makes every parent real as well.
+  for dir in "${UNFOLD_HOME[@]}";   do mkdir -p "$HOME/$dir"; done
+  for dir in "${UNFOLD_CONFIG[@]}"; do mkdir -p "$XDG_CONFIG_HOME/$dir"; done
 
   pushd "$DOTFDIR" >/dev/null || exit 1
 
