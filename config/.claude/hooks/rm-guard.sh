@@ -44,6 +44,10 @@ fi
 # recursion flag, and `git rm` (a working-tree operation, recoverable from
 # history). Both are tracked per pipeline segment so `git rm -r x && rm -rf /`
 # still asks on the second segment.
+#
+# Note this path only ever ASKS. It has no allow, so it cannot do what
+# rm_guard.py's RISKY_NEIGHBOURS exists to stop -- hand a whole tool call a
+# blanket approval on the strength of one operand it happened to clear.
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
 
 # Each rule is a (command seen, danger flag seen) pair within one segment. A
@@ -55,11 +59,12 @@ verdict() {
   [ "$n_rsync"  = 1 ] && [ "$f_rsdel"   = 1 ] && ask
   [ "$n_rclone" = 1 ] && [ "$f_rcact"   = 1 ] && ask
   [ "$is_git"   = 1 ] && [ "$f_clean"   = 1 ] && ask   # git clean, unlike git rm
+  [ "$is_git"   = 1 ] && [ "$f_wt"      = 1 ] && [ "$f_rmv" = 1 ] && ask
   return 0
 }
 reset_seg() { n_rm=0 n_find=0 n_fd=0 n_rsync=0 n_rclone=0
               f_rec=0 f_finddel=0 f_fdexec=0 f_rsdel=0 f_rcact=0 f_clean=0
-              is_git=0 head=1; }
+              f_wt=0 f_rmv=0 is_git=0 head=1; }
 
 if [ -n "$cmd" ]; then
   cmd=${cmd//$'\n'/ }                      # flatten multi-line commands
@@ -91,7 +96,9 @@ if [ -n "$cmd" ]; then
     case "$t" in
       -delete|-exec|-execdir|-ok|-okdir)            f_finddel=1 ;;
       -x|-X|--exec|--exec-batch)                    f_fdexec=1 ;;
-      --delete|--delete-*|--del)                    f_rsdel=1 ;;
+      --delete|--delete-*|--del|--remove-source-files) f_rsdel=1 ;;
+      worktree)                                     f_wt=1 ;;
+      remove)                                       f_rmv=1 ;;
       sync|purge|delete|deletefile|rmdir|rmdirs|move|cleanup) f_rcact=1 ;;
       clean)                                        f_clean=1 ;;
       --recursive|--recursive=*|--no-preserve-root) f_rec=1 ;;
@@ -106,6 +113,6 @@ else
   # the rewritten form no longer matches.
   printf '%s' "$input" \
     | sed -E 's/(^|[^A-Za-z0-9_-])git[[:space:]]+rm([^A-Za-z0-9_-]|$)/\1git-rm\2/g' \
-    | grep -Eq '(^|[^A-Za-z0-9_-])rm[[:space:]]+(-[[:alnum:]]*[rR]|--recursive|--no-preserve-root)|(^|[^A-Za-z0-9_-])(-delete|-execdir|-exec|--delete|--del|--exec-batch)([^A-Za-z0-9_-]|$)|rclone[[:space:]]+(sync|purge|delete|move|cleanup)|clean[[:space:]]+-[[:alnum:]]*f' && ask
+    | grep -Eq '(^|[^A-Za-z0-9_-])rm[[:space:]]+(-[[:alnum:]]*[rR]|--recursive|--no-preserve-root)|(^|[^A-Za-z0-9_-])(-delete|-execdir|-exec|--delete|--del|--exec-batch|--remove-source-files)([^A-Za-z0-9_-]|$)|rclone[[:space:]]+(sync|purge|delete|move|cleanup)|clean[[:space:]]+-[[:alnum:]]*f|worktree[[:space:]]+remove' && ask
 fi
 exit 0
