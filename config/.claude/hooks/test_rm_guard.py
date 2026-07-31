@@ -237,15 +237,21 @@ CASES = [
     ("eval behind a wrapper can rebind without naming it",
      'W=/tmp/x; command eval "$C"; rm -rf "$W"/*', "ask"),
 
-    # --- a binding may condemn an operand, never clear one -------------------
+    # --- a binding condemns from anywhere, and clears behind a gate ----------
     # proven_bindings produced six wrong-`allow` defects across six review
-    # rounds, every one a stale binding trusted to prove safety. Consulted only
-    # to escalate, a stale binding costs a missed deny -- a prompt -- instead.
+    # rounds, every one a stale binding trusted to prove safety. Condemning
+    # tolerates that -- a stale binding costs a missed deny, a prompt. Clearing
+    # does not, so it additionally requires _rebinding_possible to find nothing
+    # ahead of the delete; the rows under "clearing is gated" below pin that.
     ("binding escalates a fatal literal", 'W=/; rm -rf "$W"/*', "deny"),
-    ("binding does not clear a safe literal",
-     'W=/tmp/build; rm -rf "$W"/*', "ask"),
+    ("binding clears a safe literal",
+     'W=/tmp/build; rm -rf "$W"/*', "allow"),
     ("binding does not clear an out-of-bounds literal",
      'W=/etc; rm -rf "$W"/*', "ask"),
+    # The resolved path is judged like any other, so where it lands is what
+    # decides it -- not the mere fact that a binding was found.
+    ("binding clears only as deep as the path earns",
+     'W=/tmp; rm -rf "$W"/*', "ask"),
     ("binding escalates through the find arm", 'W=/; find "$W" -delete', "deny"),
     # A bare expansion with no suffix normally clears, on the grounds that an
     # empty one makes `rm -rf ""` -- an error, not a catastrophe. The escalation
@@ -366,15 +372,259 @@ CASES = [
     ("git init is not service control",
      "rm -rf ./t && mkdir t && git init -q t", "allow"),
 
-    # ...and the gap that leaves, pinned so it cannot change silently. The guard
-    # can see W=/etc here and still clears, because only `deny` propagates and
-    # /etc merely asks. `rm -rf /etc` written literally asks. Widening this to
-    # propagate `ask` as well would be a tightening, not a loosening -- it is
-    # left alone only because it is the same "a bare expansion cannot be
-    # catastrophic" assumption that `rm -rf "$W"` already rests on, which
-    # predates bindings and deserves its own decision.
-    ("a bare operand still clears when merely out of bounds",
-     'W=/etc; rm -rf "$W"', "allow"),
+    # ...and the gap that used to leave. The guard could see W=/etc here and
+    # cleared anyway, because only `deny` propagated out of a binding and /etc
+    # merely asks -- while `rm -rf /etc` written literally asked. It now reads
+    # the binding both ways, so the two spellings agree.
+    ("a bare operand is judged on what the binding says it is",
+     'W=/etc; rm -rf "$W"', "ask"),
+
+    # --- the ${VAR:?} form, now that a binding can check it ------------------
+    # An UNBOUND ${W:?} keeps its blanket allow: nothing in the command says
+    # what W is, and the guarded form is what this file's own advice tells the
+    # author to write. A BOUND one is checked against the value it proves.
+    ("an unbound ${VAR:?} still clears unconditionally",
+     'rm -rf "${W:?}"/*', "allow"),
+    ("a bound ${VAR:?} is checked against its value",
+     'W=/etc; rm -rf "${W:?}"/*', "ask"),
+    ("a bound ${VAR:?} clears when the value earns it",
+     'W=/tmp/build; rm -rf "${W:?}"/*', "allow"),
+    # ${W:?} never expands an empty value -- it aborts before rm runs -- so the
+    # empty binding must not be substituted into it and judged as a path.
+    # A bare "$W" is the opposite: "" is exactly what makes "$W"/* into /*.
+    ("an empty binding cannot promote a guarded form",
+     'W=; rm -rf "${W:?}"/*', "allow"),
+    ("an empty binding still condemns the bare form",
+     'W=; rm -rf "$W"/*', "deny"),
+    ("an empty binding does not mis-deny a harmless error-out",
+     'W=; rm -rf "$W"', "allow"),
+
+    # --- clearing is gated on nothing being able to rebind namelessly --------
+    # Each of these resolves to a path that would otherwise clear. What stops
+    # them is _rebinding_possible: proven_bindings drops any name whose later
+    # mentions are more than plain reads, so what is left to fence off is a
+    # rebinding whose target name never appears as text at all.
+    ("a function definition withdraws clearing",
+     'W=/tmp/build; f() { :; }; f; rm -rf "$W"/*', "ask"),
+    ("a builtin that can compute a name withdraws clearing",
+     'W=/tmp/build; declare -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("zsh's set -A withdraws clearing",
+     'W=/tmp/build; set -A arr a b; rm -rf "$W"/*', "ask"),
+    ("plain set flags do not withdraw clearing",
+     'W=/tmp/build; set -euo pipefail; rm -rf "$W"/*', "allow"),
+    # Position, not presence. A builtin downstream of the delete cannot have run
+    # before it -- which is every hit in this machine's corpus.
+    ("a rebinding after the delete does not withdraw clearing",
+     'W=/tmp/build; rm -rf "$W"/*; declare -g "$(printf X)=/"', "allow"),
+    # ...except in a loop body, which runs again. Here `g` follows the rm in the
+    # text and precedes it in time on the second iteration.
+    ("a loop body voids the ordering",
+     'W=/tmp/build; for i in 1 2; do rm -rf "$W"/*; g() { :; }; done', "ask"),
+    # A loop that opens after the delete has no such claim on it.
+    ("a loop after the delete does not void it",
+     'W=/tmp/build; rm -rf "$W"/*; for f in a b; do printf "%s" "$f"; done',
+     "allow"),
+    # A builtin's name in somebody's ARGUMENT runs nothing. Reading one as code
+    # cost a real allow in the corpus, on an echo whose title said "no trap
+    # backup".
+    ("a builtin named in prose is not a rebinding",
+     'W=/tmp/build; echo "no trap backup"; rm -rf "$W"/*', "allow"),
+
+    # --- the bypass this gate shipped with, found in review ------------------
+    # zsh's ${(P)ptr::=value} assigns to the parameter NAMED BY ptr, as an
+    # ARGUMENT to `:` -- no command word, and W is never written. It cleared as
+    # /tmp/build/* and ran as `rm -rf /etc/*`; the empty form ran as
+    # `rm -rf /*`. Pinned in both the value-carrying and the empty shape,
+    # because they fail differently and only the second is the wipe.
+    ("a zsh indirect assignment withdraws clearing",
+     'W=/tmp/build; PTR=W; : ${(P)PTR::=/etc}; rm -rf "$W"/*', "ask"),
+    ("...including the form that empties the variable",
+     'W=/tmp/build; PTR=W; : ${(P)PTR::=}; rm -rf "$W"/*', "ask"),
+    # Matched on raw text, so a second flag letter cannot slip past a rule
+    # written against the exact string `(P)`. NOTE this row alone does not
+    # isolate the flag-list half -- `::=` satisfies the rule by itself -- which
+    # is what the two rows after it are for.
+    ("...and is not defeated by another expansion flag",
+     'W=/tmp/build; PTR=W; : ${(PP)PTR::=/etc}; rm -rf "$W"/*', "ask"),
+    # One row per half of ASSIGNING_EXPANSION_RE, so neither can be deleted in
+    # silence. `${(P)PTR:=/etc}` carries a flag list and no `::=`; `${PTR::=x}`
+    # carries `::=` and no flag list.
+    ("the flag-list half stands alone",
+     'W=/tmp/b; PTR=W; : ${(P)PTR:=/etc}; rm -rf "$W"/*', "ask"),
+    ("...and so does the always-assign half",
+     'W=/tmp/b; : ${PTR::=/etc}; rm -rf "$W"/*', "ask"),
+
+    # --- precommand modifiers, which run IN this shell -----------------------
+    # Every one of these came back `allow` and runs as `rm -rf //*`. The first
+    # three are zsh precommand modifiers that were missing from WRAPPERS, so
+    # command_word stopped on them and the typeset behind them was never in
+    # command position. `builtin` was, word for word, the wrapper the gate's
+    # docstring claimed could not hide one.
+    ("builtin does not hide a rebinding builtin",
+     'W=/tmp/b; builtin typeset -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("noglob does not hide one",
+     'W=/tmp/b; noglob typeset -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("nocorrect does not hide one",
+     'W=/tmp/b; nocorrect typeset -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    # shlex splits `2>/dev/null` into three tokens, so command_word stopped on
+    # the bare fd digit `2` and never reached the typeset.
+    ("a leading redirection does not hide one",
+     'W=/tmp/b; 2>/dev/null typeset -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("...nor one without an fd digit",
+     'W=/tmp/b; >/dev/null typeset -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    # The wrapper-stepping half of the same rule: in_cmd_pos is built with
+    # command_word, not "first token of the segment".
+    ("a wrapper does not hide one either",
+     'W=/tmp/b; command typeset -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+
+    # --- the loop stack, in both directions ----------------------------------
+    # repeat/do/done and foreach/end are zsh loops the stack never opened, so a
+    # rebinding in the body read as "after the delete" and cleared it.
+    ("repeat is a loop",
+     'W=/tmp/b; repeat 2; do rm -rf "$W"/*; typeset -g "$(printf X)=/"; done',
+     "ask"),
+    ("foreach ... end is a loop",
+     'W=/tmp/b\nforeach i (1 2)\nrm -rf "$W"/*\ntypeset -g "$(printf X)=/"\nend',
+     "ask"),
+    # A closer counts only in command position. A `done` in a word list, or an
+    # `echo done` in a body, was popping a genuinely open loop -- the direction
+    # that costs a filesystem, unlike a stray opener, which only costs a prompt.
+    ("`done` in a word list does not close the loop",
+     'W=/tmp/b; for i in a done; do rm -rf "$W"/*; typeset -g "$(printf X)=/"; done',
+     "ask"),
+    ("`echo done` in a body does not close it",
+     'W=/tmp/b; for i in 1 2; do echo done; rm -rf "$W"/*; typeset -g "$(printf X)=/"; done',
+     "ask"),
+    # ...and the loop rule still must not fire on a loop that never contained
+    # the delete, which is what the blunt first version got wrong.
+    ("a loop after the delete still clears",
+     'W=/tmp/b; rm -rf "$W"/*; for f in a b; do echo "$f"; done', "allow"),
+
+    # --- the rest of REBINDING_BUILTINS --------------------------------------
+    # One row per entry. The set has fourteen and had one, so thirteen could
+    # have been deleted in silence -- and a comment here previously claimed they
+    # were pinned when only four were. trap and autoload each earn a paragraph
+    # of justification in the source and now cost a test to remove.
+    ("typeset withdraws clearing",
+     'W=/tmp/b; typeset -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("trap withdraws clearing",
+     'W=/tmp/b; trap "$(printf X)=/" EXIT; rm -rf "$W"/*', "ask"),
+    ("autoload withdraws clearing",
+     'W=/tmp/b; autoload -Uz f; f; rm -rf "$W"/*', "ask"),
+    ("local withdraws clearing",
+     'W=/tmp/b; local "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("export withdraws clearing",
+     'W=/tmp/b; export "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("readonly withdraws clearing",
+     'W=/tmp/b; readonly "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("printf withdraws clearing",
+     'W=/tmp/b; printf "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("read withdraws clearing",
+     'W=/tmp/b; read "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("mapfile withdraws clearing",
+     'W=/tmp/b; mapfile "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("readarray withdraws clearing",
+     'W=/tmp/b; readarray "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("getopts withdraws clearing",
+     'W=/tmp/b; getopts "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("let withdraws clearing",
+     'W=/tmp/b; let "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("unset withdraws clearing",
+     'W=/tmp/b; unset "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+
+    # --- may_clear actually reaches the other arms ---------------------------
+    # The thread into analyse_segment had no coverage at all: hard-coding it to
+    # False disabled clearing for find/fd/rsync/rclone/git and the suite stayed
+    # green. These pin both directions.
+    ("a binding clears through the find arm",
+     'W=/tmp/b; find "$W" -delete', "allow"),
+    ("...and is gated there too",
+     'W=/tmp/b; typeset -g "$(printf X)=/"; find "$W" -delete', "ask"),
+    ("a binding clears through the rclone arm",
+     'W=/tmp/b; rclone purge "$W"', "allow"),
+    # ...and into the loop block's recursion, where a loop variable and a bound
+    # one meet in one operand. This is the shape of a real corpus command.
+    ("a loop variable and a binding compose",
+     'W=/tmp/b; for m in x y; do rm -rf "$W"/$m; done', "allow"),
+
+    # --- round 2: the redirect fix was an enumeration, and lost --------------
+    # REDIRECTS lists eight operators; zsh has more, and every one it omits was
+    # a leading redirection command_word stopped on, reporting the OPERATOR as
+    # the command and hiding the typeset behind it. Each returned `allow` on a
+    # command that runs as `rm -rf //b`. Recognised by shape now, not by list.
+    ("a herestring does not hide a rebinding builtin",
+     'W=/tmp/b; <<<x typeset -g "$(printf X)=/"; rm -rf "$W"/c', "ask"),
+    ("nor a clobbering redirect",
+     'W=/tmp/b; >|/tmp/zz typeset -g "$(printf X)=/"; rm -rf "$W"/c', "ask"),
+    ("nor a read-write redirect",
+     'W=/tmp/b; <>/tmp/zz typeset -g "$(printf X)=/"; rm -rf "$W"/c', "ask"),
+    ("nor an &> redirect",
+     'W=/tmp/b; &>/tmp/zz typeset -g "$(printf X)=/"; rm -rf "$W"/c', "ask"),
+    ("nor an &>> redirect",
+     'W=/tmp/b; &>>/tmp/zz typeset -g "$(printf X)=/"; rm -rf "$W"/c', "ask"),
+
+    # The backstop for the operator the shape rule does not anticipate either.
+    # A command word that cannot be a command name means the parse failed, and
+    # clearing must not rest on a failed parse -- which is exactly how the two
+    # enumerations above each produced a wrong allow rather than a prompt.
+    ("an unidentifiable command word withdraws clearing",
+     'W=/tmp/b; %% typeset -g "$(printf X)=/"; rm -rf "$W"/c', "ask"),
+    # ...but punctuation that IS a command name is identified, not refused.
+    # `[ -z "$f" ]` appears in two real corpus commands and cost both allows
+    # when the backstop was written as "has no word character".
+    ("[ is a command, not an unidentifiable word",
+     'W=/tmp/b; [ -z "$x" ] && rm -rf "$W"/*', "allow"),
+    ("...and so is the no-op",
+     'W=/tmp/b; : ; rm -rf "$W"/*', "allow"),
+    # The rows above pass with or without REDIRECT_TOKEN_RE, because the
+    # backstop refuses an unparsed operator either way. These are what the
+    # shape rule is actually FOR: the backstop withholds an allow, and parsing
+    # the redirect correctly is what gives it back when nothing behind it can
+    # rebind. Without the shape rule these three ask.
+    ("a harmless command behind a herestring still clears",
+     'W=/tmp/b; <<<x cat; rm -rf "$W"/*', "allow"),
+    ("...behind an &> redirect",
+     'W=/tmp/b; &>/tmp/zz echo hi; rm -rf "$W"/*', "allow"),
+    ("...and behind a plain fd redirect",
+     'W=/tmp/b; 2>/dev/null echo hi; rm -rf "$W"/*', "allow"),
+
+    # --- round 2, second pass: bash forms zsh rejects outright ---------------
+    # Neither of these runs under zsh (parse error), so neither is reachable
+    # from the Bash tool today. Both are pinned anyway: which shell runs the
+    # command is a measured fact about this machine, not a property of the
+    # guard, and both fixes only ever withhold an allow.
+    #
+    # bash's `{fd}>file` names a variable to take the descriptor. shlex emits
+    # `{fd}` alone, and it has word characters, so it passed the backstop --
+    # which refuses a command word that cannot be a NAME, and `{fd}` looks like
+    # one.
+    ("{fd}> does not hide a rebinding builtin",
+     'W=/tmp/b; {fd}>out typeset -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("nor {fd}<",
+     'W=/tmp/b; {fd}<in typeset -g "$(printf X)=/"; rm -rf "$W"/*', "ask"),
+    ("...and a harmless command behind one still clears",
+     'W=/tmp/b; {fd}>out echo hi; rm -rf "$W"/*', "allow"),
+    # A closer that IS a command word but closes nothing. `end` in a bash
+    # for-body is command-not-found, the loop keeps running, and popping on it
+    # re-permitted the ordering the loop rule exists to void. Closers are
+    # matched by kind now: done for for/select/while/until/repeat, end for
+    # foreach.
+    ("`end` does not close a `for`",
+     'W=/tmp/b; for i in 1 2; do rm -rf "$W"/*; end; typeset -g "$(printf X)=/"; done',
+     "ask"),
+    ("`done` does not close a `foreach`",
+     'W=/tmp/b\nforeach i (1 2)\nrm -rf "$W"/*\ndone\ntypeset -g "$(printf X)=/"\nend',
+     "ask"),
+    # ...and the matched closers must still pop, or every loop stays open for
+    # the rest of the line and nothing after one ever clears. These were the
+    # rows the closer rule lacked entirely: it could be deleted outright with
+    # the suite green.
+    ("a matched `done` closes its loop",
+     'W=/tmp/b; for f in a b; do echo "$f"; done; rm -rf "$W"/*; declare -g "$(printf X)=/"',
+     "allow"),
+    ("a matched `end` closes its foreach",
+     'W=/tmp/b\nforeach f (a b)\necho $f\nend\nrm -rf "$W"/*\ndeclare -g "$(printf X)=/"',
+     "allow"),
 ]
 
 
