@@ -52,35 +52,82 @@ governs only how far an approval the guard already earned may spread, and a hit
 WITHDRAWS the verdict rather than escalating it. A miss therefore costs exactly
 the status quo: the guard cannot make a line more dangerous than staying silent.
 
-Known gaps, left open on purpose. The first two are the same question --
-${VAR:?} proves a variable is NON-EMPTY, not that its target is safe -- and both
-clear a command that can still delete something catastrophic:
+Two gaps used to sit here, and they were the same question -- ${VAR:?} proves a
+variable is NON-EMPTY, not that its target is safe. Both closed when the binding
+map was allowed to clear as well as condemn: a leading literal binding now
+resolves $W, ${W} and ${W:?} alike, and the resolved path is judged against
+safe_roots like any other, so `W=/etc; rm -rf "$W"` and `W=/etc; rm -rf
+"${W:?}"/*` both ask -- the command says /etc, and /etc is what gets judged. An
+UNBOUND ${W:?} still clears with no path check, deliberately: the guarded form
+is the assertion of intent this guard's own advice says to write, there is
+nothing in the command to check it against, and distrusting it would cost a
+prompt on exactly the command the author hardened.
 
-    rm -rf "${W:?}"/*    allow. The author wrote the guarded form, which this
-                         file reads as an assertion of intent and defers to. If
-                         W=/etc it wipes /etc anyway.
-    W=/etc; rm -rf "$W"  allow, via the bare-expansion rule below: an empty $W
-                         makes `rm -rf ""`, an error rather than a catastrophe.
-                         True, and it says nothing about W being SET to /etc --
-                         which this command can see and clears regardless.
-                         Pinned by a test row so it cannot change silently.
+Known gaps, left open on purpose:
 
-Closing either means deciding the guard should distrust an explicit assertion of
-intent, or should propagate `ask` from a binding as well as `deny`. Both are
-policy calls that cost prompts, not bugs with a fix left in them.
+    a stale binding clearing   no known vehicle -- which is not "closed", and
+                               the distinction earned itself within a day. A
+                               binding may clear an operand only after four
+                               refusals miss: every later mention of the name is
+                               a plain read (_read_only_mentions), nothing after
+                               the bindings reaches eval/source/exec
+                               (_indirection_present), and neither an assigning
+                               parameter expansion nor anything between the
+                               binding and the delete can rebind a name it never
+                               writes (_rebinding_possible).
+
+                               The fourth of those was added in review, not
+                               design. The gate shipped with three and was
+                               defeated by `PTR=W; : ${(P)PTR::=/etc}`, which
+                               cleared as /tmp/safe/* and ran as `rm -rf /etc/*`
+                               -- and, emptied, as `rm -rf /*`. Every fence
+                               missed for exactly the reason its own docstring
+                               gives, which is the point: these are four
+                               independent partial rules, not a proof. Assume a
+                               fifth vehicle exists and has not been found yet.
 
     cd "$D"; rm -rf ./build    ask, not allow. candidate_cwds refuses a cd whose
                                target it cannot read, so a relative operand
                                after one is unplaceable. proven_bindings could
-                               often resolve $D -- and is deliberately not asked
-                               to, because that map may only condemn, never
-                               clear. A stale binding there would put the shell
-                               in the wrong directory and clear `build` anyway.
+                               often resolve $D -- and still is not asked to.
+                               The map clears OPERANDS behind fences measured
+                               against this machine's corpus; letting it place
+                               the SHELL is a second trust the measurement says
+                               nothing about, and a stale binding there puts the
+                               rm in the wrong directory and clears `build`
+                               anyway.
 
-    a shell function           a function that cd's or reassigns in its body
-                               names nothing at the call site. Same class as the
-                               eval hole in proven_bindings, same lack of a
-                               cheap check.
+    a shell function           a function that reassigns in its body names
+                               nothing at the call site. Narrowed, not closed:
+                               a definition in the command text now drops
+                               clearing (_rebinding_possible), zsh's autoload --
+                               a body pulled off fpath, from outside the text --
+                               trips the builtin rule there, and `zsh -c
+                               'typeset +f'` on this machine returns nothing, so
+                               no ambient function is left to call. That last
+                               fact is a measurement of today's ~/.zshenv, not a
+                               property of the design, and the narrowing rests
+                               on it.
+
+                               The autoload half rests on something narrower
+                               still: the builtin rule matches in COMMAND
+                               POSITION, so it holds only as far as command_word
+                               is right about where that is. Three review passes
+                               found three sets of prefixes it was wrong about
+                               -- zsh's precommand modifiers, then five leading
+                               redirect operators `REDIRECTS` never listed, then
+                               bash's `{fd}>` -- each hiding a `typeset` and
+                               returning allow on a command that runs as
+                               `rm -rf //*`.
+
+                               Twice the fix was a longer enumeration, and twice
+                               the next pass beat it. What stands now is a shape
+                               (REDIRECT_TOKEN_RE) and a backstop: a command
+                               word that cannot BE one means the parse failed,
+                               and clearing does not rest on a failed parse. The
+                               lesson is kept rather than the reassurance --
+                               this rule is exactly as good as command_word, and
+                               command_word is a heuristic.
 
 A third approach was built and withdrawn: prepending a runtime validator to the
 command through the hook's `updatedInput`, so that approving a prompt would be
@@ -292,6 +339,34 @@ ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # thing as git's business, and the rm was never scanned.
 SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
 REDIRECTS = {">", ">>", "<", "<<", ">&", "<&", "2>", "|&"}
+# ...and the same thing recognised by SHAPE rather than by membership, for
+# deciding whether a token that leads a segment is a redirection to step over.
+#
+# The set above was used for that first, and enumerating was the bug: zsh's
+# `<<<`, `>|`, `<>`, `&>` and `&>>` are all leading redirections it does not
+# list, so command_word stopped on the operator and reported IT as the command.
+# `<<<x typeset -g "$(printf '\127')=/"; rm -rf "$W"/*` came back allow and runs
+# as `rm -rf //*`. That was the second enumeration in this spot to be defeated
+# in one review; hence a shape, and hence the backstop in _rebinding_possible
+# for the next operator neither of them anticipates.
+#
+# A redirection operator is optional fd digits, then `<` or `>`, then any run of
+# the metacharacters that can decorate one -- or the `&>`/`&>>` forms, which
+# lead with the ampersand instead. `|&` is deliberately unmatched: it is a
+# pipeline operator, not a redirection, and it separates segments rather than
+# prefixing one.
+REDIRECT_TOKEN_RE = re.compile(r"^(?:\d*[<>][<>&|]*|&>>?)$")
+# bash's `{fd}>file`, which names a variable to receive the descriptor. shlex
+# emits `{fd}` as its own token, and it carries word characters, so it slipped
+# past both the shape rule AND the backstop -- the backstop only refuses a
+# command word that cannot be a NAME, and `{fd}` looks like one.
+#
+# zsh rejects the whole construct with a parse error, so this is not reachable
+# from the Bash tool as it stands. It is fixed regardless: which shell runs the
+# command is a measured fact about today's environment, not a property of this
+# guard, and the same docstring that records the measurement says the narrowing
+# rests on it.
+FD_BRACE_RE = re.compile(r"^\{\w+\}$")
 # What may precede an unquoted `#` for it to start a comment. Bash requires the
 # start of a word, so `./build#x` is a filename and not a comment -- a
 # distinction shlex does not make, which is the other half of the same bug.
@@ -303,7 +378,19 @@ GIT_NAMES = {"git"}
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
                   "--exec-path", "--config-env"}
 # Words that prefix a command without changing which command it is.
-WRAPPERS = {"sudo", "command", "env", "nohup", "time", "nice"}
+#
+# The first six spawn a subprocess, so they cannot rebind the calling shell and
+# were only ever about naming the right command. The last three are zsh
+# PRECOMMAND MODIFIERS -- they run the command IN the current shell, which makes
+# their absence a wrong `allow` rather than a cosmetic miss:
+#
+#     W=/tmp/build; builtin typeset -g "$(printf '\127')=/"; rm -rf "$W"/*
+#
+# came back allow and runs as `rm -rf //*`. `builtin` was, word for word, the
+# wrapper _rebinding_possible's docstring claimed could not hide a builtin from
+# it. noglob and nocorrect do the same job.
+WRAPPERS = {"sudo", "command", "env", "nohup", "time", "nice",
+            "builtin", "noglob", "nocorrect"}
 # ...and the keywords and grouping that can stand in front of one.
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!",
             "(", "{", ")", "}"}
@@ -687,7 +774,8 @@ def worst_of(results):
     return best or ("ask", "nothing to classify")
 
 
-def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None):
+def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
+                     may_clear=False):
     """-> (decision, reason), over every path this operand can actually become.
 
     Two things multiply a single written operand into several real ones, and
@@ -700,6 +788,10 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None):
 
     Every product is judged and the worst wins, which is the only reading that
     matches what the command does: rm is handed all of them.
+
+    may_clear is carried through untouched; it is a fact about where this
+    operand's COMMAND sits in the line, which neither brace expansion nor a
+    candidate cwd can change.
     """
     cwds = [cwd] if isinstance(cwd, str) else list(cwd) or [""]
     products = expand_braces(op)
@@ -708,46 +800,70 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None):
     results = []
     for p in products:
         for c in cwds:
-            d, r = classify_one(p, c, bare_var_ok, assigned, loops)
+            d, r = classify_one(p, c, bare_var_ok, assigned, loops, may_clear)
             if p != op:
                 r = f"brace expansion produces {p}; {r}"
             results.append((d, r))
     return worst_of(results)
 
 
-def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None):
+def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
+                 may_clear=False):
     """-> (decision, reason). Anything not provably safe returns ask/deny.
 
     bare_var_ok encodes an rm-specific fact: `rm -rf $X` with X unset or empty
     is an *error*, not a catastrophe, so a bare expansion is safe there. It is
     not safe for commands that treat "no path" as "use the current directory" --
     `find $X -delete` with X unset becomes `find -delete`, which is `rm -rf .`.
+
+    may_clear is analyse's finding that nothing before this operand's command
+    could have rebound a proven binding -- see _rebinding_possible. False is
+    the safe default: a caller that does not know gets condemn-only.
     """
     if "`" in op or "$(" in op:
         return "ask", "command substitution cannot be statically resolved"
 
-    # A binding is consulted to CONDEMN an operand and never to clear one. The
+    # A binding condemns from anywhere and clears only behind two gates. The
     # map is built by static inference over shell text, and six review rounds
-    # found six ways to make it claim a binding the shell had already
-    # overwritten -- each of which would have been a wrong `allow` on
-    # `rm -rf /*`. Escalation inverts that: a stale binding here costs a missed
-    # deny, which is a prompt. So `deny` propagates and every other verdict
-    # falls through to the unresolved operand's own classification.
+    # on the condemn-only design found six ways to make it claim a binding the
+    # shell had already overwritten -- each of which would have been a wrong
+    # `allow` on `rm -rf /*`. Condemning needs no gate against that: a stale
+    # binding there costs a missed deny, which is a prompt. Clearing is what a
+    # stale binding turns into a wiped filesystem, so it additionally requires:
+    #
+    #   may_clear   nothing between the binding run and this command can rebind
+    #               a name without writing it. The rebindings that DO write it
+    #               are already gone -- proven_bindings drops any name whose
+    #               later mentions are more than plain reads.
+    #   non-empty   W= proves set-but-empty, the catastrophe case itself.
+    #               Substituting "" is still what produces the deny on
+    #               `W=; rm -rf "$W"/*` -> /*, but it must not clear anything:
+    #               `W=; rm -rf "$W"` runs as a harmless `rm -rf ""`, and ""
+    #               resolved as a path reads as the working directory, which
+    #               would mis-deny an error-out.
     if assigned:
-        resolved = SUBST_NAME_RE.sub(
-            lambda m: assigned.get(m.group(1) or m.group(2), m.group(0)), op)
+        def bound(m):
+            val = assigned.get(m.group(1) or m.group(2))
+            # ${W:?} never expands an empty value -- it aborts, and the delete
+            # does not run -- so substituting "" there would judge a path the
+            # shell never produces. $W and ${W} do expand to "", and that ""
+            # is what turns "$W"/* into /*.
+            if val is None or (val == "" and ":?" in m.group(0)):
+                return m.group(0)
+            return val
+        resolved = SUBST_NAME_RE.sub(bound, op)
         if resolved != op and not EXPANSION_RE.search(resolved):
             d, r = classify_one(resolved, cwd, bare_var_ok)
-            if d == "deny":
-                used = [n for n in dict.fromkeys(
-                    m.group(1) or m.group(2) for m in SUBST_NAME_RE.finditer(op))
-                    if n in assigned]
+            used = [n for n in dict.fromkeys(
+                m.group(1) or m.group(2) for m in SUBST_NAME_RE.finditer(op))
+                if n in assigned]
+            if d == "deny" or (may_clear and all(assigned[n] for n in used)):
                 shown = ", ".join("%s=%s" % (n, assigned[n]) for n in used)
                 return d, f"{shown} in this command, so this reads as {resolved}; {r}"
 
     # A loop BINDS the name, and unlike the assignment map -- which can be stale,
-    # which is why it may only condemn -- a loop's word list is complete, visible,
-    # and every word in it runs. So this one both clears and condemns.
+    # which is why clearing from it is gated -- a loop's word list is complete,
+    # visible, and every word in it runs. So this one clears and condemns ungated.
     #
     # It has to. The bare-expansion allow is unsound for a loop variable:
     #
@@ -775,7 +891,12 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None):
                 sub = SUBST_NAME_RE.sub(
                     lambda m, v=val: v if (m.group(1) or m.group(2)) == name
                     else m.group(0), op)
-                d, r = classify_one(sub, cwd, bare_var_ok, assigned)
+                # may_clear rides along: `for m in i12 i14; do rm -rf $SC/$m`
+                # resolves $m here and leaves $SC for the binding block one hop
+                # down, which is the only path by which an operand naming both
+                # a loop variable and a bound one can clear.
+                d, r = classify_one(sub, cwd, bare_var_ok, assigned,
+                                    may_clear=may_clear)
                 out.append((d, f"the loop sets ${name} to {val}; {r}"))
             return worst_of(out)
 
@@ -1083,12 +1204,27 @@ def command_word(argv):
     Shell keywords and grouping are stepped over with the wrappers: a segment
     inside a loop body starts `do rm -rf ...`, and reading `do` as the command
     both painted it red in the echo and hid a `do cd /` from candidate_cwds.
+
+    A LEADING redirection is stepped over too. `>out rm -rf /` is an rm with a
+    redirect in front of it, and bash and zsh both accept the form. shlex splits
+    `2>/dev/null` into three tokens, so the fd digit has to be consumed with the
+    operator -- without that, command_word stopped on the token `2` and
+    `2>/dev/null typeset -g ...` hid the typeset from _rebinding_possible.
     """
     j = 0
-    while j < len(argv) and (ENV_ASSIGN_RE.match(argv[j])
-                             or argv[j] in KEYWORDS
-                             or os.path.basename(argv[j]) in WRAPPERS):
-        j += 1
+    while j < len(argv):
+        t = argv[j]
+        if ENV_ASSIGN_RE.match(t) or t in KEYWORDS or os.path.basename(t) in WRAPPERS:
+            j += 1
+            continue
+        # `2` `>` `/dev/null`, `>` `/dev/null`, a fused `2>` `/dev/null`, or
+        # bash's `{fd}` `>` `/dev/null`.
+        k = j + 1 if ((t.isdigit() or FD_BRACE_RE.match(t)) and j + 1 < len(argv)
+                      and REDIRECT_TOKEN_RE.match(argv[j + 1])) else j
+        if REDIRECT_TOKEN_RE.match(argv[k]) and k + 1 < len(argv):
+            j = k + 2
+            continue
+        break
     if j >= len(argv):
         return j, ""
     return j, os.path.basename(argv[j])
@@ -1130,8 +1266,19 @@ def git_segments(toks):
 # and it is the ";" that mask_opaque puts in the first one's place that makes
 # BINDING_RE stop the run after `W=/tmp/build` instead of swallowing `rm` as
 # part of a second, bogus assignment attempt.
+# The three expansion forms a literal binding fully determines: $W, ${W} and
+# ${W:?...} all evaluate to exactly W's value when W is set and non-empty, which
+# is what such a binding proves. ${W:-default} is deliberately NOT matched -- it
+# evaluates to the DEFAULT when W is empty, so the binding does not decide it.
+#
+# The `:?` message is matched as [^}]*, which is not bash's nesting-aware parse:
+# `${W:?${X}}` matches only through the INNER `}`, leaving a stray `}` on the
+# resolved path. That divergence runs in the strict direction and can only run
+# that way -- a spurious extra character lengthens a path component, which can
+# fail a safe-root prefix test but never pass one that the true path would fail.
+# Left as it is rather than grown a brace counter for a case nobody writes.
 SUBST_NAME_RE = re.compile(
-    r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+    r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::\?[^}]*)?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 # NAME=VALUE where VALUE needs no interpretation. The charset excludes every
 # character that would require a quote, an escape or an expansion to survive,
 # which is exactly the set on which a second reading of the source could have
@@ -1152,10 +1299,15 @@ BINDING_RE = re.compile(
 def _read_only_mentions(name, rest):
     """Is every mention of `name` in the rest of the command a plain read?
 
-    Anything that is not `$name` or `${name}` drops the binding. One blunt rule
-    stands in for a catalogue of every way a shell can rebind a variable BY
-    NAMING IT -- it does not, and cannot, cover a rebinding that never names
-    its target at all:
+    Anything that is not `$name`, `${name}` or `${name:?...}` drops the binding.
+    The `:?` form is a read with an abort bolted on -- it can never write -- and
+    it is the form this guard's own advice tells the author to use, so rejecting
+    it would drop the binding on exactly the commands that took the advice. The
+    other `${name:X}` modifiers stay out: `${name:=x}` is the one that writes,
+    and telling the safe ones apart is the catalogue this rule exists to avoid.
+    One blunt rule stands in for that catalogue of every way a shell can rebind
+    a variable BY NAMING IT -- it does not, and cannot, cover a rebinding that
+    never names its target at all:
 
         unset W    read W    W+=/x    export W=/x    ((W=1))    for W in ...
         declare W  local W   W=other  eval "W=/"     (W=/)      ${W:-/}
@@ -1173,13 +1325,17 @@ def _read_only_mentions(name, rest):
     wrapper and quoting forms neither reading alone caught, but not every
     indirection: a shell FUNCTION that reassigns the variable in its body
     names nothing but the function at the call site, and there is no cheap
-    check for what runs inside one.
+    check for what runs inside one. _rebinding_possible fences that off from
+    CLEARING -- any definition in the command text drops it -- and condemning
+    tolerates a stale binding by design.
     """
     for m in re.finditer(r"(?<!\w)%s(?!\w)" % re.escape(name), rest):
         s = m.start()
         if s >= 1 and rest[s - 1] == "$":
             continue
         if s >= 2 and rest[s - 2:s] == "${" and rest[m.end():m.end() + 1] == "}":
+            continue
+        if s >= 2 and rest[s - 2:s] == "${" and rest[m.end():m.end() + 2] == ":?":
             continue
         return False
     return True
@@ -1264,8 +1420,9 @@ def proven_bindings(cmd):
     # for tokenizing: this is a linear mention scan, not shlex, so a
     # substitution's own quotes and parens cannot shatter it. A shell function
     # that reassigns the variable in its body is the same class of hole -- a
-    # rebind with no textual mention out here -- and there is no equally cheap
-    # fix for it; it is a known limit of this scan, not a case it covers.
+    # rebind with no textual mention out here -- and stays a known limit of
+    # this scan; _rebinding_possible is what stands between it and a cleared
+    # operand.
     rest = unmask(masked[pos:], subs)
 
     # eval, source and `.` rebind without ever naming the variable, which is
@@ -1277,6 +1434,225 @@ def proven_bindings(cmd):
 
     return {n: v for n, v in bindings.items()
             if n not in DANGEROUS_VARS and _read_only_mentions(n, rest)}
+
+
+# --- how long a proven binding stays provable ---------------------------------
+# proven_bindings drops a name mentioned as anything but a plain read, and
+# refuses whole commands that reach eval/source/exec. What survives both is a
+# rebinding whose target name never appears in the text at all. Condemning does
+# not care -- a stale binding there is a missed deny, a prompt -- but clearing
+# from a stale binding is a wrong `allow` on `rm -rf /*`, so anything that COULD
+# rebind namelessly has to stand between an operand and a cleared verdict.
+
+# The builtins that can write a variable whose NAME arrives as data, so no
+# mention scan can see the target: `declare -g "$(printf W)=/"` never spells W.
+# trap and autoload are not padding. A trap's action can be computed the same
+# way and fires at a point no textual order can place, and zsh's autoload pulls
+# a function body off fpath -- a definition from OUTSIDE the command text, the
+# one source the module docstring's typeset +f measurement cannot rule out.
+REBINDING_BUILTINS = {"declare", "typeset", "local", "export", "readonly",
+                      "printf", "read", "mapfile", "readarray", "getopts",
+                      "let", "unset", "trap", "autoload"}
+# A loop body re-runs, so a construct inside one is not bounded by where it sits
+# in the text -- it happens again at the TOP of every later iteration. Tracked as
+# a stack rather than "is there a loop anywhere", which was the first cut and was
+# far too blunt: it read a `for` printing results AFTER a delete as a reason to
+# distrust the delete, and withheld four real allows in the corpus for nothing.
+#
+# `repeat N; do ... done` and `foreach x (...) ... end` are zsh loops too, and
+# both were missed outright. The closers matter as much as the openers, and the
+# asymmetry between them decides which way a mistake fails: a stray opener
+# pushes a phantom loop, which only withholds an allow, while a stray CLOSER
+# pops a real one and re-permits the ordering this exists to void. So a closer
+# counts only in command position -- `echo done` inside a body, and a `done`
+# sitting in a `for` word list, were both popping a genuinely open loop.
+#
+# Matched by KIND. Restricting a pop to command position stopped a closer that
+# was DATA (`echo done`, a `done` in a word list) from closing a loop; it did
+# nothing about a closer that genuinely is a command word and closes nothing.
+# `end` inside a `for ... do ... done` body is a command-not-found in bash, the
+# loop keeps running, and popping on it re-permitted the ordering this exists to
+# void. A mismatched closer now leaves the loop open, which is the conservative
+# reading and costs at most a prompt.
+LOOP_CLOSER_FOR = {"for": "done", "select": "done", "while": "done",
+                   "until": "done", "repeat": "done", "foreach": "end"}
+LOOP_OPENERS = set(LOOP_CLOSER_FOR)
+LOOP_CLOSERS = set(LOOP_CLOSER_FOR.values())
+# Commands whose name is punctuation. The backstop below refuses a command word
+# it cannot identify, and "has no word character" was the first test for that --
+# which called `[ -z "$f" ]` unidentifiable and cost two real allows in the
+# corpus. `[` and `[[` are test, `:` is the no-op; none can assign to anything.
+PUNCT_COMMANDS = {"[", "[[", ":"}
+# set's -o (and zsh's +o) consumes the option name after it, so
+# `set -euo pipefail` is all flags. Anything else that is not a -flag assigns:
+# zsh's `set -A name ...` fills an array.
+SET_OPT_ARG_RE = re.compile(r"^[-+][A-Za-z]*o$")
+SET_FLAG_RE = re.compile(r"^[-+][A-Za-z]+$")
+# The split _indirection_present applies to the raw text, applied here to each
+# token: shlex keeps `printf$IFS-v` one word, and the running shell does not.
+# Testing the token AND its split-out words is the same union of readings as
+# there, and for the same reason -- a disagreement may only refuse more.
+TOKEN_WORDS_RE = re.compile(r"[\s;&|()<>$]+")
+# A parameter expansion that assigns through a name it never writes. zsh's
+# ${(P)ptr::=value} sets the parameter NAMED BY ptr, and needs no command word
+# at all -- it rode in as an argument to `:`:
+#
+#     W=/tmp/safe; PTR=W; : ${(P)PTR::=/etc}; rm -rf "$W"/*
+#
+# cleared as /tmp/safe/* and ran as `rm -rf /etc/*`. The empty form runs as
+# `rm -rf /*`. All three fences missed at once, and each for its stated reason:
+# W is never written, so _read_only_mentions sees only reads; nothing reaches
+# eval or source, so _indirection_present is quiet; and the assignment is an
+# ARGUMENT, so there is no command word for the builtin rule to match. This is
+# the vehicle the docstring's "no known vehicle" was waiting for.
+#
+# Matched on RAW TEXT, because shlex shatters the construct exactly as it
+# shatters an unquoted $(...) -- `${(P)PTR::=/etc}` arrives as
+# ['${', '(', 'P', ')', 'PTR::=/etc}'] -- so no token-level rule can see it.
+# That is also why a hit refuses from index 0 instead of from where it sits:
+# once shlex has taken it apart there is no position to report, and the honest
+# conservative answer is that the whole line loses clearing.
+#
+# Two shapes, both deliberately blunt. `${(` is any zsh expansion FLAG list,
+# which is what makes (P) reachable in the first place; `::=` is the
+# always-assign operator, the only one of ${n=v} / ${n:=v} / ${n::=v} that
+# fires when the target is already set. Measured across 28,210 commands in this
+# machine's transcripts: the only hits are the session that found this, and not
+# one of them is a delete.
+ASSIGNING_EXPANSION_RE = re.compile(r"\$\{\s*\(|::=")
+
+
+def _rebinding_possible(toks, text=""):
+    """-> (index, reason) of the first token that could rebind a name it never
+    writes, or None if nothing here can.
+
+    analyse reads only the index. The reason is carried for anyone bisecting a
+    verdict by hand -- "which rule withheld this?" is the first question a
+    surprising `ask` raises, and recomputing it from the tokens is worse than
+    returning it. The suite does NOT read it; it asserts verdicts end to end,
+    which is the right level and leaves this string unchecked. It is
+    deliberately NOT put in the verdict text:
+    withholding clearing does not decide the operand, it only declines to help,
+    and the operand's own reason ("unguarded expansion with a suffix -- use
+    ${W:?}") is the one that tells the reader what to do about it.
+
+    The gate on CLEARING from proven_bindings, not on the map itself. Four
+    shapes can rebind namelessly. The first is found on `text`, the raw command,
+    because shlex takes it apart; see ASSIGNING_EXPANSION_RE. The other three
+    are found on tokens:
+
+        a function definition     `f() {` or `function f`: the one construct
+                                  that defers execution past the reach of any
+                                  textual order. The body may write anything,
+                                  whenever it is called.
+        an assigning builtin      REBINDING_BUILTINS above -- every one is
+                                  already fatal to a binding when it names the
+                                  variable; this catches the computed name.
+        `set` with a non-flag     zsh's `set -A name ...`. set -u, set -e and
+        argument                  set -o pipefail are all flags and still clear.
+
+    The builtins are matched in COMMAND POSITION only, via command_word so a
+    wrapper or a `do` does not hide one. A builtin rebinds nothing when it is
+    somebody's argument, and reading an argument as code is the mistake this
+    file keeps paying for -- here it was
+
+        echo "### EXPERIMENT A: ... with a failing atrm (no trap backup)"
+
+    where the word `trap` in an experiment's title withheld the allow on the
+    delete two segments later. The function-definition test stays positionless:
+    `function` and `()` are compared as whole tokens, so prose carrying either
+    word arrives quoted, as one token, and cannot match.
+
+    An assignment token is skipped outright: it writes a LITERAL name, which is
+    _read_only_mentions' territory, and its value never executes -- without the
+    skip, W=/usr/bin/printf would read as running printf.
+
+    Position is why this returns an index and not a bool. Segments run left to
+    right, so a construct after the rm cannot have run before it and costs
+    nothing -- which is every hit in the measured corpus: printf and local as
+    ordinary output, downstream of the delete.
+
+    A loop body is the exception, because it runs again:
+
+        for i in 1 2; do rm -rf "$W/x"; g; done
+
+    `g` sits after the rm in the text and before it in time, on the second
+    iteration. So a hit inside an open loop reports the OUTERMOST enclosing
+    loop's index instead of its own -- the earliest point from which that body
+    can have run. Only loops still open at the hit count: a `for` that prints
+    results after the delete has already closed, or never contained it, and
+    reporting 0 for it withheld four real allows in the corpus.
+    """
+    # Before anything positional: an assigning expansion cannot be placed in the
+    # token stream at all, so it refuses the whole line.
+    if ASSIGNING_EXPANSION_RE.search(text):
+        return 0, ("a parameter expansion can assign through a name it "
+                   "never writes")
+    at = reason = None
+    loop_starts = []
+    # Where each segment's real command sits. command_word rather than "first
+    # token after a separator", so `sudo export ...` and a loop body's
+    # `do printf ...` both land on the word that runs.
+    #
+    # If command_word lands on something that cannot BE a command name, it did
+    # not find the command -- it ran out of things it recognised and stopped on
+    # a token it could not classify. Clearing then rests on a parse that already
+    # failed, which is how `<<<` and `&>` each returned allow on a wipe. So the
+    # whole line loses clearing instead.
+    #
+    # This is the rule that should have been written first. Two enumerations in
+    # this spot were defeated in a single review -- WRAPPERS missing zsh's
+    # precommand modifiers, then REDIRECTS missing half its own operators -- and
+    # both were wrong `allow`s rather than missed prompts, because a command
+    # word nobody could identify was read as "nothing runs here". A third gap
+    # is a safe assumption; what it costs is now a prompt.
+    in_cmd_pos = set()
+    for s, e in segment_bounds(toks):
+        j, _ = command_word(toks[s:e])
+        if s + j >= e:
+            continue          # all wrappers and keywords: this segment runs nothing
+        if not re.search(r"\w", toks[s + j]) and toks[s + j] not in PUNCT_COMMANDS:
+            return 0, ("a segment's command word cannot be identified, so what "
+                       "runs before the delete is unknown")
+        in_cmd_pos.add(s + j)
+    for i, t in enumerate(toks):
+        if t in LOOP_OPENERS:
+            loop_starts.append((i, LOOP_CLOSER_FOR[t]))
+        elif (t in LOOP_CLOSERS and loop_starts and i in in_cmd_pos
+              and t == loop_starts[-1][1]):
+            loop_starts.pop()
+        if ENV_ASSIGN_RE.match(t):
+            continue
+        if t in ("function", "()") or (
+                t == "(" and i + 1 < len(toks) and toks[i + 1] == ")"):
+            at, reason = i, "a function definition can rebind when called"
+            break
+        if i not in in_cmd_pos:
+            continue
+        if t == "set":
+            j = i + 1
+            while j < len(toks) and toks[j] not in SEPARATORS:
+                if toks[j] in REDIRECTS or SET_OPT_ARG_RE.match(toks[j]):
+                    j += 2
+                    continue
+                if not SET_FLAG_RE.match(toks[j]):
+                    at, reason = i, "`set` with a non-flag argument can assign"
+                    break
+                j += 1
+            if at is not None:
+                break
+            continue
+        words = [os.path.basename(w) for w in TOKEN_WORDS_RE.split(t) if w]
+        hit = next((w for w in words
+                    if w in REBINDING_BUILTINS or w == "set"), None)
+        if hit is not None:
+            at, reason = i, f"`{hit}` can assign to a name it computes"
+            break
+    if at is None:
+        return None
+    if loop_starts:
+        return loop_starts[0][0], reason
+    return at, reason
 
 
 # --- names a loop binds, and where a relative operand lands -------------------
@@ -1575,8 +1951,13 @@ def ssh_remote_command(argv):
 HANDLED = {"find", "fd", "fdfind", "rsync", "rclone", "ssh"} | GIT_NAMES
 
 
-def analyse_segment(argv, cwd, depth, assigned=None, loops=None):
-    """-> [Finding] for the non-rm commands in one segment."""
+def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
+                    may_clear=False):
+    """-> [Finding] for the non-rm commands in one segment.
+
+    may_clear is decided per SEGMENT by analyse, because that is the unit a
+    rebinding can sit before or after; every target found in here shares it.
+    """
     out = []
     segment = argv
     idx, base = command_word(argv)
@@ -1604,7 +1985,8 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None):
             return
         for t in targets:
             d, r = classify_operand(t, cwd, bare_var_ok=bare_var_ok,
-                                    assigned=assigned, loops=loops)
+                                    assigned=assigned, loops=loops,
+                                    may_clear=may_clear)
             out.append(Finding(d, segment, label, t, r))
 
     if base == "find":
@@ -1648,7 +2030,8 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None):
         if destructive:
             for t in paths:
                 d, r = classify_operand(t, cwd, bare_var_ok=False,
-                                        assigned=assigned, loops=loops)
+                                        assigned=assigned, loops=loops,
+                                        may_clear=may_clear)
                 # Untracked and ignored files are not in history. Even a "safe"
                 # path only earns a prompt, never a silent pass -- and saying
                 # "literal relative path" there would read like a clean bill.
@@ -1725,6 +2108,15 @@ def analyse(cmd, cwd, depth=0):
                 return toks[s:e]
         return list(toks)
 
+    def segment_start(i):
+        """Where that segment begins, for deciding whether it ran before a
+        rebinding. The segment's own start and not token i, because a construct
+        sitting between the two is in this very command and has not run yet."""
+        for s, e in bounds:
+            if s <= i < e:
+                return s
+        return 0
+
     def bail(decision, i, reason, hi=None):
         """A bail-out that still echoes the command it choked on.
 
@@ -1774,8 +2166,16 @@ def analyse(cmd, cwd, depth=0):
                     f"{mark('--no-preserve-root')} defeats rm's own safety net",
                     hi=i)
 
-    # Consulted only to escalate; see classify_one.
+    # Consulted to escalate from anywhere, and to clear only before rebind_at;
+    # see classify_one.
     assigned = proven_bindings(cmd)
+    # Where the map stops being provable. Computed once over the whole token
+    # stream rather than per segment, because the answer is a property of the
+    # LINE -- the first construct that could rebind a name without writing it --
+    # and asking each segment separately would only rediscover it len(bounds)
+    # times. A segment starting before it ran with the bindings still intact.
+    rebind = _rebinding_possible(toks, cmd)
+    rebind_at = len(toks) if rebind is None else rebind[0]
     # These two do clear as well as condemn, and both earn it the same way: a
     # loop's word list and a literal `cd` target are complete and visible right
     # here, where an assignment map's binding may already have been overwritten.
@@ -1795,6 +2195,7 @@ def analyse(cmd, cwd, depth=0):
             continue
         found_rm = True
         segment = segment_at(i)
+        may_clear = segment_start(i) < rebind_at
         i += 1
         recursive, operands = False, []
         while i < len(toks) and toks[i] not in SEPARATORS:
@@ -1821,7 +2222,8 @@ def analyse(cmd, cwd, depth=0):
         if not operands:
             continue
         for op in operands:
-            d, r = classify_operand(op, cwds, assigned=assigned, loops=loops)
+            d, r = classify_operand(op, cwds, assigned=assigned, loops=loops,
+                                    may_clear=may_clear)
             # No label: for rm every operand is a target, which the echoed
             # command already makes obvious.
             findings.append(Finding(d, segment, None, op, r))
@@ -1829,7 +2231,8 @@ def analyse(cmd, cwd, depth=0):
     # --- everything else, one segment at a time.
     for start, end in bounds:
         findings.extend(
-            analyse_segment(toks[start:end], cwds, depth, assigned, loops))
+            analyse_segment(toks[start:end], cwds, depth, assigned, loops,
+                            start < rebind_at))
 
     if not found_rm and not findings:
         # Nothing survived parsing. Every construct that could execute a string
