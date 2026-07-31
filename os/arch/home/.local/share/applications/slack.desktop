@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Slack
+StartupWMClass=Slack
+Comment=Slack Desktop
+GenericName=Slack Client for Linux
+# Local override of /usr/share/applications/slack.desktop.
+# The only change is the FF_PROFILE prefix: it is inherited by anything Slack
+# launches, so ff-route knows links clicked here belong to the work profile.
+Exec=env FF_PROFILE=beaver /usr/bin/slack --disable-gpu-compositing --enable-features=UseOzonePlatform --ozone-platform=wayland --enable-wayland-ime --enable-features=WebRTCPipeWireCapturer --enable-features=WaylandWindowDecorations --disable-features=WaylandFractionalScaleV1 -s %U
+Icon=slack
+Type=Application
+StartupNotify=true
+Categories=GNOME;GTK;Network;InstantMessaging;
+MimeType=x-scheme-handler/slack;

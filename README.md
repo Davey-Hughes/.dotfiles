@@ -36,6 +36,8 @@ The clone path matters: `install.sh` resolves everything from `$HOME/.dotfiles`,
 ## Adding New Configs
 To add a new config app down the road, you no longer need to update the install script. Place a cross-platform config in `config/` (or `home/`), or a platform-specific one under `os/<platform>/config` (or `os/<platform>/home`), then rerun `./install.sh`. Stow will detect the new additions and link them on the matching OS.
 
+**One exception.** Stow collapses a directory into a single symlink when the target does not exist — convenient, since files added later then appear without re-stowing. If the app writes back into its own config directory (state, caches, credentials, downloaded plugins), those writes land inside this repo. Add such a directory to `UNFOLD_HOME` or `UNFOLD_CONFIG` at the top of `install.sh`, and to the matching list in `tests/test-install.sh`. Directories only these dotfiles own are better left folded.
+
 ## KDE Plasma (Arch only)
 
 KDE Plasma settings (theme, shortcuts, panels, Dolphin/Konsole/Kate) are tracked
@@ -72,7 +74,7 @@ build here, so the checks cover the three ways a dotfiles repo actually breaks:
 | `tests/test-syntax.sh` | A file that will not parse in the shell or program that reads it — `bash -n`, `zsh -n`, `fish --no-execute`, JSON/TOML/YAML, plus `shellcheck` at warning level on the scripts. |
 | `tests/test-xdg-sync.sh` | The three XDG env files drifting apart, which silently gives one shell a different environment than the others. |
 | `tests/test-docs.sh` | A path this README names that no longer exists. |
-| `tests/test-install.sh` | `install.sh` failing on a machine that is not already set up. Runs it twice against a throwaway `$HOME` — stow's directory folding, the conflict/backup path, and idempotence. |
+| `tests/test-install.sh` | `install.sh` failing on a machine that is not already set up. Runs it twice against a throwaway `$HOME` — the conflict/backup path, idempotence, and stow's directory folding in both directions: every shared directory comes out real, every submodule still resolves into the checkout. Its expected list mirrors `UNFOLD_HOME`/`UNFOLD_CONFIG` rather than reading them, so dropping an entry fails the build instead of silently dropping its own assertion. |
 
 A checker that is not installed locally (`fish`, `shellcheck`, PyYAML) prints
 `skip`; in CI the same absence is a hard failure, so nothing goes unchecked there.

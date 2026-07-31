@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Firefox — Work
+GenericName=Web Browser
+Comment=Firefox Developer Edition, beaver profile
+Exec=/usr/lib/firefox-developer-edition/firefox -P beaver %u
+Icon=firefox-developer-edition
+Terminal=false
+StartupNotify=true
+StartupWMClass=firefox-developer-edition
+Categories=Network;WebBrowser;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/lib/firefox-developer-edition/firefox -P beaver --new-window
+
+[Desktop Action new-private-window]
+Name=New Private Window
+Exec=/usr/lib/firefox-developer-edition/firefox -P beaver --private-window

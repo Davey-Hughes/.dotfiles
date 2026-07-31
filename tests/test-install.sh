@@ -131,17 +131,51 @@ else
   fail "the pre-existing ~/.zshrc was not backed up (looked under ~/.dotfiles-backup)"
 fi
 
-section "stow did not fold \$XDG_CONFIG_HOME/git into a single link"
-# install.sh:115 documents why this matters: git_settings writes the global git
-# config to $XDG_CONFIG_HOME/git/config, and if stow had folded config/git/ into
-# one symlink, that write would land INSIDE the repo.
-if [ -L "$FAKE/.config/git" ]; then
-  fail "the ~/.config/git target is a symlink -- git_settings would write the global config into the repo"
-elif [ -d "$FAKE/.config/git" ]; then
-  ok "the ~/.config/git target is a real directory"
-else
-  fail "the ~/.config/git target does not exist"
-fi
+section "stow folded nothing that other software writes into"
+# Stow turns a package directory into ONE symlink when the target does not exist
+# yet. Wherever something other than this repo also writes there, every such
+# write then lands inside the checkout: git_settings' global config, fish's
+# fish_variables, Claude Code's credentials and session state, TPM's plugins,
+# and the .desktop files pacman/Steam/Lutris drop in.
+#
+# Spelled out here rather than read from install.sh ON PURPOSE, the same way the
+# allowlist in test-tracked-files.sh mirrors .gitignore: sourcing UNFOLD_HOME
+# would make deleting an entry delete its own assertion, and the regression this
+# exists to catch IS someone dropping an entry. install.sh declares the
+# behaviour, this decides what the repo will accept, and only this can fail a
+# build. Adding a directory means adding it in both places.
+expect_home=(.local/bin .local/share/applications .tmux/plugins)
+expect_config=(.claude fish git)
+before=$FAILURES
+unfold_targets=()
+for d in "${expect_home[@]}";   do unfold_targets+=("$FAKE/$d"); done
+for d in "${expect_config[@]}"; do unfold_targets+=("$FAKE/.config/$d"); done
+for t in "${unfold_targets[@]}"; do
+  rel=${t#"$FAKE/"}
+  if [ -L "$t" ]; then
+    fail "~/$rel is a symlink -- writes to it would land inside the repo"
+  elif [ ! -d "$t" ]; then
+    fail "~/$rel does not exist"
+  fi
+done
+[ "$FAILURES" -eq "$before" ] &&
+  ok "${#unfold_targets[@]} shared directories are real, not folded"
+
+# The flip side: a submodule must still reach the repo's checkout as one whole
+# directory, or it stops being a usable git repo and tpm can no longer update
+# itself. It does not need a link of its own -- a folded ancestor (~/.zsh) gets
+# it there just as well -- so this checks where the path RESOLVES, not its type.
+# Unfolded into per-file links, it would resolve to a real directory under $HOME.
+section "submodules still resolve into the repo"
+before=$FAILURES
+while IFS= read -r sub; do
+  case "$sub" in home/*) t="$FAKE/${sub#home/}" ;; config/*) t="$FAKE/.config/${sub#config/}" ;; *) continue ;; esac
+  [ -e "$t" ] || continue
+  if [ "$(readlink -f "$t")" != "$(readlink -f "$FAKE/.dotfiles/$sub")" ]; then
+    fail "${t#"$FAKE/"} does not resolve into the checkout -- the submodule was unfolded into per-file links"
+  fi
+done < <(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}')
+[ "$FAILURES" -eq "$before" ] && ok "each submodule resolves to its directory in the checkout"
 if [ -f "$FAKE/.config/git/config" ] && ! [ -L "$FAKE/.config/git/config" ]; then
   grep -q 'defaultBranch' "$FAKE/.config/git/config" &&
     ok "the global git config was written there, outside the repo" ||
