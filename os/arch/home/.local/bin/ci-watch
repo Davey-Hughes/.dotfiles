@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+#
+# ci-watch — what is the local Forgejo Actions runner doing right now?
+#
+# Runs as davey via the `(cirunner) NOPASSWD: /usr/bin/docker` sudoers rule. That rule matches the
+# LITERAL path, so this must call /usr/bin/docker (bare `docker` resolves to /usr/sbin/docker on
+# this box's PATH) and must not use inline VAR=value assignments — either breaks the match and
+# reintroduces a password prompt.
+#
+#   ci-watch          snapshot: runner, live jobs, caches
+#   ci-watch -f       follow the runner log
+#   ci-watch top      live CPU/memory for running job containers
+#   ci-watch history  recent tasks this runner has handled
+
+set -uo pipefail
+
+RUNNER_USER=cirunner
+RUID=$(id -u "$RUNNER_USER" 2>/dev/null) || { echo "no such user: $RUNNER_USER"; exit 1; }
+SOCK="unix:///run/user/$RUID/docker.sock"
+COMPOSE="/home/$RUNNER_USER/.config/forgejo-runner/compose.yaml"
+
+d() { sudo -n -u "$RUNNER_USER" /usr/bin/docker --host "$SOCK" "$@"; }
+
+if ! d version >/dev/null 2>&1; then
+  cat >&2 <<EOF
+Cannot reach $RUNNER_USER's rootless docker daemon.
+
+Check, in order:
+  1. sudo -n -l | grep cirunner        # is the NOPASSWD rule present?
+  2. systemctl status user@$RUID       # is the user manager running (needs linger)?
+  3. sudo -u $RUNNER_USER systemctl --user status docker.socket
+EOF
+  exit 1
+fi
+
+# Job containers are named FORGEJO-ACTIONS-TASK-<id>_WORKFLOW-<hash>_JOB-<jobname>.
+jobs_raw() { d ps --format '{{.Names}}\t{{.Status}}' | grep '^FORGEJO-ACTIONS-TASK-' || true; }
+
+# The container name carries the task id but not the repo; the runner logs it as
+# "task <id> repo is <owner>/<name>". Correlate the two.
+repo_for_task() {
+  d logs forgejo-runner 2>&1 | grep -oP "task $1 repo is \K\S+" | tail -1
+}
+
+case "${1:-snapshot}" in
+  -f|follow|logs)
+    exec sudo -n -u "$RUNNER_USER" /usr/bin/docker --host "$SOCK" \
+      compose -f "$COMPOSE" logs -f --tail 40
+    ;;
+
+  top)
+    names=$(jobs_raw | cut -f1)
+    [ -z "$names" ] && { echo "No job containers running."; exit 0; }
+    # shellcheck disable=SC2086
+    exec sudo -n -u "$RUNNER_USER" /usr/bin/docker --host "$SOCK" stats $names
+    ;;
+
+  history)
+    echo "Recent tasks handled by this runner (newest last):"
+    d logs forgejo-runner 2>&1 \
+      | grep -oP 'msg="task \K[0-9]+ repo is \S+' \
+      | awk '{printf "  task %-6s %s\n", $1, $4}' | tail -25
+    echo
+    echo "Total seen in retained logs: $(d logs forgejo-runner 2>&1 | grep -c 'msg="task ')"
+    ;;
+
+  snapshot|status)
+    echo "=== runner ==="
+    d ps --filter name=forgejo-runner --format '  {{.Names}}  {{.Status}}  ({{.Image}})'
+    echo
+
+    echo "=== jobs running now ==="
+    if [ -z "$(jobs_raw)" ]; then
+      echo "  idle"
+    else
+      jobs_raw | while IFS=$'\t' read -r name status; do
+        id=${name#FORGEJO-ACTIONS-TASK-}; id=${id%%_*}
+        job=${name##*_JOB-}
+        printf '  task %-6s %-22s %-28s %s\n' "$id" "$job" "$(repo_for_task "$id")" "$status"
+      done
+    fi
+    echo
+
+    echo "=== buildkit builders ==="
+    b=$(d ps --format '{{.Names}}' | grep '^buildx_buildkit_' || true)
+    if [ -z "$b" ]; then echo "  none (created on demand by docker jobs)"; else
+      for c in $b; do
+        printf '  %-40s %s\n' "$c" "$(d exec "$c" buildctl du 2>/dev/null | awk '/^Total:/{print $2}')"
+      done
+    fi
+    echo
+
+    echo "=== caches ==="
+    d exec forgejo-runner sh -c 'du -sh /data/.cache/* 2>/dev/null' | sed 's|/data/.cache/|  |'
+    echo
+
+    echo "=== last 8 log lines ==="
+    d logs --tail 8 forgejo-runner 2>&1 | sed 's/^/  /'
+    echo
+    echo "(ci-watch -f | top | history)"
+    ;;
+
+  *)
+    echo "usage: ci-watch [-f|follow] [top] [history]" >&2
+    exit 2
+    ;;
+esac
