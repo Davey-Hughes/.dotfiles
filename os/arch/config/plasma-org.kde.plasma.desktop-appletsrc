@@ -51,8 +51,13 @@ global=Alt+F1
 immutability=1
 plugin=org.kde.plasma.icontasks
 
+[Containments][29][Applets][31][Configuration][ConfigDialog]
+DialogHeight=630
+DialogWidth=810
+
 [Containments][29][Applets][31][Configuration][General]
 launchers=preferred://filemanager,preferred://browser,applications:com.mitchellh.ghostty.desktop,applications:steam.desktop,applications:vesktop.desktop,applications:slack.desktop
+unhideOnAttention=false
 
 [Containments][29][Applets][32]
 immutability=1
@@ -193,7 +198,7 @@ immutability=1
 plugin=org.kde.plasma.digitalclock
 
 [Containments][3][Applets][22][Configuration]
-popupHeight=400
+popupHeight=451
 popupWidth=560
 
 [Containments][3][Applets][22][Configuration][Appearance]
@@ -239,8 +244,13 @@ global=Alt+F1
 immutability=1
 plugin=org.kde.plasma.icontasks
 
+[Containments][3][Applets][6][Configuration][ConfigDialog]
+DialogHeight=630
+DialogWidth=810
+
 [Containments][3][Applets][6][Configuration][General]
 launchers=preferred://filemanager,applications:firefox-developer-edition.desktop,applications:com.mitchellh.ghostty.desktop,applications:steam.desktop,applications:vesktop.desktop,applications:slack.desktop
+unhideOnAttention=false
 
 [Containments][3][Applets][7]
 immutability=1
@@ -331,8 +341,8 @@ DialogWidth=810
 
 [Containments][3][Applets][8][General]
 disabledStatusNotifiers=kded6
-extraItems=org.kde.kdeconnect,org.kde.plasma.keyboardlayout,org.kde.plasma.printmanager,org.kde.plasma.keyboardindicator,org.kde.plasma.notifications,org.kde.plasma.manage-inputmethod,org.kde.kscreen,org.kde.plasma.bluetooth,org.kde.plasma.devicenotifier,org.kde.plasma.battery,org.kde.plasma.mediacontroller,org.kde.plasma.volume,org.kde.plasma.networkmanagement,org.kde.plasma.clipboard,org.kde.plasma.cameraindicator,org.kde.plasma.weather,org.kde.plasma.brightness
-hiddenItems=firewall-applet,org.kde.plasma.brightness,Insync,steam,Slack_status_icon_1
+extraItems=org.kde.kdeconnect,org.kde.plasma.keyboardlayout,org.kde.plasma.printmanager,org.kde.plasma.keyboardindicator,org.kde.plasma.notifications,org.kde.plasma.manage-inputmethod,org.kde.kscreen,org.kde.plasma.bluetooth,org.kde.plasma.devicenotifier,org.kde.plasma.mediacontroller,org.kde.plasma.volume,org.kde.plasma.networkmanagement,org.kde.plasma.clipboard,org.kde.plasma.cameraindicator,org.kde.plasma.weather,org.kde.plasma.brightness,org.kde.plasma.battery
+hiddenItems=firewall-applet,org.kde.plasma.brightness,Insync,steam,Slack_status_icon_1,org.kde.plasma.battery
 knownItems=org.kde.kdeconnect,org.kde.plasma.keyboardlayout,org.kde.plasma.printmanager,org.kde.plasma.keyboardindicator,org.kde.plasma.notifications,org.kde.plasma.manage-inputmethod,org.kde.kscreen,org.kde.plasma.bluetooth,org.kde.plasma.devicenotifier,org.kde.plasma.battery,org.kde.plasma.brightness,org.kde.plasma.mediacontroller,org.kde.plasma.volume,org.kde.plasma.networkmanagement,org.kde.plasma.clipboard,org.kde.plasma.cameraindicator,org.kde.plasma.weather
 
 [Containments][3][General]
