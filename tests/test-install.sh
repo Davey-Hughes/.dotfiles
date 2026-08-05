@@ -152,6 +152,9 @@ for d in "${expect_home[@]}";   do unfold_targets+=("$FAKE/$d"); done
 for d in "${expect_config[@]}"; do unfold_targets+=("$FAKE/.config/$d"); done
 for t in "${unfold_targets[@]}"; do
   rel=${t#"$FAKE/"}
+  # The `~/` is display text, not a path being used: these checks run against
+  # $FAKE, so $HOME would print the real home and name a file nothing looked at.
+  # shellcheck disable=SC2088
   if [ -L "$t" ]; then
     fail "~/$rel is a symlink -- writes to it would land inside the repo"
   elif [ ! -d "$t" ]; then
