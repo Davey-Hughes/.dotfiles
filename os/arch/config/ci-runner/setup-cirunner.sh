@@ -66,7 +66,7 @@ fi
 # ------------------------------------------------------- 3. user session -----
 say "3. systemd lingering (user daemon runs without login)"
 loginctl enable-linger "$RUNNER_USER"
-for i in $(seq 30); do
+for _ in $(seq 30); do
   [ -d "/run/user/$RUID" ] && break
   sleep 1
 done
@@ -94,12 +94,12 @@ SOCK="/run/user/$RUID/docker.sock"
 daemon_ok() { as_runner env DOCKER_HOST="unix://$SOCK" docker version >/dev/null 2>&1; }
 
 as_runner systemctl --user enable --now docker.socket
-for i in $(seq 10); do daemon_ok && break; sleep 1; done
+for _ in $(seq 10); do daemon_ok && break; sleep 1; done
 
 if ! daemon_ok; then
   echo "  socket activation alone did not yield a working daemon; enabling docker.service"
   as_runner systemctl --user enable --now docker.service
-  for i in $(seq 30); do daemon_ok && break; sleep 1; done
+  for _ in $(seq 30); do daemon_ok && break; sleep 1; done
 fi
 
 daemon_ok || { echo "  rootless daemon not responding on $SOCK"; \

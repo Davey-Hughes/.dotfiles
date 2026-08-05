@@ -25,7 +25,8 @@
 
 set -uo pipefail
 
-readonly SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+readonly SELF
 
 # Escapes, not literal glyphs. These are Private Use Area codepoints and they do
 # not survive every editing path -- they were silently blanked twice while this
@@ -272,12 +273,12 @@ case "${1:-}" in
     idle)
         # Stop / StopFailure -- the main loop is done, but subagents may still
         # be running, so refresh_state decides whether that means idle.
-        set_opt "$PANE" @cc_main done
+        set_opt "$PANE" @cc_main 'done'
         refresh_state "$PANE"
         ;;
     reset)
         # SessionStart -- a fresh session owns the pane; drop any stale counts.
-        set_opt "$PANE" @cc_main done
+        set_opt "$PANE" @cc_main 'done'
         set_opt "$PANE" @cc_subs 0
         refresh_state "$PANE"
         ;;
