@@ -49,8 +49,12 @@ readonly COL_FAIL='#db4b4b'      # tokyo-night error  -- last shell command fail
 readonly SPIN=($'\u00b7' $'\u2722' $'\u2736' $'\u273b' \
                $'\u273d' $'\u273b' $'\u2736' $'\u2722')
 
-readonly TICK=0.5                # seconds per frame; 8 frames = one 4s pulse
-readonly IDLE_EXIT_TICKS=6       # ~3s of nothing working and the ticker quits
+# Each frame costs ~10 tmux calls (one set-option per working pane, plus a
+# refresh per client), and every one of those invalidates the status line,
+# which re-runs the #() jobs in status-right for each client. At 0.5s that
+# measured ~36 powerkit-render spawns/sec against a status-interval of 5.
+readonly TICK=1.0                # seconds per frame; 8 frames = one 8s pulse
+readonly IDLE_EXIT_TICKS=3       # ~3s of nothing working and the ticker quits
 readonly LOCK="${XDG_RUNTIME_DIR:-/tmp}/tmux-cc-ticker.lock"
 
 # ---------------------------------------------------------------------------
