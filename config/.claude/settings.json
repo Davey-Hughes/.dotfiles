@@ -1,153 +1,157 @@
 {
-  "env": {
-    "DISABLE_AUTOUPDATER": "1"
-  },
-  "permissions": {
-    "defaultMode": "auto"
-  },
-  "model": "opus[1m]",
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/rm-guard.sh",
-            "statusMessage": "Checking for destructive rm"
-          }
-        ]
-      },
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh working"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh working"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh working"
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh blocked"
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh subagent +1"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh subagent -1"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh idle"
-          }
-        ]
-      }
-    ],
-    "StopFailure": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh idle"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh reset"
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/.claude/hooks/tmux-status.sh off"
-          }
-        ]
-      }
-    ]
-  },
-  "enabledPlugins": {
-    "frontend-design@claude-plugins-official": true,
-    "context7@claude-plugins-official": true,
-    "playwright@claude-plugins-official": true,
-    "code-review@claude-plugins-official": true,
-    "tokyo-night@claude-themes": true,
-    "chrome-devtools-mcp@claude-plugins-official": true,
-    "feature-dev@claude-plugins-official": true,
-    "superpowers@claude-plugins-official": true,
-    "code-simplifier@claude-plugins-official": true,
-    "claude-md-management@claude-plugins-official": true,
-    "security-guidance@claude-plugins-official": true,
-    "pyright-lsp@claude-plugins-official": true,
-    "rust-analyzer-lsp@claude-plugins-official": true,
-    "clangd-lsp@claude-plugins-official": true
-  },
-  "extraKnownMarketplaces": {
-    "claude-themes": {
-      "source": {
-        "source": "github",
-        "repo": "matcra587/claude-themes"
-      }
-    }
-  },
-  "effortLevel": "xhigh",
-  "tui": "fullscreen",
-  "skipWorkflowUsageWarning": true,
-  "theme": "custom:tokyo-night:tokyo-night",
-  "editorMode": "vim",
-  "agentPushNotifEnabled": true
+	"env": {
+		"DISABLE_AUTOUPDATER": "1"
+	},
+	"permissions": {
+		"defaultMode": "auto"
+	},
+	"model": "opus[1m]",
+	"hooks": {
+		"PreToolUse": [
+			{
+				"matcher": "Bash",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/rm-guard.sh",
+						"statusMessage": "Checking for destructive rm"
+					}
+				]
+			},
+			{
+				"matcher": "*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh working"
+					}
+				]
+			}
+		],
+		"PostToolUse": [
+			{
+				"matcher": "*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh working"
+					}
+				]
+			}
+		],
+		"UserPromptSubmit": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh working"
+					}
+				]
+			}
+		],
+		"Notification": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh blocked"
+					}
+				]
+			}
+		],
+		"SubagentStart": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh subagent +1"
+					}
+				]
+			}
+		],
+		"SubagentStop": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh subagent -1"
+					}
+				]
+			}
+		],
+		"Stop": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh idle"
+					}
+				]
+			}
+		],
+		"StopFailure": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh idle"
+					}
+				]
+			}
+		],
+		"SessionStart": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh reset"
+					}
+				]
+			}
+		],
+		"SessionEnd": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "$HOME/.config/.claude/hooks/tmux-status.sh off"
+					}
+				]
+			}
+		]
+	},
+	"enabledPlugins": {
+		"frontend-design@claude-plugins-official": true,
+		"context7@claude-plugins-official": true,
+		"playwright@claude-plugins-official": true,
+		"code-review@claude-plugins-official": true,
+		"tokyo-night@claude-themes": true,
+		"chrome-devtools-mcp@claude-plugins-official": true,
+		"feature-dev@claude-plugins-official": true,
+		"superpowers@claude-plugins-official": true,
+		"code-simplifier@claude-plugins-official": true,
+		"claude-md-management@claude-plugins-official": true,
+		"security-guidance@claude-plugins-official": true,
+		"pyright-lsp@claude-plugins-official": true,
+		"rust-analyzer-lsp@claude-plugins-official": true,
+		"clangd-lsp@claude-plugins-official": true
+	},
+	"extraKnownMarketplaces": {
+		"claude-themes": {
+			"source": {
+				"source": "github",
+				"repo": "matcra587/claude-themes"
+			}
+		}
+	},
+	"effortLevel": "xhigh",
+	"tui": "fullscreen",
+	"skipWorkflowUsageWarning": true,
+	"theme": "custom:tokyo-night:tokyo-night",
+	"editorMode": "vim",
+	"showMessageTimestamps": true,
+	"agentPushNotifEnabled": true,
+	"autoMode": {
+		"environment": []
+	}
 }
