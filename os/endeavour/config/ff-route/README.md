@@ -25,17 +25,17 @@ and does not modify `installs.ini`.
 ## Files
 
 | Path | Role |
-Tracked in the `os/arch` layer of `~/.dotfiles` and stowed to these targets:
+Tracked in the `os/endeavour` layer of `~/.dotfiles` and stowed to these targets:
 
 | Repo path | Stowed to | Role |
 | --- | --- | --- |
-| `os/arch/config/ff-route/rules.conf` | `~/.config/ff-route/` | the rules — edit this |
-| `os/arch/config/ff-route/install-handler.sh` | `~/.config/ff-route/` | one-off per-machine registration |
-| `os/arch/home/.local/bin/ff-route` | `~/.local/bin/` | the router |
-| `os/arch/home/.local/share/applications/ff-route.desktop` | `~/.local/share/applications/` | default http/https handler |
-| `os/arch/home/.local/share/applications/firefox-work.desktop` | ″ | direct work launcher (pinnable, "Open With") |
-| `os/arch/home/.local/share/applications/firefox-personal.desktop` | ″ | direct personal launcher |
-| `os/arch/home/.local/share/applications/slack.desktop` | ″ | override of the system entry, adds `FF_PROFILE=beaver` |
+| `os/endeavour/config/ff-route/rules.conf` | `~/.config/ff-route/` | the rules — edit this |
+| `os/endeavour/config/ff-route/install-handler.sh` | `~/.config/ff-route/` | one-off per-machine registration |
+| `os/endeavour/home/.local/bin/ff-route` | `~/.local/bin/` | the router |
+| `os/endeavour/home/.local/share/applications/ff-route.desktop` | `~/.local/share/applications/` | default http/https handler |
+| `os/endeavour/home/.local/share/applications/firefox-work.desktop` | ″ | direct work launcher (pinnable, "Open With") |
+| `os/endeavour/home/.local/share/applications/firefox-personal.desktop` | ″ | direct personal launcher |
+| `os/endeavour/home/.local/share/applications/slack.desktop` | ″ | override of the system entry, adds `FF_PROFILE=beaver` |
 
 ## Setting this up on a new machine
 

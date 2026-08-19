@@ -35,18 +35,43 @@ STOW_FAILED=0
 UNFOLD_HOME=(.local/bin .local/share/applications .tmux/plugins)
 UNFOLD_CONFIG=(.claude fish git)
 
-# Echoes the os/ layer(s) to stow for this machine, most-general first so a more
-# specific layer can override. Only layers that exist under os/ are stowed.
-# SteamOS is Arch-based, so the deck inherits the arch layer (paru, MangoHud).
+# Reads one field from /etc/os-release. Parsed, not sourced: os-release is shell
+# syntax, so sourcing it executes whatever the distro put there and drags ~20
+# variables into scope. Values are optionally quoted (ID_LIKE="arch") -- strip
+# both quote styles. Empty output when the file is absent, which the caller
+# treats as "unknown distro, stow nothing OS-specific".
+os_release_field() {
+  [ -r /etc/os-release ] || return 0
+  sed -n "s/^$1=//p" /etc/os-release | tr -d "\"'" | head -1
+}
+
+# Echoes the os/ layer(s) to stow for this machine, most-general first. Only
+# layers that exist under os/ are stowed.
+#
+# `arch` is the common denominator for every Arch-derived machine (paru,
+# MangoHud) -- nothing in it may assume a particular box. Per-machine trees sit
+# beside it: `endeavour` (the desktop: KDE Plasma, ff-route, CI runner) and
+# `steamdeck`. Those two are disjoint by construction, NOT layered: stow treats
+# two packages claiming one path as a conflict, not an override, so a later
+# layer cannot shadow a file an earlier one already linked.
+#
+# Identity comes from /etc/os-release, not `uname`//proc/version: EndeavourOS
+# runs stock Arch kernels, so /proc/version says "archlinux" on both and cannot
+# tell them apart. ID names the distro; ID_LIKE names what it derives from, so
+# an unlisted Arch derivative still gets the common layer.
 os_layers() {
   case "$(uname)" in
     Darwin) echo "macos" ;;
     Linux)
-      if grep -qi valve /proc/version 2>/dev/null; then
-        echo "arch steamdeck"
-      elif grep -qi arch /proc/version 2>/dev/null; then
-        echo "arch"
-      fi
+      local id like
+      id=$(os_release_field ID)
+      like=$(os_release_field ID_LIKE)
+      case "$id" in
+        steamos)     echo "arch steamdeck" ;;   # VARIANT_ID=steamdeck; Steam Machines share ID
+        endeavouros) echo "arch endeavour" ;;
+        arch)        echo "arch" ;;
+        *) case " $like " in *" arch "*) echo "arch" ;; esac ;;
+      esac
       ;;
   esac
 }

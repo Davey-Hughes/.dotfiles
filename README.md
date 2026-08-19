@@ -13,7 +13,7 @@ The repository is organized cleanly by symlink target location rather than scatt
 
 - `config/` - Cross-platform configs symlinked into `$XDG_CONFIG_HOME` (defaults to `~/.config/`) — e.g. `fish`, `kitty`, `starship.toml`, `zellij`. Also `config/shell/xdg-env.sh`, the cross-shell XDG environment (see below).
 - `home/` - Configs symlinked directly into your home directory `~/` — e.g. `.zshrc`, `.zshenv`, `.bashrc`, `.tmux.conf`, `.inputrc`.
-- `os/<platform>/` - Platform-specific trees. A `config/` or `home/` subfolder here is stowed **only on the matching OS**, layered on top of the common configs: `macos` → `yabai`/`skhd`, `arch` → `paru`/`MangoHud`/KDE Plasma config, plus `steamdeck` (SteamOS is Arch-based, so it inherits the `arch` layer). Also houses GUI tools, machine scripts, and the Homebrew `Brewfile`s.
+- `os/<platform>/` - Platform-specific trees. A `config/` or `home/` subfolder here is stowed **only on the matching OS**, on top of the common configs. `macos` → `yabai`/`skhd`. Every Arch-derived machine gets `arch` (`paru`, `MangoHud`) plus at most one machine tree beside it: `endeavour` (the desktop — KDE Plasma, `ff-route`, CI runner) or `steamdeck`. Keep `arch` to what holds on *any* Arch box; anything tied to one machine's hardware, screens or workflow belongs in that machine's tree. The two machine trees are disjoint by construction rather than layered — stow treats two packages claiming one path as a conflict, not an override, so a later layer cannot shadow a file an earlier one linked. Layers are selected from `/etc/os-release` (`ID`, falling back to `ID_LIKE`), not `uname`: EndeavourOS runs stock Arch kernels, so `/proc/version` cannot tell it from Arch. Also houses GUI tools, machine scripts, and the Homebrew `Brewfile`s.
 
 ## Installation
 
@@ -38,12 +38,18 @@ To add a new config app down the road, you no longer need to update the install 
 
 **One exception.** Stow collapses a directory into a single symlink when the target does not exist — convenient, since files added later then appear without re-stowing. If the app writes back into its own config directory (state, caches, credentials, downloaded plugins), those writes land inside this repo. Add such a directory to `UNFOLD_HOME` or `UNFOLD_CONFIG` at the top of `install.sh`, and to the matching list in `tests/test-install.sh`. Directories only these dotfiles own are better left folded.
 
-## KDE Plasma (Arch only)
+## KDE Plasma (desktop only)
 
 KDE Plasma settings (theme, shortcuts, panels, Dolphin/Konsole/Kate) are tracked
-under `os/arch/config/` and symlinked into `~/.config` on Arch/SteamOS. KDE writes
-through the symlinks (KConfig `directWriteFallback`), so tweaking settings in
-System Settings edits the repo copy directly.
+under `os/endeavour/config/` and symlinked into `~/.config` on the desktop only.
+KDE writes through the symlinks (KConfig `directWriteFallback`), so tweaking
+settings in System Settings edits the repo copy directly.
+
+That write-through is why these files are **not** in the shared `arch` layer:
+they carry one machine's hardware (`kcminputrc` names a specific mouse, `kwinrc`
+keys tiling to output UUIDs, the appletsrc places panels per screen), and a
+second machine editing the same symlinked file would silently rewrite the
+desktop's tracked config. The Steam Deck keeps stock SteamOS Plasma.
 
 **Dependency:** `kwinrc` enables the [`krohnkite`](https://github.com/anametologin/krohnkite)
 tiling script. Install it from the AUR (e.g. `paru -S kwin-scripts-krohnkite`) for
