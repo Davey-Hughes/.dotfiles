@@ -7,4 +7,4 @@
 # the working copy keeps them, so the live slideshow keeps working. The filter
 # is configured per-clone by install.sh (git_settings); a clone that skips it
 # just commits the lines again, which is why it lives there and not only here.
-os/arch/config/plasma-org.kde.plasma.desktop-appletsrc filter=kde-wallpaper
+os/endeavour/config/plasma-org.kde.plasma.desktop-appletsrc filter=kde-wallpaper

@@ -60,7 +60,7 @@ config/.gemini/antigravity-cli/*
 # KDE rewrites ksmserverrc on every logout with the session client IDs of
 # whatever was open. It holds no settings at all -- only restart state -- so it
 # conflicts forever and never carries anything worth restoring on a new machine.
-os/arch/config/ksmserverrc
+os/endeavour/config/ksmserverrc
 
 # install.sh generates the global git config per-machine into
 # $XDG_CONFIG_HOME/git/config -- this directory once stowed. That is machine

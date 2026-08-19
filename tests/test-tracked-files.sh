@@ -118,7 +118,7 @@ done
 # not carried by a clone -- so a machine that never ran install.sh commits the
 # paths straight back. This reads the stored blob, which is the only place the
 # answer is visible.
-appletsrc='os/arch/config/plasma-org.kde.plasma.desktop-appletsrc'
+appletsrc='os/endeavour/config/plasma-org.kde.plasma.desktop-appletsrc'
 section "kde-wallpaper filter: no local paths in the committed blob"
 if ! git ls-files --error-unmatch -- "$appletsrc" >/dev/null 2>&1; then
   skip "$appletsrc is not tracked"
