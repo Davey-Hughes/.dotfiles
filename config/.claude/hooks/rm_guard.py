@@ -15,7 +15,7 @@ Covered, each with its own notion of "which argument is the target":
     rsync --remove-source-files   the SOURCE -- the opposite end
     rclone sync/purge/...   the destination / the named remote path
     git clean -f            the working tree
-    git worktree remove     the worktree directory, untracked files included
+    git worktree remove -f  the worktree directory, untracked files included
     ssh host '<cmd>'        re-analysed remotely, with no local safe roots
 
 An operand is judged over every path it can actually become, not as written:
@@ -33,6 +33,13 @@ Deliberately NOT covered:
     git rm              a working-tree operation: only touches tracked files,
                         never untracked data, all of it recoverable from history.
                         `git clean` is the opposite and IS covered.
+    git worktree remove without --force
+                        git refuses it outright on a worktree holding an
+                        untracked or modified file, and on a path that is not a
+                        registered worktree at all -- so unlike rm -r it cannot
+                        descend into a directory it was merely pointed at. Only
+                        ignored files can go, and only from inside a worktree.
+                        Verified against git 2.55; --force IS covered.
     rg                  read-only. `-x` is --line-regexp and `-r` is --replace
                         (rewrites printed output, never the file). A rule here
                         would only collide with fd's exec flags and misfire.
@@ -1873,6 +1880,28 @@ def rclone_targets(argv):
     return True, rest, sub           # purge/delete/rmdir destroy what they name
 
 
+def strip_redirections(argv):
+    """-> argv without redirections. `2>/dev/null` is not three more operands.
+
+    shlex splits a redirection into its own tokens, so a command that sends its
+    noise away arrives carrying `/dev/null` -- an absolute path outside every
+    safe root, and enough on its own to hold up the whole line. The rm scanner
+    has dropped these since it was written; the subcommands below take their
+    operands as a plain list and never did.
+    """
+    out, i = [], 0
+    while i < len(argv):
+        t = argv[i]
+        if t in REDIRECTS or REDIRECT_TOKEN_RE.match(t):
+            if out and out[-1].isdigit():
+                out.pop()  # that was a file descriptor, not an operand
+            i += 2  # the operator and its target
+            continue
+        out.append(t)
+        i += 1
+    return out
+
+
 def git_clean_targets(argv):
     """git clean -f: -> (destructive, targets). Removes untracked and (with -x)
     ignored files. Unlike `git rm`, none of it is recoverable from history."""
@@ -1908,19 +1937,30 @@ def git_subcommand(argv):
 
 
 def git_worktree_targets(argv):
-    """git worktree remove: -> (destructive, targets).
+    """git worktree remove: -> (destructive, targets, forced).
 
-    Deletes the worktree directory outright, untracked files included. Exactly
-    the property that puts `git clean` in scope and keeps `git rm` out of it,
-    and it was passing in silence.
+    With --force it deletes the worktree directory outright, untracked files
+    included -- the property that puts `git clean` in scope and keeps `git rm`
+    out of it. Without it, git declines every worktree that holds anything
+    unrecoverable, so the flag is the part worth reporting.
     """
     i, sub = git_subcommand(argv)
     if sub != "worktree":
-        return False, []
+        return False, [], False
     rest = argv[i + 1:]
     if not rest or rest[0] != "remove":
-        return False, []
-    return True, [t for t in rest[1:] if not t.startswith("-")]
+        return False, [], False
+    forced, paths = False, []
+    for t in rest[1:]:
+        if t.startswith("--"):
+            if t == "--force":
+                forced = True
+        elif t.startswith("-") and len(t) > 1:
+            if "f" in t:
+                forced = True
+        else:
+            paths.append(t)
+    return True, paths, forced
 
 
 def ssh_remote_command(argv):
@@ -2020,22 +2060,50 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                      else "rclone %s destroys what it names" % sub)
             rate(targets, label, f"rclone {sub} with no operand")
     elif base in GIT_NAMES:
-        destructive, paths = git_clean_targets(argv)
+        gargv = strip_redirections(argv)
+        destructive, paths = git_clean_targets(gargv)
         label = ("git clean removes untracked and ignored files, "
                  "which are not in history and cannot be restored")
+        worktree = forced = False
         if not destructive:
-            destructive, paths = git_worktree_targets(argv)
+            destructive, paths, forced = git_worktree_targets(gargv)
+            worktree = destructive
             label = ("git worktree remove deletes the worktree directory, "
                      "untracked files included")
-        if destructive:
+        if worktree and not forced:
+            # Bounded by git rather than by the path, which is why no operand is
+            # judged here: `remove` declines a worktree holding an untracked or
+            # modified file, and declines a path that is not a registered
+            # worktree at all. There is no spelling of the operand that turns
+            # this into an rm -rf -- an unset variable is a usage error, not a
+            # delete. Only ignored files can go, and only from inside a worktree.
+            out.append(Finding("allow", segment, label,
+                               paths[0] if paths else None,
+                               "git refuses to remove a worktree holding "
+                               "anything unrecoverable without --force"))
+        elif destructive:
             for t in paths:
+                # bare_var_ok stays False here, and for worktree remove that
+                # is knowingly conservative rather than true: with no operand
+                # git prints its usage and with an empty one it says `'' is not
+                # a working tree`, so `remove --force "$W"` cannot become a
+                # delete and the reason it gets ("falls back to the current
+                # directory") describes git clean, not this. Setting it to
+                # `worktree` was measured -- 9 more allows across 579 real
+                # verdicts, against one corpus command moving ask -> allow, so
+                # it costs a fixture regeneration to buy almost nothing. Left
+                # here rather than done, and the price is recorded so the next
+                # person does not have to measure it again.
                 d, r = classify_operand(t, cwd, bare_var_ok=False,
                                         assigned=assigned, loops=loops,
                                         may_clear=may_clear)
-                # Untracked and ignored files are not in history. Even a "safe"
-                # path only earns a prompt, never a silent pass -- and saying
-                # "literal relative path" there would read like a clean bill.
-                if d == "allow":
+                # git clean runs in the tree you are standing in, and untracked
+                # and ignored files are not in history: even a "safe" path only
+                # earns a prompt there, never a silent pass, and saying "literal
+                # relative path" would read like a clean bill. A forced worktree
+                # remove is already bounded to one registered worktree, so it
+                # keeps the ordinary path verdict instead.
+                if d == "allow" and not worktree:
                     d, r = "ask", ("the path itself is bounded, but nothing "
                                    "under it is recoverable")
                 out.append(Finding(d, segment, label, t, r))
