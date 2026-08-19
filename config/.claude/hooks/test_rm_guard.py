@@ -343,9 +343,41 @@ CASES = [
      "rsync -a --remove-source-files /home/u/ /backup/", "ask"),
     ("rsync --delete still prunes the destination",
      "rsync -a --delete /src/ /etc/dst/", "ask"),
-    ("git worktree remove deletes untracked files too",
+    # git worktree remove is bounded by git's own refusals, not by the path.
+    # Verified against git 2.55: plain `remove` refuses on ANY untracked or
+    # modified file ("contains modified or untracked files, use --force"), and
+    # refuses outright on a path that is not a registered worktree -- so unlike
+    # rm -r it cannot descend into a directory it was merely pointed at. That
+    # makes the force flag, not the operand, the thing worth judging.
+    ("an unforced worktree remove cannot destroy anything unrecoverable",
+     "git worktree remove /home/u/wt", "allow"),
+    ("...so the operand does not need clearing: git refuses a non-worktree",
+     "git worktree remove /", "allow"),
+    ("...and an unset variable degrades to a usage error, not a delete",
+     'git worktree remove "$W"', "allow"),
+    ("--force deletes untracked files, so the path is judged after all",
      "git worktree remove --force /home/u/wt", "ask"),
+    ("...short flag too", "git worktree remove -f /home/u/wt", "ask"),
+    ("...and trailing, which is how git accepts it as well",
+     "git worktree remove /home/u/wt --force", "ask"),
+    ("a forced remove under a safe root still clears",
+     "git worktree remove --force /tmp/wt", "allow"),
+    ("...reached through git -C too",
+     "git -C /home/u/proj worktree remove -f /tmp/wt", "allow"),
+    ("a redirection is not a worktree to remove",
+     "git worktree remove --force /tmp/wt 2>/dev/null", "allow"),
+    # A forced remove keeps bare_var_ok=False, so an unguarded expansion asks
+    # even though git would only print its usage. See the comment at the call.
+    ("a forced remove still asks about an unguarded expansion",
+     'git worktree remove --force "$WT"', "ask"),
+    ("...and a ${VAR:?}-guarded one clears",
+     'git worktree remove --force "${WT:?}"', "allow"),
+    ("git clean asks about one too", 'git clean -fdx "$W"', "ask"),
     ("git worktree add is not a delete", "git worktree add /tmp/wt HEAD", "pass"),
+    # git clean is the opposite case and keeps its downgrade: it runs in the
+    # tree you are standing in, and nothing bounds what it finds there.
+    ("git clean keeps its downgrade on a safe path",
+     "git clean -fdx /tmp/build", "ask"),
 
     # --- an allow reaches the whole tool call --------------------------------
     # There is no per-segment scoping: proving one delete safe approved whatever
@@ -798,7 +830,7 @@ def check_wrapper():
     return fails
 
 
-RENDER_CHECKS = 17
+RENDER_CHECKS = 19
 
 
 def check_render():
@@ -878,6 +910,26 @@ def check_render():
         if want not in reason or MARK in reason:
             fails.append((f"render: {what}", cmd, want.replace("\x1b", "\\e"),
                           "absent" if want not in reason else "markers left in",
+                          reason.replace("\x1b", "\\e")))
+
+    # shlex splits a redirection into tokens, and the git subcommands read every
+    # non-flag token as a path -- so this prompt used to name `/dev/null`, `2`
+    # and `>` as the things at risk while the operand git actually cleans, the
+    # whole tree at cwd, went unmentioned. The verdict was right for the wrong
+    # reason, which is the kind of prompt you learn to click through.
+    cmd = "git clean -fd >/dev/null 2>&1"
+    _, reason = verdict(cmd)
+    for what, want, present in (
+            # The echoed segment still shows the redirection, because that is
+            # what was typed. It is the operand ROWS that must not claim it.
+            ("a redirection is not a path to clean",
+             "/dev/null  absolute path outside safe roots", False),
+            ("...and the real operand is named", CWD, True),
+    ):
+        if (want in reason) != present:
+            fails.append((f"render: {what}", cmd,
+                          f"{want} {'present' if present else 'absent'}",
+                          "absent" if present else "present",
                           reason.replace("\x1b", "\\e")))
     return fails
 def main():
