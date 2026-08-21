@@ -28,3 +28,7 @@ sudo steamos-readonly disable
 ./distrobox.sh     || exit 1
 
 echo "Steam Deck setup complete."
+echo
+echo "Not run here, because EmuDeck is not managed by these scripts:"
+echo "  ./emulator-saves.sh   run once EmuDeck and RetroArch exist, to point"
+echo "                        their save data somewhere Syncthing can read."
