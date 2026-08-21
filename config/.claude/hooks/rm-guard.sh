@@ -16,13 +16,13 @@
 input=$(cat)
 guard="${BASH_SOURCE[0]%/*}/rm_guard.py"
 
-# \u001b decodes to an ESC byte when Claude Code parses the JSON, and it renders
-# permissionDecisionReason through an ANSI-aware component, so this arrives bold
-# red. Same convention as rm_guard.py, which highlights the flagged operand that
-# way. It has to be the escape and not a raw ESC: JSON forbids literal control
-# characters in strings, so a raw one would make this payload unparseable.
+# Plain text, no SGR. This used to open bold red, matching rm_guard.py, until
+# Claude Code 2.1.235 started sanitising hook-supplied strings: every code point
+# below 32 is replaced with U+FFFD, so an ESC arrived as a replacement glyph and
+# the line opened `<?>[1;31mrm_guard.py could not run`. Leading with the failure
+# is what carries it now -- see the note above MAX_ECHO in rm_guard.py.
 ask() {
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"\u001b[1;31mrm_guard.py could not run\u001b[0m, so this recursive rm was NOT properly checked — falling back to a crude scan. Confirm manually, and look into why the guard is broken."}}'
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"rm_guard.py could not run, so this recursive rm was NOT properly checked — falling back to a crude scan. Confirm manually, and look into why the guard is broken."}}'
   exit 0
 }
 
