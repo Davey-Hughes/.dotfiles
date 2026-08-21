@@ -1,88 +1,70 @@
 #!/bin/bash
+#
+# Configures the chaotic-aur binary repository on the HOST.
+#
+# Was paru-setup.sh. It is no longer about paru: paru now ships in SteamOS's own
+# holo repo, so it is a plain `pacman -S` line in packages.sh rather than a
+# from-source build here. What is left is the repo itself, which the host still
+# needs for the handful of packages that install into /opt -- SteamOS
+# bind-mounts /opt to /home/.steamos/offload/opt, so those cost the 5 GiB rootfs
+# nothing and survive updates.
+#
+# Everything else that used to come from here now lives in the distrobox; see
+# container-packages.conf.
+#
+# Idempotent.
 
-# Function to check if a command exists
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
+set -u
 
-# Step 1: Set signature level to 'Never' if not already set
-echo "Checking if signature level is set to 'Never'..."
+# Chaotic-AUR's signing key.
+CHAOTIC_KEY=3056513887B78AEB
 
-if ! grep -q "^SigLevel = Never" /etc/pacman.conf; then
-    echo "Setting SigLevel to 'Never' in pacman.conf..."
-    sudo sed -i 's/^#*[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Never/g' /etc/pacman.conf
-else
-    echo "SigLevel is already set to 'Never'."
+# NOTE ON SIGNATURE VERIFICATION
+#
+# The previous version of this script ran
+#     sed -i 's/^#*[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Never/g' /etc/pacman.conf
+# which disabled package signature checking for *every* repo on the machine, to
+# get local AUR builds through. Those builds happen in the container now, so the
+# host does not need it, and this script no longer sets it.
+#
+# It does not unset it either: that would change how an already-configured
+# machine verifies packages, which is not a side effect an install script should
+# have. If the grep below fires, it is left over from the old script -- revert by
+# hand with
+#     sudo sed -i 's/^SigLevel = Never/SigLevel = Required DatabaseOptional/' /etc/pacman.conf
+# then `sudo pacman -Sy` to confirm nothing breaks before relying on it.
+if grep -q '^SigLevel = Never' /etc/pacman.conf 2>/dev/null; then
+  echo "NOTE: /etc/pacman.conf still has 'SigLevel = Never' from the old setup." >&2
+  echo "      See the comment in $(basename "$0") for how to revert it." >&2
 fi
 
-# Step 2: Initialize and Configure Chaotic-AUR Keyring
-
-# Initialize pacman keyring (if not already initialized)
-echo "Initializing pacman keyring..."
+echo "==> Initialising pacman keyring"
 sudo pacman-key --init
-
-# Populate the Arch + holo keyrings
 sudo pacman-key --populate archlinux
 sudo pacman-key --populate holo
 
-# Import the primary key for Chaotic-AUR
-echo "Importing the primary key for Chaotic-AUR..."
-sudo pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com
-sudo pacman-key --lsign-key 3056513887B78AEB
-
-# Install Chaotic-AUR keyring and mirrorlist
-echo "Installing Chaotic-AUR keyring and mirrorlist..."
-sudo pacman -U --noconfirm 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
-'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
-
-# Step 3: Append Chaotic-AUR to pacman.conf if not already added
-if ! grep -q "\[chaotic-aur\]" /etc/pacman.conf; then
-    echo "Adding Chaotic-AUR repository to pacman.conf..."
-    echo "[chaotic-aur]" | sudo tee -a /etc/pacman.conf
-    echo "Include = /etc/pacman.d/chaotic-mirrorlist" | sudo tee -a /etc/pacman.conf
+if ! sudo pacman-key --list-keys "$CHAOTIC_KEY" >/dev/null 2>&1; then
+  echo "==> Trusting the chaotic-aur key"
+  sudo pacman-key --recv-key "$CHAOTIC_KEY" --keyserver keyserver.ubuntu.com
+  sudo pacman-key --lsign-key "$CHAOTIC_KEY"
+else
+  echo "    chaotic-aur key already trusted"
 fi
 
-# Step 4: Refresh the pacman database
-echo "Refreshing pacman database..."
+if ! pacman -Q chaotic-keyring >/dev/null 2>&1; then
+  echo "==> Installing chaotic-aur keyring and mirrorlist"
+  sudo pacman -U --noconfirm \
+    'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
+    'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
+fi
+
+if ! grep -q '^\[chaotic-aur\]' /etc/pacman.conf; then
+  echo "==> Adding chaotic-aur to pacman.conf"
+  printf '\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist\n' |
+    sudo tee -a /etc/pacman.conf >/dev/null
+fi
+
+echo "==> Refreshing package databases"
 sudo pacman -Sy
 
-# Step 5: Check if 'fakeroot' is installed, if not, install it
-if ! command_exists fakeroot; then
-    echo "fakeroot not found, installing it..."
-    sudo pacman -S --noconfirm fakeroot
-else
-    echo "fakeroot is already installed."
-fi
-
-# Step 6: Check if paru is installed, if not, install paru
-if ! command_exists paru; then
-    echo "Paru not found, installing paru..."
-
-    # Clone the paru AUR repository
-    git clone https://aur.archlinux.org/paru.git
-
-    # Change to the paru directory. `|| exit 1` is not ceremony: if the clone
-    # above failed, this cd fails, `cd ..` then climbs out of $HOME entirely and
-    # the `rm -rf paru` below deletes whatever `paru` happens to sit there.
-    cd paru || exit 1
-
-    # Build and install paru
-    makepkg -si --noconfirm
-
-    # Go back to the home directory and remove the cloned repository
-    cd .. || exit 1
-    rm -rf paru
-
-    echo "Paru installed successfully."
-else
-    echo "Paru is already installed."
-fi
-
-# Step 7: Install AUR and Chaotic-AUR packages using paru (add your desired packages here)
-echo "Installing AUR and Chaotic-AUR packages..."
-
-# Step 8: Clean up cache if necessary
-echo "Cleaning up package cache..."
-paru -Sc --noconfirm
-
-echo "Paru and Chaotic-AUR setup and package installation completed!"
+echo "chaotic-aur ready."
