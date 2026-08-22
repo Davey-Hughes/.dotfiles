@@ -151,6 +151,8 @@ jobs:
         run: ./tests/test-xdg-sync.sh
       - name: Everything parses, and the scripts lint
         run: ./tests/test-syntax.sh
+      - name: save-bridge
+        run: ./tests/test-save-bridge.sh
 
   # The only job that runs install.sh. Container-only by nature: it provisions a
   # throwaway $HOME and stows into it, which is not something to do on a laptop
