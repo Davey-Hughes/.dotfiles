@@ -145,7 +145,7 @@ section "stow folded nothing that other software writes into"
 # behaviour, this decides what the repo will accept, and only this can fail a
 # build. Adding a directory means adding it in both places.
 expect_home=(.local/bin .local/share/applications .tmux/plugins)
-expect_config=(.claude fish git)
+expect_config=(.claude fish git systemd/user)
 before=$FAILURES
 unfold_targets=()
 for d in "${expect_home[@]}";   do unfold_targets+=("$FAKE/$d"); done

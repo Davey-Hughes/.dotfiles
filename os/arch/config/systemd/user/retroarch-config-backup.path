@@ -1,0 +1,20 @@
+[Unit]
+Description=Watch RetroArch's config for changes
+Documentation=man:systemd.path(5)
+
+[Path]
+# RetroArch has config_save_on_exit=true, so it rewrites all ~3400 settings
+# every time it quits. PathChanged fires once the file is closed after writing,
+# which puts the backup right after you exit rather than on a poll.
+#
+# Both locations are listed because this unit is stowed from os/arch, which is
+# the layer every Arch-derived machine gets: the desktop has a native RetroArch
+# and the Steam Deck has the Flatpak. A PathChanged= naming a file that does not
+# exist is not an error -- systemd watches the nearest existing parent and waits
+# -- so each machine simply never fires the one that does not apply to it.
+PathChanged=%h/.config/retroarch/retroarch.cfg
+PathChanged=%h/.var/app/org.libretro.RetroArch/config/retroarch/retroarch.cfg
+Unit=retroarch-config-backup.service
+
+[Install]
+WantedBy=default.target

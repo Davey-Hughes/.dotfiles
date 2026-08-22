@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up this device's RetroArch config into the synced retroarch-configs folder
+
+[Service]
+Type=oneshot
+# Invoked through bash rather than relying on the executable bit. Stow links
+# this from the repo where git tracks the mode, but the same script is run by
+# hand on machines that only have the synced folder, where ignorePerms means
+# the bit does not survive. One invocation that works in both cases beats two.
+ExecStart=/bin/bash %h/.local/bin/retroarch-config-backup.sh
