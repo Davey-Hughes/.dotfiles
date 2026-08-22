@@ -96,6 +96,12 @@ R="Emulator Saves/retroarch/saves/mGBA"
 MG="MiSTer/saves/GBA"
 STATE=".save-bridge/state.tsv"
 
+# The snes row's two sides. Only the backup-collision case needs them: it is the
+# one test that has to put the SAME game name on two DIFFERENT mapping rows, and
+# gba + snes is the pair the stock MAPPINGS already provides.
+MS="MiSTer/saves/SNES"
+RS="Emulator Saves/retroarch/saves/Snes9x"
+
 section "dry run writes nothing"
 new_tree
 mkfile "$TREE/$M/Game.sav" "manic-v1"
@@ -302,6 +308,44 @@ printf '%s' "$out" | grep -q 'undeclared participant: ghost' \
   && ok "undeclared participant is named" \
   || { fail "undeclared participant is named"; note "$out"; }
 
+section "a mapping row naming the same participant twice is fatal"
+# Same severity as the undeclared-participant check above, and for a worse
+# reason: this one is invisible. pfile and phash are keyed on the participant
+# NAME, so a second spec for a name already on the row silently replaces the
+# first.
+#
+# The next edit to MAPPINGS is exactly this shape. The MiSTer keeps three Game
+# Boy save directories against RetroArch's single Gambatte, so
+#
+#   "gb|mister:GAMEBOY:sav|mister:GBC:sav|retroarch:saves/Gambatte:srm"
+#
+# writes itself. Measured on that exact row with GAMEBOY/Zelda.sav=gameboy-v1
+# and GBC/Zelda.sav=gbc-v1, before the preflight learned to refuse it:
+#
+#   run 1   COPIED Zelda  mister -> manic (new)       <- GBC's bytes, both times
+#           COPIED Zelda  mister -> retroarch (new)      GAMEBOY never read
+#   run 2   COPIED Zelda  retroarch -> mister         <- logged twice, and both
+#           COPIED Zelda  retroarch -> mister            land in GBC
+#           conflicts: 0, exit 0
+#   after   GAMEBOY/Zelda.sav is still gameboy-v1 -- never compared, never
+#           copied, never conflicted, invisible for good
+#
+# Two participants that disagreed were reported as agreeing, and one of them
+# vanished. Three overwrites also produced only two snapshots: both mister specs
+# resolve to the same backup path, so the second destroyed the first's -- the
+# collision backup() had just been namespaced to close, reopened.
+new_tree
+variant_bridge "duplicate participant" \
+  's#retroarch:saves/mGBA:srm"$#retroarch:saves/mGBA:srm|mister:GBA:sav|mister:GBC:sav"#'
+mkfile "$TREE/$M/Game.sav" "manic-v1"
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 1 ] && ok "a duplicated participant exits 1" \
+                || fail "a duplicated participant exits 1 -- got $rc"
+printf '%s' "$out" | grep -q "names participant 'mister' more than once" \
+  && ok "the duplicated participant is named" \
+  || { fail "the duplicated participant is named"; note "$out"; }
+assert_absent "$TREE/$R/Game.srm" "a rejected table bridges nothing at all"
+
 section "a failed copy is not recorded as a success"
 # The winner is right, but only some of the fan-out lands. Recording the
 # winner's hash for the participant that never received it makes that
@@ -376,5 +420,138 @@ run_bridge --apply >/dev/null; rc=$?
                 || fail "one of three moving is not a conflict -- got $rc"
 assert_file "$TREE/$M/Game.sav" "mister-v2" "the one that moved propagates to manic"
 assert_file "$TREE/$R/Game.srm" "mister-v2" "the one that moved propagates to retroarch"
+
+section "two of three changed: nothing copied, every copy stashed"
+# A full set of per-participant records exists for all three, and two of them
+# disagree with their own. Both moved, so neither is THE one that moved, and
+# picking either silently destroys the other's progress. Nothing may be copied,
+# and all three copies have to be stashed under the participant they came from
+# -- that stash is the only material a human has to merge them by hand.
+new_tree; gba_3p "two of three changed"
+mkfile "$TREE/$M/Game.sav" "v1"
+run_bridge --apply >/dev/null                 # records v1 for all three
+mkfile "$TREE/$M/Game.sav"  "manic-v2"
+mkfile "$TREE/$MG/Game.sav" "mister-v2"
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 2 ] && ok "two of three changing is a conflict" \
+                || fail "two of three changing is a conflict -- got $rc"
+assert_file "$TREE/$M/Game.sav"  "manic-v2"  "manic left untouched"
+assert_file "$TREE/$R/Game.srm"  "v1"        "retroarch left untouched"
+assert_file "$TREE/$MG/Game.sav" "mister-v2" "mister left untouched"
+if printf '%s' "$out" | grep -q '^  COPIED'; then
+  fail "a two-way conflict copies nothing"; note "$(printf '%s' "$out" | grep '^  COPIED')"
+else
+  ok "a two-way conflict copies nothing"
+fi
+printf '%s' "$out" | grep -q '2 participants changed' \
+  && ok "the message counts the participants that moved" \
+  || { fail "the message counts the participants that moved"; note "$out"; }
+d=$(find "$TREE/.save-bridge/conflicts" -type d -name Game | head -n1)
+assert_file "$d/manic.sav"     "manic-v2"  "manic's copy is stashed under its own name"
+assert_file "$d/retroarch.srm" "v1"        "retroarch's copy is stashed under its own name"
+assert_file "$d/mister.sav"    "mister-v2" "mister's copy is stashed under its own name"
+
+section "a conflict whose stash fails says so where the cron can see it"
+# save-bridge-cron.sh finds warnings by grepping '^WARNING:', and its exit-2
+# alert stated flatly that the versions were stashed. A stash that could not be
+# written -- full disk, read-only WORK_DIR, wrong permissions -- was logged
+# indented by fourteen spaces, so that grep never matched it and the alert went
+# out claiming a snapshot existed at the one moment there was none. That
+# snapshot is the thing a human reaches for to sort a conflict out by hand.
+#
+# The failure is injected by putting a regular FILE where the conflict directory
+# belongs, so mkdir -p and cp both fail for root as well as for anyone else --
+# the same trick the failed-copy case uses.
+new_tree
+mkfile "$TREE/$M/Game.sav" "v1"
+run_bridge --apply >/dev/null                  # records v1 for both
+mkfile "$TREE/$M/Game.sav" "manic-v2"
+mkfile "$TREE/$R/Game.srm" "retro-v2"          # both moved: a conflict
+rm -rf "${TREE:?}/.save-bridge/conflicts"; : > "$TREE/.save-bridge/conflicts"
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 2 ] && ok "a conflict with no stash is still a conflict" \
+                || fail "a conflict with no stash is still a conflict -- got $rc"
+printf '%s' "$out" | grep -q '^WARNING: could NOT stash' \
+  && ok "the failed stash is unindented, where the cron's grep reaches it" \
+  || { fail "the failed stash is unindented, where the cron's grep reaches it"; note "$out"; }
+assert_file "$TREE/$M/Game.sav" "manic-v2" "a failed stash still overwrites nothing on manic"
+assert_file "$TREE/$R/Game.srm" "retro-v2" "a failed stash still overwrites nothing on retroarch"
+
+# ... and the same conflict with a writable stash must raise no warning at all,
+# or the cron cries wolf every ten minutes for as long as the conflict stands.
+new_tree
+mkfile "$TREE/$M/Game.sav" "v1"
+run_bridge --apply >/dev/null
+mkfile "$TREE/$M/Game.sav" "manic-v2"
+mkfile "$TREE/$R/Game.srm" "retro-v2"
+out=$(run_bridge --apply)
+if printf '%s' "$out" | grep -q '^WARNING:'; then
+  fail "a stash that worked raises no WARNING"; note "$out"
+else
+  ok "a stash that worked raises no WARNING"
+fi
+
+section "one row's backup must not clobber another's"
+# backup() keyed its snapshot on a bare basename under a single per-run stamp,
+# so two mapping rows holding the same game name overwrote each other's. gba's
+# Zelda.sav (manic) and snes's Zelda.sav (the MiSTer) are different files on
+# different participants; whichever row ran second destroyed the first's only
+# pre-overwrite copy -- the copy transfer's own comment calls "the only copy of
+# them anyone gets to reach for afterwards". Stock MAPPINGS, no variant needed.
+new_tree
+mkfile "$TREE/$M/Zelda.sav"  "gba-v1"
+mkfile "$TREE/$MS/Zelda.sav" "snes-v1"
+run_bridge --apply >/dev/null                 # fans both rows out and records them
+mkfile "$TREE/$R/Zelda.srm"  "gba-v2"         # retroarch moves on the gba row
+mkfile "$TREE/$RS/Zelda.srm" "snes-v2"        # ... and on the snes row too
+run_bridge --apply >/dev/null; rc=$?
+[ "$rc" -eq 0 ] && ok "both rows copy" || fail "both rows copy -- got $rc"
+assert_file "$TREE/$M/Zelda.sav"  "gba-v2"  "the gba winner reached manic"
+assert_file "$TREE/$MS/Zelda.sav" "snes-v2" "the snes winner reached the MiSTer"
+
+# The bytes each row replaced must BOTH still be reachable afterwards.
+saved_gba=""; saved_snes=""
+while IFS= read -r f; do
+  case "$(cat "$f")" in
+    gba-v1)  saved_gba="$f" ;;
+    snes-v1) saved_snes="$f" ;;
+  esac
+done < <(find "$TREE/.save-bridge/backups" -type f -name 'Zelda.sav')
+[ -n "$saved_gba" ] && ok "the gba row's replaced save was snapshotted" \
+  || { fail "the gba row's replaced save was snapshotted"
+       note "$(find "$TREE/.save-bridge/backups" -type f)"; }
+[ -n "$saved_snes" ] && ok "the snes row's replaced save was snapshotted" \
+  || { fail "the snes row's replaced save was snapshotted"
+       note "$(find "$TREE/.save-bridge/backups" -type f)"; }
+[ -n "$saved_gba" ] && [ "$saved_gba" != "$saved_snes" ] \
+  && ok "the two snapshots are separate files" \
+  || fail "the two snapshots are separate files"
+case "$saved_gba" in
+  */gba/*) ok "the snapshot is filed under the row it came from" ;;
+  *)       fail "the snapshot is filed under the row it came from"; note "$saved_gba" ;;
+esac
+section "a refused seed is named even when it is not the unrecorded one"
+# why_more was built only by walking the participants with NO record, so seeding
+# one that HAS a record produced a conflict log mentioning the seed zero times
+# -- to a reader, indistinguishable from the flag being ignored outright, which
+# is the confusion why_more exists to prevent. The same lines are also the only
+# place the operator is told which copies the records vouch for, so they have to
+# read correctly for a single participant as well as for several.
+new_tree
+mkfile "$TREE/$M/Game.sav" "v1"
+run_bridge --apply >/dev/null                 # records v1 for manic and retroarch
+grep -v $'\tretroarch\t' "$TREE/$STATE" > "$TREE/state.keep" && mv "$TREE/state.keep" "$TREE/$STATE"
+mkfile "$TREE/$R/Game.srm" "retro-ancient"    # no record of its own, and differs
+out=$(run_bridge --apply --seed=manic); rc=$?
+[ "$rc" -eq 2 ] && ok "seeding a participant that has a record still conflicts" \
+                || fail "seeding a participant that has a record still conflicts -- got $rc"
+printf '%s' "$out" | grep -q 'seed=manic was NOT honoured' \
+  && ok "the refused seed is named although it is not the unknown one" \
+  || { fail "the refused seed is named although it is not the unknown one"; note "$out"; }
+printf '%s' "$out" | grep -q 'manic agrees with its own record' \
+  && ok "one matched participant reads as one" \
+  || { fail "one matched participant reads as one"; note "$out"; }
+assert_file "$TREE/$M/Game.sav" "v1"            "manic keeps what its record proves"
+assert_file "$TREE/$R/Game.srm" "retro-ancient" "the unrecorded copy stayed put"
 
 summary "save-bridge"

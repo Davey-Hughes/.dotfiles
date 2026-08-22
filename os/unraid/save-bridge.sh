@@ -121,10 +121,11 @@ participant_root() { # name
 
 # system | participant:subdir:ext | participant:subdir:ext | ...
 #
-# Two or more participants per row. Only formats proven byte-identical between
-# every participant on the row belong here. Adding a row is a claim that a
-# rename is sufficient -- verify with save-format-check.sh on a real save from
-# each side before trusting a new one.
+# Two or more participants per row, each named at most once -- a participant
+# repeated on one row is rejected by the preflight, which explains why. Only
+# formats proven byte-identical between every participant on the row belong
+# here. Adding a row is a claim that a rename is sufficient -- verify with
+# save-format-check.sh on a real save from each side before trusting a new one.
 MAPPINGS=(
   "gba|manic:gba:sav|retroarch:saves/mGBA:srm"
   "snes|mister:SNES:sav|retroarch:saves/Snes9x:srm"
@@ -159,7 +160,9 @@ MAPPINGS=(
 #      GBC and SGB -- against RetroArch's single Gambatte, and the same game
 #      appears in two of them at once (Link's Awakening DX in GBC and SGB;
 #      Pokemon Yellow in GAMEBOY and GBC). Which one is authoritative is not
-#      answerable from the filesystem.
+#      answerable from the filesystem. The shortcut that suggests itself --
+#      naming mister twice on one row -- is refused by the preflight, and the
+#      comment there says what it would otherwise have destroyed.
 #
 # N64 and NDS remain absent on purpose and are not candidates -- see the header.
 
@@ -237,6 +240,13 @@ state_get() { # system game participant participant-count-on-the-row
 state_put_all() { # system game hash participant...
   local system="$1" game="$2" hash="$3"; shift 3
   [ -n "$APPLY" ] || return 0
+  # Never record a blank hash. hash_of returns empty for a file it cannot read,
+  # and two unreadable-but-present copies compare equal, so the agreed branch
+  # would reach here with nothing to write. A blank fourth field reads back as
+  # "no record", which fails safe -- the next run conflicts rather than deciding
+  # wrongly -- but it also silently discards the real records these rows replace.
+  # Writing nothing keeps them.
+  [ -n "$hash" ] || return 0
   mkdir -p "$WORK_DIR"
   local tmp="$STATE_FILE.tmp.$$" p
   if [ -f "$STATE_FILE" ]; then
@@ -261,9 +271,23 @@ is_quiet() {
 # not happen, and the caller must treat that as a reason not to overwrite: the
 # whole value of this copy is that it exists before the destination is lost, so
 # proceeding without it trades a recoverable mistake for an unrecoverable one.
-backup() {
+#
+# The path is namespaced by system and participant, exactly as the conflict
+# stash is, and for the same reason. $STAMP is computed once per run, so a
+# snapshot keyed on a bare basename is overwritten by the next file of that
+# name the same run touches -- gba's Zelda.sav replaced by snes's Zelda.sav,
+# leaving one file where two saves were destroyed. Two participants on ONE row
+# can collide the same way whenever they share an extension (manic:gba:sav and
+# mister:GBA:sav both write Zelda.sav), so the system alone is not enough.
+#
+# It is not only the snapshot that is lost. Where the colliding second copy
+# cannot overwrite the first -- saves at mode 0444, a non-root run -- cp fails,
+# backup reports failure, and transfer then refuses a copy that was perfectly
+# legitimate. Distinct paths fix both.
+backup() { # file system participant
   [ -n "$APPLY" ] || return 0
-  local dest="$BACKUP_DIR/$STAMP/$2"
+  local dest
+  dest="$BACKUP_DIR/$STAMP/$2/$3/$(basename "$1")"
   mkdir -p "$(dirname "$dest")" && cp -a "$1" "$dest"
 }
 
@@ -278,15 +302,17 @@ backup() {
 #
 # The copy is hash-verified before the rename, so a short read or a full disk
 # fails loudly instead of silently publishing a corrupt save.
-transfer() {
-  local src="$1" dst="$2" label="$3"
+transfer() { # src dst system participant label
+  local src="$1" dst="$2" system="$3" participant="$4" label="$5"
   if [ -z "$APPLY" ]; then
     log "  WOULD COPY  $label"
     return 0
   fi
   # No snapshot, no overwrite. The bytes at $dst are about to stop existing, and
-  # this is the only copy of them anyone gets to reach for afterwards.
-  if [ -e "$dst" ] && ! backup "$dst" "$(basename "$dst")"; then
+  # this is the only copy of them anyone gets to reach for afterwards -- which
+  # is why the snapshot is filed under the system and participant it came from
+  # rather than its bare name. See backup().
+  if [ -e "$dst" ] && ! backup "$dst" "$system" "$participant"; then
     log "  FAILED      $label (could not back up the file being replaced -- nothing written)"
     return 1
   fi
@@ -343,23 +369,56 @@ fi
 # declared-but-unused participant is not an error -- that is how a new one gets
 # staged before its row is added.
 #
-# The two ways a row can fail here are deliberately NOT the same severity:
+# The three ways a row can fail here are deliberately NOT the same severity:
 #
 #   undeclared participant   a config error. The name resolves to nothing, so
 #                            nothing about the run can be trusted. Stop.
+#   participant named twice  also a config error, and a far quieter one -- see
+#                            below. Stop, for the same reason.
 #   folder does not exist    a staging state, and a routine one -- the MiSTer's
 #                            saves folder did not exist for days after its row
 #                            was written. Aborting the whole run there would
 #                            stop bridging every OTHER row too, so a healthy
 #                            GBA sync would quietly die while the ten-minute
 #                            cron mailed a failure forever. Skip that row only.
+#
+# The duplicate check is not hypothetical. The obvious way to reach the MiSTer's
+# three Game Boy directories is to put two of them on one row --
+#
+#   "gb|mister:GAMEBOY:sav|mister:GBC:sav|retroarch:saves/Gambatte:srm"
+#
+# -- and everything the main loop records per game (pfile, phash) is keyed on
+# the participant NAME, so the second spec silently replaces the first. GAMEBOY
+# is then never read at all: its save is never compared, never copied and never
+# conflicted, while GBC's bytes are reported under the name "mister". Two
+# directories that disagree are announced as agreeing. Both specs also resolve
+# to the same backup path, reopening the collision backup() was just namespaced
+# to close. Nothing about that run looks wrong from the outside, which is
+# exactly why it stops here instead of warning.
+#
+# Three GB directories against one Gambatte need three participants and three
+# rows, or a decision about which one is authoritative -- not one row naming the
+# same participant twice.
 ACTIVE_MAPPINGS=()
 for row in "${MAPPINGS[@]}"; do
   IFS='|' read -r -a _fields <<< "$row"
-  _missing=""
+  _missing=""; _seen=""
   for spec in "${_fields[@]:1}"; do
     p="${spec%%:*}"
     d="$(participant_root "$p")" || { echo "ERROR: mapping names an undeclared participant: $p" >&2; exit 1; }
+    # The quotes inside the pattern are what keep $p literal: an unquoted
+    # expansion in a case pattern is matched as a glob.
+    case " $_seen " in
+      *" $p "*)
+        echo "ERROR: mapping row '${_fields[0]}' names participant '$p' more than once." >&2
+        echo "       A participant may appear at most once per row. Everything this" >&2
+        echo "       script records per game is keyed on the participant name, so the" >&2
+        echo "       second spec would replace the first: one of the two directories" >&2
+        echo "       would never be read, and the run would look entirely normal." >&2
+        echo "       Split them across rows, or declare them as separate participants." >&2
+        exit 1 ;;
+    esac
+    _seen="$_seen $p"
     [ -d "$d" ] || _missing="$_missing $p ($d)"
   done
   if [ -n "$_missing" ]; then
@@ -368,7 +427,7 @@ for row in "${MAPPINGS[@]}"; do
   fi
   ACTIVE_MAPPINGS+=("$row")
 done
-unset _fields _missing
+unset _fields _missing _seen
 
 # --seed can only break a tie on a row that names it. Naming a participant no
 # row mentions is almost always a typo or a half-finished MAPPINGS edit, and it
@@ -485,7 +544,7 @@ for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
       # changed on disk is a summary that lies about what the run did.
       all_copied=1; any_copied=0
       for p in "${absent[@]}"; do
-        if transfer "${pfile[$first]}" "${pfile[$p]}" "$game  $first -> $p (new)"; then
+        if transfer "${pfile[$first]}" "${pfile[$p]}" "$system" "$p" "$game  $first -> $p (new)"; then
           any_copied=1
         else
           all_copied=0
@@ -542,10 +601,21 @@ for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
       # is the exact shape of the data loss this script exists to avoid -- the
       # newcomer's ancient copy fanned out over saves proven current, silently
       # and on exit 0.
-      why="no record exists for ${unknown[*]}, but ${matched[*]} agree with their own records, which proves they did not move"
+      #
+      # These two lines are the whole of the operator's guidance mid-conflict,
+      # so they have to read correctly for one matched participant as well as
+      # several.
+      if [ ${#matched[@]} -eq 1 ]; then
+        m_agree="agrees with its own record, which proves it did not move"
+        m_have="already has a record"
+      else
+        m_agree="agree with their own records, which proves they did not move"
+        m_have="already have records"
+      fi
+      why="no record exists for ${unknown[*]}, but ${matched[*]} $m_agree"
       for p in "${unknown[@]}"; do
         [ "$p" = "$SEED" ] && \
-          why_more="--seed=$SEED was NOT honoured: a seed settles a first run only, and this is not one -- ${matched[*]} already have records"
+          why_more="--seed=$SEED was NOT honoured: a seed settles a first run only, and this is not one -- ${matched[*]} $m_have"
       done
     elif [ ${#unknown[@]} -gt 0 ]; then
       # Every participant present is unknown, so nothing is on record to be
@@ -566,11 +636,27 @@ for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
       why="${#changed[@]} participants changed since the last bridge (${changed[*]})"
     fi
 
+    # A seed that was given, could have applied, and was not used has to be
+    # named. The branch above only names it when the seed happens to be one of
+    # the participants WITHOUT a record; seed a participant that has one and the
+    # conflict log contained the word "seed" nowhere at all, which reads exactly
+    # like the flag having been forgotten -- the confusion why_more exists to
+    # prevent. Skipped for the all-unknown branch, whose own message already
+    # says what became of the seed, and for a seed holding no copy of this game,
+    # which could not have broken the tie whatever the records said.
+    if [ -z "$winner" ] && [ -n "$SEED" ] && [ -z "$why_more" ] \
+       && [ ${#unknown[@]} -ne ${#present[@]} ]; then
+      for p in "${present[@]}"; do
+        [ "$p" = "$SEED" ] && \
+          why_more="--seed=$SEED was NOT honoured: a seed settles a first run only -- one where no participant present has a record -- and this is not one"
+      done
+    fi
+
     if [ -n "$winner" ]; then
       all_copied=1; any_copied=0
       for p in "${names[@]}"; do
         [ "$p" = "$winner" ] && continue
-        if transfer "${pfile[$winner]}" "${pfile[$p]}" "$game  $winner -> $p"; then
+        if transfer "${pfile[$winner]}" "${pfile[$p]}" "$system" "$p" "$game  $winner -> $p"; then
           any_copied=1
         else
           all_copied=0
@@ -598,8 +684,15 @@ for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
         # A conflict is the worst possible moment to be told the snapshot is
         # safe when it is not -- it is the copy a human reaches for to sort the
         # conflict out by hand.
+        #
+        # So this one line is unindented, unlike everything else inside a
+        # conflict block. save-bridge-cron.sh turns bridge output into unraid
+        # notifications by grepping '^WARNING:', which an indented line cannot
+        # match, and its conflict alert is what tells the operator where the
+        # snapshot is. Left indented, the run that has no snapshot would be the
+        # run that most confidently claims one.
         if [ -n "$stash_failed" ]; then
-          log "              WARNING: could NOT stash$stash_failed into $d"
+          log "WARNING: could NOT stash$stash_failed into $d"
           log "              (the originals are untouched, but there is no snapshot of them)"
         else
           log "              every copy stashed in $d"
