@@ -30,10 +30,14 @@ STOW_FAILED=0
 # $XDG_CONFIG_HOME/git/config; folded, that write would land in the repo, and
 # `ignore` needs to link in beside a real, untracked `config`.
 #
+# `systemd/user` is here because `systemctl --user enable` writes its symlinks
+# into $XDG_CONFIG_HOME/systemd/user/*.wants/; folded, every unit anyone ever
+# enables would be created inside this repo.
+#
 # tests/test-install.sh asserts every entry below comes out a real directory on
 # a fresh machine, so this list is the single source of truth for the invariant.
 UNFOLD_HOME=(.local/bin .local/share/applications .tmux/plugins)
-UNFOLD_CONFIG=(.claude fish git)
+UNFOLD_CONFIG=(.claude fish git systemd/user)
 
 # Reads one field from /etc/os-release. Parsed, not sourced: os-release is shell
 # syntax, so sourcing it executes whatever the distro put there and drags ~20
