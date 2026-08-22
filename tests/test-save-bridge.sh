@@ -33,13 +33,50 @@ new_tree() {
   mkdir -p "$TREE/ManicEMU/gba" \
            "$TREE/Emulator Saves/retroarch/saves/mGBA" \
            "$TREE/Emulator Saves/retroarch/saves/Snes9x" \
-           "$TREE/MiSTer/saves/SNES"
+           "$TREE/MiSTer/saves/SNES" \
+           "$TREE/MiSTer/saves/NES" \
+           "$TREE/Emulator Saves/retroarch/saves/FCEUmm"
 }
 
-mkfile() { mkdir -p "$(dirname "$1")"; printf '%s' "$2" > "$1"; }
+# Every save is written as a short TAG padded out to a fixed length, and a case
+# names the length only when the length is the point.
+#
+# The padding is not decoration. The bridge refuses to bridge participants whose
+# files differ in LENGTH -- a rename cannot be correct when the two files are
+# not the same size -- so fixtures written as bare strings made every "v1 versus
+# manic-v2" case a size mismatch (2 bytes against 8) rather than the record
+# question it is there to ask. Real saves of one format are all one length;
+# unpadded fixtures were the only thing in this suite that was not.
+#
+# The tag still leads the file, so every assertion below goes on saying which
+# save it means, and a failure note can show the tag without dumping 8 KB.
+SAVE_BYTES=64
 
-# The hash the script would record for a file holding exactly this string.
-sha_of() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+# The exact bytes mkfile writes for a tag.
+save_bytes() { # save_bytes <tag> [bytes]
+  local tag="$1" bytes="${2:-$SAVE_BYTES}"
+  # A tag longer than the requested length would make the `head -c` count
+  # below negative. Against /dev/zero, GNU head reads a negative count as "all
+  # but the last N bytes of the input" and never reaches EOF -- verified, it
+  # hangs until killed, which would hang CI rather than fail it. Erroring here
+  # instead turns that into an immediate, loud failure at the fixture that
+  # caused it.
+  if [ "${#tag}" -gt "$bytes" ]; then
+    printf 'save_bytes: tag "%s" is %d bytes, longer than the requested %dB\n' \
+      "$tag" "${#tag}" "$bytes" >&2
+    exit 1
+  fi
+  printf '%s' "$tag"
+  head -c "$(( bytes - ${#tag} ))" /dev/zero | tr '\0' '.'
+}
+
+mkfile() { # mkfile <path> <tag> [bytes]
+  mkdir -p "$(dirname "$1")"
+  save_bytes "$2" "${3:-$SAVE_BYTES}" > "$1"
+}
+
+# The hash the script would record for a file holding exactly this tag.
+sha_of() { save_bytes "$1" "${2:-$SAVE_BYTES}" | sha256sum | cut -d' ' -f1; }
 
 # Some cases are about the MAPPINGS table rather than the tree, and need a table
 # the real one deliberately does not have: a three-participant row, a row naming
@@ -83,12 +120,19 @@ run_bridge() {
   bash "${BRIDGE_BIN:-$BRIDGE}" "$@" 2>&1
 }
 
-# assert_file <path> <expected content> <label>
+# assert_file <path> <expected tag> <label> [bytes]
+#
+# The file must hold exactly what mkfile would have written for that tag, at
+# that length -- so this pins the content AND the size, and a case that cares
+# about the size says so by passing it.
 assert_file() {
   if [ ! -e "$1" ]; then fail "$3 -- missing: ${1#"$TREE"/}"; return; fi
-  local got; got=$(cat "$1")
-  if [ "$got" = "$2" ]; then ok "$3"; else
-    fail "$3"; note "expected '$2', got '$got'"
+  local got want
+  got=$(cat "$1")
+  want=$(save_bytes "$2" "${4:-$SAVE_BYTES}")
+  if [ "$got" = "$want" ]; then ok "$3"; else
+    fail "$3"
+    note "expected '$2' at ${4:-$SAVE_BYTES}B, got '$(head -c 20 "$1")' at $(stat -c %s "$1")B"
   fi
 }
 
@@ -123,6 +167,28 @@ STATE=".save-bridge/state.tsv"
 # gba + snes is the pair the stock MAPPINGS already provides.
 MS="MiSTer/saves/SNES"
 RS="Emulator Saves/retroarch/saves/Snes9x"
+
+# The nes row's two sides. It is the only row carrying a sizes= allowlist, and
+# the reason it needs one: the MiSTer's NES directory holds raw SRAM and Famicom
+# Disk System disk images under the same .sav extension.
+MN="MiSTer/saves/NES"
+RN="Emulator Saves/retroarch/saves/FCEUmm"
+
+section "the save_bytes fixture helper errors on an over-long tag"
+# save_bytes computes a `head -c` count of bytes-minus-taglen. A tag longer
+# than the requested length makes that negative, and GNU head reads a negative
+# count against /dev/zero as "all but the last N bytes" -- which never
+# returns. Verified against c8e5b07: unpatched, this hangs until killed rather
+# than failing. Run under `timeout` so a regression here fails loudly instead
+# of hanging the rest of the suite, and in a throwaway bash -c so save_bytes's
+# own `exit 1` cannot end this script.
+out=$(timeout 5 bash -c "$(declare -f save_bytes); SAVE_BYTES=64; save_bytes 'some-longish-tag' 8" 2>&1)
+rc=$?
+[ "$rc" -eq 1 ] && ok "an over-long tag errors instead of hanging" \
+                || { fail "an over-long tag errors instead of hanging -- got $rc"; note "$out"; }
+printf '%s' "$out" | grep -q 'longer than the requested' \
+  && ok "the over-long-tag error names the problem" \
+  || { fail "the over-long-tag error names the problem"; note "$out"; }
 
 section "dry run writes nothing"
 new_tree
@@ -435,11 +501,17 @@ assert_file "$TREE/$M/Game.sav" "manic-v2" "progress survives the failed copy"
 assert_file "$TREE/$R/Game.srm" "manic-v2" "progress survives on the side that got it"
 
 section "--seed naming a participant on no mapping row warns"
-# gba is manic+retroarch and snes is mister+retroarch, so no single --seed can
-# apply to every row. Naming one that applies to none used to surface as a
-# conflict message blaming the wrong thing.
+# gba is manic+retroarch while snes and nes are mister+retroarch, so no single
+# --seed can apply to every row. Naming one that applies to none used to surface
+# as a conflict message blaming the wrong thing.
+#
+# BOTH mister rows have to go, not just snes: leave either one standing and
+# mister still appears in MAPPINGS, so the warning under test never fires and
+# the case FAILS -- "an inapplicable --seed warns" comes back red, not a silent
+# pass. The widening was forced by that red test, not a rescue from one that
+# passed while proving nothing.
 new_tree
-variant_bridge "seed on no row" '/^  "snes|mister:SNES:sav/d'
+variant_bridge "seed on no row" '/^  "snes|mister:SNES:sav/d; /^  "nes|sizes=/d'
 mkfile "$TREE/$M/Game.sav" "manic-v1"
 out=$(run_bridge --apply --seed=mister); rc=$?
 [ "$rc" -eq 0 ] && ok "an inapplicable --seed is not fatal" \
@@ -556,9 +628,11 @@ assert_file "$TREE/$MS/Zelda.sav" "snes-v2" "the snes winner reached the MiSTer"
 # The bytes each row replaced must BOTH still be reachable afterwards.
 saved_gba=""; saved_snes=""
 while IFS= read -r f; do
+  # Prefix match: mkfile pads the tag out to SAVE_BYTES, so the tag leads the
+  # file rather than being the whole of it.
   case "$(cat "$f")" in
-    gba-v1)  saved_gba="$f" ;;
-    snes-v1) saved_snes="$f" ;;
+    gba-v1*)  saved_gba="$f" ;;
+    snes-v1*) saved_snes="$f" ;;
   esac
 done < <(find "$TREE/.save-bridge/backups" -type f -name 'Zelda.sav')
 [ -n "$saved_gba" ] && ok "the gba row's replaced save was snapshotted" \
@@ -638,5 +712,213 @@ printf '%s' "$out" | grep -q 'manic agrees with its own record' \
   || { fail "one matched participant reads as one"; note "$out"; }
 assert_file "$TREE/$M/Game.sav" "v1"            "manic keeps what its record proves"
 assert_file "$TREE/$R/Game.srm" "retro-ancient" "the unrecorded copy stayed put"
+
+# --- size guards -------------------------------------------------------------
+#
+# A MAPPINGS row claims that bridging is a rename. A rename cannot be correct
+# when the two files are not the same length, so length is settled before any
+# question about who moved is asked.
+#
+# This is not academic. The MiSTer's NES directory holds three formats under one
+# .sav extension: 8192-byte raw SRAM, 32768-byte SRAM padded out to the mapper's
+# PRG-RAM size, and 131072-byte Famicom Disk System writable DISK IMAGES with
+# real data well past the 8 KB mark. Only 8192 has a verified RetroArch pair.
+
+section "participants holding different lengths are never bridged"
+# Sizes differ, so this is a format incompatibility, not a conflict: there is
+# nothing for a human to merge and nothing to stash. It must therefore be a
+# SKIP on exit 0, not a CONFLICT on exit 2 -- an FDS image will never become
+# bridgeable, and a permanent conflict is a permanent alarm.
+new_tree
+mkfile "$TREE/$M/Game.sav" "manic-v1" 8192
+mkfile "$TREE/$R/Game.srm" "retro-v1" 131072
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 0 ] && ok "a size mismatch is not a conflict" \
+                || fail "a size mismatch is not a conflict -- got $rc"
+assert_file "$TREE/$M/Game.sav" "manic-v1" "manic left untouched"     8192
+assert_file "$TREE/$R/Game.srm" "retro-v1" "retroarch left untouched" 131072
+if printf '%s' "$out" | grep -q '^  COPIED'; then
+  fail "a size mismatch copies nothing"; note "$(printf '%s' "$out" | grep '^  COPIED')"
+else
+  ok "a size mismatch copies nothing"
+fi
+printf '%s' "$out" | grep -q '^  SIZE .*manic=8192.*retroarch=131072' \
+  && ok "the log names both participants and both lengths" \
+  || { fail "the log names both participants and both lengths"; note "$out"; }
+printf '%s' "$out" | grep -q 'unchanged/skipped: 1' \
+  && ok "the summary counts it as skipped" \
+  || { fail "the summary counts it as skipped"; note "$out"; }
+if find "$TREE/.save-bridge/conflicts" -type f 2>/dev/null | grep -q .; then
+  fail "a size mismatch stashes nothing"
+  note "$(find "$TREE/.save-bridge/conflicts" -type f)"
+else
+  ok "a size mismatch stashes nothing"
+fi
+
+# The line has to reach the log WITHOUT reaching the notification path.
+# save-bridge-cron.sh notifies unraid on '^WARNING:' and runs every ten minutes,
+# so an unindented line here is a push notification every ten minutes for as
+# long as the file sits in the directory -- which, for an FDS disk image, is
+# forever. '^WARNING:' is reserved for structural problems like a missing folder.
+if printf '%s' "$out" | grep -q '^WARNING:'; then
+  fail "the size line does not match the cron's ^WARNING: grep"; note "$out"
+else
+  ok "the size line does not match the cron's ^WARNING: grep"
+fi
+
+section "a size mismatch outranks a participant that demonstrably moved"
+# The guard has to run BEFORE the agreed/changed/unknown decision, and this is
+# why. With records in hand for both, a participant whose file changed LENGTH is
+# simply "the one that moved", so the winner is picked and fanned out -- an FDS
+# disk image renamed over somebody's SRAM, on exit 0, with no warning. Length is
+# settled first, so no winner is ever chosen here.
+new_tree
+mkfile "$TREE/$M/Game.sav" "v1" 8192
+run_bridge --apply >/dev/null                     # records 8192 for both
+mkfile "$TREE/$M/Game.sav" "fds" 131072           # manic now holds another format
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 0 ] && ok "a differently-sized mover is skipped, not obeyed" \
+                || fail "a differently-sized mover is skipped, not obeyed -- got $rc"
+assert_file "$TREE/$R/Game.srm" "v1"  "the other participant keeps its own format" 8192
+assert_file "$TREE/$M/Game.sav" "fds" "the mover is left alone too"                131072
+
+# ... and --seed cannot rescue it either. A seed settles a first-run tie about
+# WHICH copy is current; it says nothing about whether the two are the same
+# format, which is the question asked here.
+new_tree
+mkfile "$TREE/$M/Game.sav" "manic-v1" 8192
+mkfile "$TREE/$R/Game.srm" "retro-v1" 131072
+out=$(run_bridge --apply --seed=manic); rc=$?
+[ "$rc" -eq 0 ] && ok "a seeded size mismatch is still not a conflict" \
+                || fail "a seeded size mismatch is still not a conflict -- got $rc"
+assert_file "$TREE/$R/Game.srm" "retro-v1" \
+            "--seed does not bridge across a size mismatch" 131072
+
+section "a sizes= allowlist skips the lengths it does not list"
+# The nes row carries sizes=8192, and a row applies to every file in a
+# directory -- so the only thing standing between FCEUmm and a Famicom Disk
+# System disk image renamed to .srm is this list. The name cannot do it: the
+# disk images sit in the same directory under the same extension as the SRAM.
+new_tree
+mkfile "$TREE/$MN/Zelda no Densetsu.sav" "fds-disk-image" 131072
+mkfile "$TREE/$MN/Kirbys Adventure.sav"  "nes-sram"       8192
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 0 ] && ok "an unlisted length is not a conflict" \
+                || fail "an unlisted length is not a conflict -- got $rc"
+assert_absent "$TREE/$RN/Zelda no Densetsu.srm" "the FDS disk image is not bridged"
+assert_file   "$TREE/$MN/Zelda no Densetsu.sav" "fds-disk-image" \
+              "the FDS disk image is left where it was" 131072
+assert_file   "$TREE/$RN/Kirbys Adventure.srm" "nes-sram" \
+              "a listed length on the SAME row still bridges" 8192
+printf '%s' "$out" | grep -q '^  SIZE .*Zelda no Densetsu.*sizes=8192.*mister=131072' \
+  && ok "the log names the game, the row's list and the offending length" \
+  || { fail "the log names the game, the row's list and the offending length"; note "$out"; }
+if printf '%s' "$out" | grep -q '^WARNING:'; then
+  fail "an unlisted length does not match the cron's ^WARNING: grep"; note "$out"
+else
+  ok "an unlisted length does not match the cron's ^WARNING: grep"
+fi
+
+section "a sizes= allowlist bridges the lengths it does list"
+# Verified 2026-08-22: FCEUmm's `Legend of Zelda, The (USA) (Rev 1).srm` and the
+# MiSTer's `Zelda no Densetsu 1 - The Hyrule Fantasy (Japan).sav` are both 8192
+# bytes and return RENAME LIKELY SAFE, which is what put the nes row in
+# MAPPINGS. A row with an allowlist must go on deciding exactly as any other row
+# does for the lengths it allows.
+new_tree
+mkfile "$TREE/$RN/Zelda.srm" "retro-nes-v1" 8192
+run_bridge --apply >/dev/null; rc=$?
+[ "$rc" -eq 0 ] && ok "an allowlisted length bridges" \
+                || fail "an allowlisted length bridges -- got $rc"
+assert_file "$TREE/$MN/Zelda.sav" "retro-nes-v1" "retroarch -> mister on the nes row" 8192
+mkfile "$TREE/$MN/Zelda.sav" "mister-nes-v2" 8192      # one side moves, and wins
+run_bridge --apply >/dev/null; rc=$?
+[ "$rc" -eq 0 ] && ok "an allowlisted row still resolves a mover" \
+                || fail "an allowlisted row still resolves a mover -- got $rc"
+assert_file "$TREE/$RN/Zelda.srm" "mister-nes-v2" \
+            "the participant that moved propagates on an allowlisted row" 8192
+
+section "a row with no sizes= accepts any length"
+# The allowlist is a property of the ROW, not of the run. gba carries none, so a
+# 131072-byte save -- the very length the nes row exists to refuse -- bridges
+# there untouched, in the same run in which the nes row is applying its list.
+new_tree
+mkfile "$TREE/$M/Zelda.sav"  "gba-big"  131072
+mkfile "$TREE/$MN/Zelda.sav" "nes-sram" 8192
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 0 ] && ok "an unconstrained row alongside a constrained one" \
+                || fail "an unconstrained row alongside a constrained one -- got $rc"
+assert_file "$TREE/$R/Zelda.srm"  "gba-big"  "the row with no sizes= bridges 131072 bytes" 131072
+assert_file "$TREE/$RN/Zelda.srm" "nes-sram" "the row with sizes= bridges its own 8192"   8192
+
+section "a malformed sizes= field is fatal at preflight"
+# Same severity as an undeclared participant, and silent in the same way:
+# `sizes=8k` matches no file's length at all, so every game on the row is
+# skipped and the run reads exactly like a row whose directories are empty. A
+# constraint nobody can satisfy has to stop the run, not quietly disable a row.
+new_tree
+variant_bridge "non-numeric sizes" 's#^  "nes|sizes=8192#  "nes|sizes=8k#'
+mkfile "$TREE/$M/Game.sav" "manic-v1"
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 1 ] && ok "a non-numeric sizes= exits 1" \
+                || fail "a non-numeric sizes= exits 1 -- got $rc"
+printf '%s' "$out" | grep -q "row 'nes' has a malformed sizes= field" \
+  && ok "the malformed field is named" \
+  || { fail "the malformed field is named"; note "$out"; }
+assert_absent "$TREE/$R/Game.srm" "a rejected table bridges nothing at all"
+
+new_tree
+variant_bridge "empty sizes" 's#^  "nes|sizes=8192#  "nes|sizes=#'
+mkfile "$TREE/$M/Game.sav" "manic-v1"
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 1 ] && ok "an empty sizes= exits 1" || fail "an empty sizes= exits 1 -- got $rc"
+
+new_tree
+variant_bridge "trailing comma in sizes" 's#^  "nes|sizes=8192#  "nes|sizes=8192,#'
+mkfile "$TREE/$M/Game.sav" "manic-v1"
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 1 ] && ok "an empty entry in sizes= exits 1" \
+                || fail "an empty entry in sizes= exits 1 -- got $rc"
+
+# stat -c %s never emits a leading zero, so sizes=08192 matches no file's
+# length either -- same silent-disable failure mode as sizes=8k, just spelled
+# differently. Unpatched (c8e5b07), this passed preflight and logged a SIZE
+# skip instead of refusing to start.
+new_tree
+variant_bridge "leading zero in sizes" 's#^  "nes|sizes=8192#  "nes|sizes=08192#'
+mkfile "$TREE/$M/Game.sav" "manic-v1"
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 1 ] && ok "a leading zero in sizes= exits 1" \
+                || fail "a leading zero in sizes= exits 1 -- got $rc"
+printf '%s' "$out" | grep -q "row 'nes' has a malformed sizes= field" \
+  && ok "the leading-zero field is named" \
+  || { fail "the leading-zero field is named"; note "$out"; }
+
+# A bare 0 is not a leading zero -- it IS the entry, and a zero-byte save is a
+# real thing that currently bridges. The check above must not overcorrect into
+# rejecting it, alone or beside another length.
+new_tree
+variant_bridge "bare zero in sizes" 's#^  "nes|sizes=8192#  "nes|sizes=0,8192#'
+mkfile "$TREE/$M/Game.sav" "manic-v1"
+out=$(run_bridge --apply); rc=$?
+if [ "$rc" -ne 1 ] && ! printf '%s' "$out" | grep -q 'malformed sizes= field'; then
+  ok "a bare 0 alongside another length is not malformed"
+else
+  fail "a bare 0 alongside another length is not malformed -- got rc=$rc"; note "$out"
+fi
+
+# Two sizes= fields are refused rather than merged, for the reason the
+# duplicate-participant check gives: the second would quietly replace the first,
+# and an allowlist narrower than the author wrote is a row that silently bridges
+# nothing at all.
+new_tree
+variant_bridge "two sizes fields" 's#^  "nes|sizes=8192#  "nes|sizes=8192|sizes=32768#'
+mkfile "$TREE/$M/Game.sav" "manic-v1"
+out=$(run_bridge --apply); rc=$?
+[ "$rc" -eq 1 ] && ok "a second sizes= field exits 1" \
+                || fail "a second sizes= field exits 1 -- got $rc"
+printf '%s' "$out" | grep -q "carries more than one sizes= field" \
+  && ok "the duplicated constraint is named" \
+  || { fail "the duplicated constraint is named"; note "$out"; }
 
 summary "save-bridge"

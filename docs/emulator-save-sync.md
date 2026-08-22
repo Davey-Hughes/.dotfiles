@@ -134,7 +134,7 @@ about two *named participants* and a real save from each, established by
 | GBA | raw `.srm` | raw `.sav` | not checked | yes — `manic` + `retroarch` |
 | SNES | raw `.srm` | `.srm`, unchecked | raw `.sav` | yes — `mister` + `retroarch` |
 | GB / GBC | raw `.srm`, RTC in a separate `.rtc` | raw dump | raw dump, in three directories | no — two blockers, below |
-| NES | *no saves exist here at all* | raw dump | raw power-of-two dumps | no — nothing to compare |
+| NES | raw 8192-byte `.srm` (FCEUmm) | raw dump | three formats under one extension | yes — `mister` + `retroarch`, **8192 bytes only** |
 | NDS | raw `.srm` | `.dsv` | — | no — DeSmuME appends a footer |
 | N64 | 296,960-byte composite | separate files | — | no — needs splitting |
 
@@ -149,10 +149,62 @@ SAFE. That is what put the `snes` row in MAPPINGS. Manic EMU's SNES saves are
 already `.srm`, so adding the phone to that row is likely a plain copy rather
 than a rename — but "likely" is not a verification, and it is not in the table.
 
-**NES could not be verified at all.** RetroArch has no NES saves on this setup:
-there is no `saves/Mesen` directory, so no pair exists to compare. The MiSTer's
-NES saves do classify as raw power-of-two dumps, which is necessary and nowhere
-near sufficient. A mapping row cannot be written from one side's evidence.
+**NES verified 2026-08-22 — but only at one size.** This replaces the earlier
+finding that NES could not be verified at all for want of a RetroArch pair.
+RetroArch does hold one NES save: FCEUmm's `Legend of Zelda, The (USA) (Rev
+1).srm`, 8192 bytes. There is still no `saves/Mesen` directory — FCEUmm is the
+core actually in use here. Checked against the MiSTer's `Zelda no Densetsu 1 -
+The Hyrule Fantasy (Japan).sav`, also 8192 bytes, that pair returns RENAME
+LIKELY SAFE.
+
+That verifies **one size and nothing else**, and the MiSTer's nine NES saves are
+three different formats sharing the `.sav` extension:
+
+| Size | What it actually is |
+|---|---|
+| 8,192 | raw SRAM — byte-compatible with FCEUmm's `.srm`, and the only size with a verified pair |
+| 32,768 | 8 KB of real save data followed by 24 KB of inert padding — the mapper's declared PRG-RAM size, not data. Six of the nine are this. |
+| 131,072 | **not SRAM at all** — Famicom Disk System writable *disk images* (`Zelda no Densetsu`, `Metroid (Japan)`), with real data well past the 8 KB mark |
+
+A MAPPINGS row applies to every file in a directory, so the `nes` row cannot
+exclude the other two by name — they sit in the same directory under the same
+extension. It excludes them by size instead:
+
+    "nes|sizes=8192|mister:NES:sav|retroarch:saves/FCEUmm:srm"
+
+Widening that list means verifying the wider size against a real pair first. A
+32,768-byte file renamed to `.srm` hands FCEUmm four times the length it writes,
+and nothing here establishes what it does with one; a 131,072-byte file hands it
+a disk image as battery backup.
+
+### The two size guards
+
+Both live in `os/unraid/save-bridge.sh` and both run *before* the
+agreed/changed/unknown decision, which is the whole point — differing sizes
+would otherwise arrive at that decision as an ordinary hash disagreement, get
+resolved by picking a "winner", and fan an FDS disk image over somebody's SRAM
+on exit 0.
+
+- **Always on.** If two or more participants present hold files of *different*
+  sizes, the game is skipped. A rename cannot be correct when the lengths
+  differ, so this is never a conflict to settle by picking a side — it is a
+  format incompatibility, and `--seed` does not override it either.
+- **Optional, per row.** `sizes=N[,N...]` is a field in the MAPPINGS row —
+  a constraint, not a participant, and it may sit anywhere after the system
+  name. A game whose file is not one of those lengths on any participant is
+  skipped for that row. A row without one accepts any length, exactly as
+  before. A malformed value (`sizes=8k`, `sizes=`, a trailing comma, two
+  `sizes=` fields on one row) is rejected at preflight with exit 1, like an
+  undeclared participant — a constraint nobody can satisfy would otherwise
+  disable the row silently, and read exactly like empty directories.
+
+Both fire on **permanent, expected** conditions, so both log *indented* and
+count as skipped, leaving the exit status alone. That is deliberate:
+`save-bridge-cron.sh` raises an unraid notification for any line matching
+`^WARNING:` and runs every ten minutes, so an unindented line here would be a
+push notification every ten minutes forever — an FDS disk image will never
+become bridgeable. `^WARNING:` stays reserved for structural problems such as a
+missing participant folder.
 
 **GB/GBC is blocked on two independent grounds**, either of which is enough on
 its own:

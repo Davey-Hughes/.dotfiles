@@ -27,9 +27,30 @@
 #        not renaming, so it is not in MAPPINGS.
 #   NDS  DeSmuME's .dsv appends a "|-DESMUME SAVE-|" footer past the save data,
 #        so a rename produces a file melonDS will reject or misread.
+#   FDS  The MiSTer's NES directory holds Famicom Disk System writable disk
+#        images under the same .sav extension as raw SRAM, at 131072 bytes
+#        against SRAM's 8192. A MAPPINGS row applies to every file in a
+#        directory, so it cannot exclude them by name -- the size guards below
+#        do that instead.
 #
 #   Save states are never bridged. Manic EMU documents them as non-portable,
 #   and RetroArch's are tied to the exact core build.
+#
+# SIZE GUARDS
+#
+# A rename cannot be correct when the two files are not the same length, so
+# before any decision is made about a game:
+#
+#   participants disagree on size   skip the game. That is a format
+#                                   incompatibility, never a conflict to settle
+#                                   by picking a winner.
+#   the row carries sizes=N[,N...]  skip any game whose file is not one of those
+#                                   lengths on every participant holding it.
+#
+# Both are permanent, expected conditions -- an FDS disk image will never become
+# bridgeable -- so each logs INDENTED and counts as skipped. Deliberately not
+# "WARNING:", which save-bridge-cron.sh turns into an unraid notification every
+# ten minutes for as long as the file sits there.
 #
 # WHY IT IS NOT "NEWEST WINS"
 #
@@ -119,16 +140,24 @@ participant_root() { # name
   return 1
 }
 
-# system | participant:subdir:ext | participant:subdir:ext | ...
+# system | [sizes=N[,N...]] | participant:subdir:ext | participant:subdir:ext | ...
 #
 # Two or more participants per row, each named at most once -- a participant
 # repeated on one row is rejected by the preflight, which explains why. Only
 # formats proven byte-identical between every participant on the row belong
 # here. Adding a row is a claim that a rename is sufficient -- verify with
 # save-format-check.sh on a real save from each side before trusting a new one.
+#
+# The optional sizes= field is a CONSTRAINT, not a participant: it restricts the
+# row to files of exactly those byte lengths and may sit anywhere after the
+# system name. It exists because a row applies to every file in a directory,
+# and one directory can hold more than one format under one extension -- see the
+# nes evidence below. A row without it accepts any length, exactly as before.
+# The participants-disagree-on-size guard applies to every row either way.
 MAPPINGS=(
   "gba|manic:gba:sav|retroarch:saves/mGBA:srm"
   "snes|mister:SNES:sav|retroarch:saves/Snes9x:srm"
+  "nes|sizes=8192|mister:NES:sav|retroarch:saves/FCEUmm:srm"
 )
 
 # Verified 2026-08-21 with save-format-check.sh, against three games present on
@@ -144,10 +173,32 @@ MAPPINGS=(
 #                                                      .srm, so likely a plain
 #                                                      copy, not a rename
 #
-# NES was attempted on 2026-08-21 and could not be verified: RetroArch has no
-# NES saves on this setup at all -- no saves/Mesen directory exists -- so there
-# is no pair to check. The MiSTer's NES saves do classify as raw power-of-two
-# dumps, which is necessary but nowhere near sufficient.
+# Verified 2026-08-22 with save-format-check.sh, and the reason the nes row
+# carries sizes=. RetroArch does now hold an NES save -- FCEUmm's `Legend of
+# Zelda, The (USA) (Rev 1).srm`, 8192 bytes; there is no saves/Mesen directory,
+# FCEUmm is the core in use here -- and checked against the MiSTer's `Zelda no
+# Densetsu 1 - The Hyrule Fantasy (Japan).sav`, also 8192 bytes, that pair
+# returns RENAME LIKELY SAFE.
+#
+# That verifies ONE size and says nothing about the others. The MiSTer's nine
+# NES saves are three different formats sharing the .sav extension:
+#
+#     8192  raw SRAM. Byte-compatible with FCEUmm's .srm, and the only size
+#           there is a verified pair for.
+#    32768  8 KB of real save data followed by 24 KB of inert padding -- the
+#           mapper's declared PRG-RAM size, not data. Six of the nine are this.
+#           FCEUmm writes 8192, so a rename hands it a file four times the
+#           length it expects, and nothing here establishes what it does with
+#           one.
+#   131072  NOT SRAM at all. Famicom Disk System writable DISK IMAGES -- `Zelda
+#           no Densetsu` and `Metroid (Japan)` -- carrying real data well past
+#           the 8 KB mark. Renaming one to .srm hands FCEUmm a disk image as
+#           battery backup, which is the exact class of mistake the
+#           verification rule exists to prevent.
+#
+# The row cannot exclude the other two by name, because it applies to every file
+# in the directory. sizes=8192 is what excludes them. Widening it means
+# verifying the wider size against a real pair the same way first.
 #
 # GB/GBC was attempted and is blocked on two independent grounds:
 #
@@ -199,7 +250,21 @@ log() {
   return 0
 }
 
+# Empties for a file it cannot read -- mode 000, most likely -- which is the
+# case the size guards below actually have to tolerate: an empty hash matches
+# no other participant's hash, so a game where one copy is unreadable falls
+# out of the agreed branch on its own and is decided, or refused, on whatever
+# evidence remains.
 hash_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
+
+# Unlike hash_of, this needs no read permission on the file -- only search
+# permission on the parent directory, which the caller's preceding `[ -e "$f" ]`
+# has already proved. A file unreadable to this user still reports its real
+# size here. size_of only comes back empty on a narrower race: the file is
+# deleted between that `-e` test and this stat. The ${psize[$p]:-unreadable}
+# fallbacks in the size guards below exist for that race -- near-unreachable,
+# but correct if it ever fires.
+size_of() { stat -c %s "$1" 2>/dev/null; }
 
 # Last hash this script wrote for a given system+game+participant, or empty.
 #
@@ -402,8 +467,45 @@ fi
 ACTIVE_MAPPINGS=()
 for row in "${MAPPINGS[@]}"; do
   IFS='|' read -r -a _fields <<< "$row"
-  _missing=""; _seen=""
+  _missing=""; _seen=""; _sizes=""
   for spec in "${_fields[@]:1}"; do
+    # A sizes= field constrains the row; it is not a participant spec, so it is
+    # taken out before the participant checks below ever see it.
+    #
+    # A malformed value is fatal for the same reason an undeclared participant
+    # is: it is silent. `sizes=8192 `, `sizes=8k` or `sizes=08192` matches no
+    # file's length at all -- stat -c %s never emits a leading zero -- so every
+    # game on the row is skipped and the run looks exactly like a row whose
+    # directories happen to be empty. A bare `sizes=0` is not this: zero-byte
+    # saves are real and 0 has no leading zero to strip, so it stays legal on
+    # its own or alongside other lengths. Two sizes= fields are refused
+    # rather than merged for the same reason the duplicate-participant check
+    # refuses two specs for one name -- the second would quietly replace the
+    # first, and a narrower allowlist than the author wrote is a row that
+    # silently bridges nothing.
+    case "$spec" in
+      sizes=*)
+        if [ -n "$_sizes" ]; then
+          echo "ERROR: mapping row '${_fields[0]}' carries more than one sizes= field." >&2
+          echo "       A row may have at most one. Combine them into a single" >&2
+          echo "       comma-separated list, e.g. sizes=8192,32768." >&2
+          exit 1
+        fi
+        _sizes="${spec#sizes=}"
+        # 0[0-9]* catches a leading zero at the start of the string, and
+        # *,0[0-9]* catches one leading any later entry -- each requires a
+        # SECOND digit after the zero, so a bare 0 (start, middle, or end of
+        # the list) never matches either arm and stays legal.
+        case "$_sizes" in
+          ''|*[!0-9,]*|,*|*,|*,,*|0[0-9]*|*,0[0-9]*)
+            echo "ERROR: mapping row '${_fields[0]}' has a malformed sizes= field: '$spec'" >&2
+            echo "       Expected sizes=<bytes>[,<bytes>...] -- digits and commas only," >&2
+            echo "       no spaces, no empty entries, and no leading zeros (a bare 0 is" >&2
+            echo "       fine). For example: sizes=8192,32768" >&2
+            exit 1 ;;
+        esac
+        continue ;;
+    esac
     p="${spec%%:*}"
     d="$(participant_root "$p")" || { echo "ERROR: mapping names an undeclared participant: $p" >&2; exit 1; }
     # The quotes inside the pattern are what keep $p literal: an unquoted
@@ -427,7 +529,7 @@ for row in "${MAPPINGS[@]}"; do
   fi
   ACTIVE_MAPPINGS+=("$row")
 done
-unset _fields _missing _seen
+unset _fields _missing _seen _sizes
 
 # --seed can only break a tie on a row that names it. Naming a participant no
 # row mentions is almost always a typo or a half-finished MAPPINGS edit, and it
@@ -438,6 +540,10 @@ if [ -n "$SEED" ]; then
   for row in "${MAPPINGS[@]}"; do
     IFS='|' read -r -a _fields <<< "$row"
     for spec in "${_fields[@]:1}"; do
+      # sizes= is a constraint, not a participant -- same rule as the walk above
+      # and as the main loop, kept identical at all three parse sites so the
+      # field can never be read as a participant name at any of them.
+      case "$spec" in sizes=*) continue ;; esac
       [ "${spec%%:*}" = "$SEED" ] && { seed_on_a_row=1; break 2; }
     done
   done
@@ -469,9 +575,13 @@ for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
   system="${fields[0]}"
   specs=("${fields[@]:1}")
 
-  # Resolve each participant's directory and extension once per system.
-  names=(); dirs=(); exts=()
+  # Resolve each participant's directory and extension once per system, and pick
+  # the row's size allowlist out of the same fields. The preflight has already
+  # proved any sizes= field well-formed and at most one per row, so this only
+  # has to read it.
+  names=(); dirs=(); exts=(); row_sizes=""
   for spec in "${specs[@]}"; do
+    case "$spec" in sizes=*) row_sizes="${spec#sizes=}"; continue ;; esac
     IFS=':' read -r p_name p_sub p_ext <<< "$spec"
     names+=("$p_name")
     dirs+=("$(participant_root "$p_name")/$p_sub")
@@ -479,6 +589,7 @@ for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
   done
 
   printf '[%s]' "$system"
+  [ -n "$row_sizes" ] && printf '  sizes=%s' "$row_sizes"
   for i in "${!names[@]}"; do printf '  %s=%s' "${names[$i]}" "${dirs[$i]}"; done
   printf '\n'
 
@@ -500,7 +611,7 @@ for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
     # these two BOUND rather than merely declared -- an unbound array would make
     # a later ${#pfile[@]} a fatal error under `set -u`. The `unset` in front is
     # belt-and-braces, not a requirement.
-    unset pfile phash; declare -A pfile=() phash=()
+    unset pfile phash psize; declare -A pfile=() phash=() psize=()
     present=(); absent=(); busy=""
     for i in "${!names[@]}"; do
       f="${dirs[$i]}/$game.${exts[$i]}"
@@ -509,6 +620,7 @@ for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
         if ! is_quiet "$f"; then busy="${names[$i]}"; break; fi
         pfile["${names[$i]}"]="$f"
         phash["${names[$i]}"]=$(hash_of "$f")
+        psize["${names[$i]}"]=$(size_of "$f")
         present+=("${names[$i]}")
       else
         pfile["${names[$i]}"]="$f"
@@ -525,6 +637,63 @@ for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
     if [ ${#present[@]} -eq 0 ]; then
       log "  SKIPPED     $game (no readable copy on any participant)"
       skipped=$((skipped+1)); continue
+    fi
+
+    # --- size guards --------------------------------------------------------
+    #
+    # Both of these run BEFORE the agreed/changed/unknown decision below, and
+    # they have to. Two participants holding different lengths reach that
+    # decision as an ordinary hash disagreement, where the records then pick a
+    # "winner" and fan it out -- which is how a Famicom Disk System disk image
+    # gets renamed over somebody's SRAM on exit 0. The premise of a MAPPINGS row
+    # is that bridging is a rename, and a rename cannot be correct when the two
+    # files are not the same length. That is settled before anyone asks who
+    # moved.
+    #
+    # Neither is a conflict, and neither stashes anything. A conflict is a
+    # decision this script refused to make and a human can make instead; these
+    # are formats that do not correspond, so there is nothing to decide and no
+    # snapshot to reach for. They count as skipped and leave the exit status
+    # alone.
+    #
+    # Both log INDENTED. save-bridge-cron.sh notifies on '^WARNING:' every ten
+    # minutes, and these fire on permanent conditions -- an FDS image will never
+    # become bridgeable -- so an unindented line would be a notification every
+    # ten minutes forever. '^WARNING:' stays for structural problems like a
+    # missing participant folder.
+
+    # The row's own allowlist first, where it has one. A row carrying sizes= has
+    # already declared which lengths are the format it was verified for, so a
+    # file outside that list is outside the row's scope entirely -- reporting it
+    # as "participants disagree" would name a symptom of something the
+    # configuration already ruled out, and point the reader at the wrong file.
+    if [ -n "$row_sizes" ]; then
+      unlisted=""
+      for p in "${present[@]}"; do
+        case ",$row_sizes," in
+          *",${psize[$p]},"*) ;;
+          *) unlisted="$unlisted $p=${psize[$p]:-unreadable}" ;;
+        esac
+      done
+      if [ -n "$unlisted" ]; then
+        log "  SIZE        $game (row is limited to sizes=$row_sizes, and$unlisted -- copied none)"
+        skipped=$((skipped+1)); continue
+      fi
+    fi
+
+    # And the unconditional one, which applies to every row whether it carries a
+    # sizes= field or not.
+    if [ ${#present[@]} -gt 1 ]; then
+      size_first="${psize[${present[0]}]}"
+      sizes_differ=""; size_list=""
+      for p in "${present[@]}"; do
+        [ "${psize[$p]}" = "$size_first" ] || sizes_differ=1
+        size_list="$size_list $p=${psize[$p]:-unreadable}"
+      done
+      if [ -n "$sizes_differ" ]; then
+        log "  SIZE        $game (participants hold different lengths:$size_list -- a rename cannot be correct, copied none)"
+        skipped=$((skipped+1)); continue
+      fi
     fi
 
     # Do every participant present already agree? Then the only question left
