@@ -66,14 +66,19 @@ gba_3p() { # gba_3p <label>
 }
 
 # QUIET_SECONDS=0 defeats the "file may still be being written" guard, which
-# would otherwise skip every file this test just created.
+# would otherwise skip every file this test just created. That is what almost
+# every case here needs, and it is why the guard itself went untested for so
+# long -- so it is a variable rather than a literal, and exactly one section
+# raises it. Raise it inside a command substitution ($(QUIET=... run_bridge)),
+# which is a subshell, so no case can leak the setting into the next one.
+QUIET=0
 run_bridge() {
   SYNC_ROOT="$TREE" \
   MANIC_ROOT="$TREE/ManicEMU" \
   RETRO_ROOT="$TREE/Emulator Saves/retroarch" \
   MISTER_ROOT="$TREE/MiSTer/saves" \
   WORK_DIR="$TREE/.save-bridge" \
-  QUIET_SECONDS=0 \
+  QUIET_SECONDS="$QUIET" \
   LOCK_FILE="$TREE/lock" \
   bash "${BRIDGE_BIN:-$BRIDGE}" "$@" 2>&1
 }
@@ -89,6 +94,23 @@ assert_file() {
 
 assert_absent() {
   if [ -e "$1" ]; then fail "$2 -- should not exist: ${1#"$TREE"/}"; else ok "$2"; fi
+}
+
+# assert_backup <path tail> <expected content> <label>
+#
+# The tail is matched in full, not as a substring: the whole question these
+# cases ask is which directory a snapshot landed in, and `*/gba/*` says yes to
+# .save-bridge/backups/<stamp>/gba/manic/Zelda.sav and to the
+# argument-swapped .../manic/gba/Zelda.sav alike.
+assert_backup() {
+  local f
+  f=$(find "$TREE/.save-bridge/backups" -type f -path "*/$1" 2>/dev/null | head -n1)
+  if [ -z "$f" ]; then
+    fail "$3 -- no snapshot at */$1"
+    note "$(find "$TREE/.save-bridge/backups" -type f 2>/dev/null | sed "s#^$TREE/##" | tr '\n' ' ')"
+    return
+  fi
+  assert_file "$f" "$2" "$3"
 }
 
 M="ManicEMU/gba"
@@ -108,6 +130,28 @@ mkfile "$TREE/$M/Game.sav" "manic-v1"
 run_bridge >/dev/null
 assert_absent "$TREE/$R/Game.srm" "no copy without --apply"
 assert_absent "$TREE/.save-bridge/state.tsv" "no state without --apply"
+
+section "a file Syncthing may still be writing is skipped, not read"
+# QUIET_SECONDS is the only thing between the bridge and a half-written save.
+# Read mid-write, a file hashes to something no record holds, so it reads as
+# "the one that moved" and its truncated bytes are fanned over every other
+# participant -- the exact loss this script exists to prevent, arriving on
+# exit 0. Every other case in this file flattens the window to 0 to get its work
+# done, which left is_quiet, the `busy` break and the BUSY line executed by
+# nothing at all.
+new_tree
+mkfile "$TREE/$M/Game.sav" "manic-v1"
+out=$(QUIET=3600 run_bridge --apply); rc=$?
+[ "$rc" -eq 0 ] && ok "a file inside the quiet window is not a failed run" \
+                || fail "a file inside the quiet window is not a failed run -- got $rc"
+printf '%s' "$out" | grep -q '^  BUSY .*Game (manic modified <3600s ago' \
+  && ok "the busy participant and the window are both named" \
+  || { fail "the busy participant and the window are both named"; note "$out"; }
+assert_absent "$TREE/$R/Game.srm" "nothing is copied out of a file that may still be being written"
+assert_absent "$TREE/$STATE"      "no record is written for a file that was never read"
+printf '%s' "$out" | grep -q 'unchanged/skipped: 1' \
+  && ok "the summary counts the busy file as skipped" \
+  || { fail "the summary counts the busy file as skipped"; note "$out"; }
 
 section "a save present on one side only is copied across"
 new_tree
@@ -526,10 +570,51 @@ done < <(find "$TREE/.save-bridge/backups" -type f -name 'Zelda.sav')
 [ -n "$saved_gba" ] && [ "$saved_gba" != "$saved_snes" ] \
   && ok "the two snapshots are separate files" \
   || fail "the two snapshots are separate files"
+# The full tail, not `*/gba/*`. transfer() takes five positional strings
+# (src dst system participant label) and `system` and `participant` are adjacent
+# same-type arguments -- swap them and backup() files gba's snapshot under
+# manic/gba/ instead of gba/manic/, which a substring match on "/gba/" accepts
+# just as happily. Naming both components is what pins the order.
 case "$saved_gba" in
-  */gba/*) ok "the snapshot is filed under the row it came from" ;;
-  *)       fail "the snapshot is filed under the row it came from"; note "$saved_gba" ;;
+  */gba/manic/Zelda.sav)
+    ok "the gba snapshot is filed under its own row and participant" ;;
+  *) fail "the gba snapshot is filed under its own row and participant"
+     note "$saved_gba" ;;
 esac
+case "$saved_snes" in
+  */snes/mister/Zelda.sav)
+    ok "the snes snapshot is filed under its own row and participant" ;;
+  *) fail "the snes snapshot is filed under its own row and participant"
+     note "$saved_snes" ;;
+esac
+
+section "two participants on ONE row must not clobber each other's backup"
+# The case above collides across two ROWS with two DIFFERENT participants, so
+# its two snapshots already differ by system AND by participant. Nothing about
+# it can require the participant component: drop it, key backups on the system
+# alone, and that case still passes in full -- measured.
+#
+# This is the case that does require it. manic:gba:sav and mister:GBA:sav sit on
+# the SAME row and share an extension, so one run replaces two files both named
+# Zelda.sav under one system, and only the participant tells them apart.
+#
+# The assertion is on paths rather than contents, and has to be. A winner exists
+# only when every other participant still agrees with its own record, and
+# state_put_all writes one hash for all of them -- so the two files being
+# replaced are necessarily byte-identical, and the path is the only thing that
+# can tell their snapshots apart.
+new_tree; gba_3p "same-row backup collision"
+mkfile "$TREE/$M/Zelda.sav" "v1"
+run_bridge --apply >/dev/null                 # fans v1 out to retroarch and mister
+mkfile "$TREE/$R/Zelda.srm" "retro-v2"        # retroarch is the one that moved
+run_bridge --apply >/dev/null; rc=$?
+[ "$rc" -eq 0 ] && ok "one mover on a three-participant row copies" \
+                || fail "one mover on a three-participant row copies -- got $rc"
+assert_file "$TREE/$M/Zelda.sav"  "retro-v2" "the winner reached manic"
+assert_file "$TREE/$MG/Zelda.sav" "retro-v2" "the winner reached mister"
+assert_backup "gba/manic/Zelda.sav"  "v1" "manic's replaced save is snapshotted under manic"
+assert_backup "gba/mister/Zelda.sav" "v1" "mister's replaced save is snapshotted under mister"
+
 section "a refused seed is named even when it is not the unrecorded one"
 # why_more was built only by walking the participants with NO record, so seeding
 # one that HAS a record produced a conflict log mentioning the seed zero times
