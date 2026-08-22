@@ -40,6 +40,7 @@ run_suite "tracked-files"  "$HERE/test-tracked-files.sh"
 run_suite "docs"           "$HERE/test-docs.sh"
 run_suite "xdg-sync"       "$HERE/test-xdg-sync.sh"
 run_suite "syntax"         "$HERE/test-syntax.sh"
+run_suite "save-bridge"    "$HERE/test-save-bridge.sh"
 run_suite "install"        "$HERE/test-install.sh"
 
 printf '\n%s\n' "----------------------------------------"
