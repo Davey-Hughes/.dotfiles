@@ -1,18 +1,21 @@
 #!/bin/bash
 #
-# Bridges GBA saves between Manic EMU (iPhone, via Synctrain) and RetroArch.
-# Both arrive on this box as Syncthing folders.
+# Bridges emulator saves between Manic EMU (iPhone, via Synctrain), RetroArch
+# and the MiSTer FPGA. All of them arrive on this box as Syncthing folders.
 #
-# The two emulators write the same raw GBA flash dump and only disagree on the
-# extension -- Manic uses .sav, the libretro mGBA core uses .srm -- so moving a
-# save between them is a rename and nothing more. That was verified on a real
-# 128K save from both sides: identical size, no header, no footer, and the same
-# 14/14/2/2 sector layout, differing only in which save slot was populated.
+# A row in MAPPINGS is a claim that the participants on it write the same raw
+# save and disagree on nothing but the extension, so moving a save between them
+# is a rename and nothing more. GBA was verified on a real 128K save from both
+# sides: identical size, no header, no footer, and the same 14/14/2/2 sector
+# layout, differing only in which save slot was populated.
 #
 #   ./save-bridge.sh                    show what would happen, change nothing
 #   ./save-bridge.sh --apply            actually copy
-#   ./save-bridge.sh --apply --seed=manic       first run: Manic wins ties
-#   ./save-bridge.sh --apply --seed=retroarch   first run: RetroArch wins ties
+#   ./save-bridge.sh --apply --seed=<participant>   first run: that one wins ties
+#                                                   (manic | retroarch | mister)
+#
+# Exit status: 0 nothing went wrong, 1 at least one copy failed, 2 at least one
+# game was left alone because the evidence was ambiguous. 2 outranks 1.
 #
 # Dry-run is the default on purpose. This writes save files, and a wrong copy
 # costs somebody their progress.
@@ -33,15 +36,29 @@
 # Synctrain only syncs while the app is in the foreground, so the phone's copy
 # is routinely hours stale while still holding real progress. Comparing mtimes
 # would eventually overwrite good data with old data. Instead this records a
-# hash of what it last wrote and compares BOTH sides against that record:
+# hash of what it last wrote and compares EVERY participant against that record:
 #
-#   neither side changed  -> nothing to do
-#   one side changed      -> copy it across
-#   both sides changed    -> copy NEITHER, stash both, log it, exit non-zero
+#   agrees with its record  -> it did not move
+#   differs from its record -> it moved
+#   has NO record           -> unknown. Never counted as having moved: a
+#                              participant that was only just added looks
+#                              exactly like one holding real progress, and the
+#                              newcomer's ancient copy must not be allowed to
+#                              win and overwrite everybody else.
 #
-# A first run has no record. If both sides hold the same game and the bytes
-# differ, that is genuinely unresolvable without being told which one matters,
-# which is what --seed is for. It applies only where no record exists.
+# Exactly one moved and nothing is unknown -> copy that one onto every other
+# participant. Anything else -- nobody identifiable, two or more moved, or one
+# participant is unknown while any other has a record at all -- copies NOTHING,
+# stashes every copy, logs it and exits 2. Guessing here is how save data gets
+# destroyed.
+#
+# A first run has no record for anybody. If two or more participants hold the
+# same game and the bytes differ, that is genuinely unresolvable without being
+# told which participant matters, which is what --seed is for. It resolves ONLY
+# the case where NOT ONE participant present has a record. The moment any of
+# them does, that record is evidence -- it either proves that participant moved,
+# or proves it did not -- and evidence outranks being told, so the seed is
+# refused and the run stops instead.
 
 set -u
 
@@ -53,6 +70,8 @@ MANIC_ROOT="${MANIC_ROOT:-$SYNC_ROOT/ManicEMU}"
 # RetroArch is now a subdirectory of it rather than a folder root. Note the
 # space in the directory name -- every expansion of this variable is quoted.
 RETRO_ROOT="${RETRO_ROOT:-$SYNC_ROOT/Emulator Saves/retroarch}"
+# The MiSTer's saves folder, relocated from the mirrors share on 2026-08-21.
+MISTER_ROOT="${MISTER_ROOT:-$SYNC_ROOT/MiSTer/saves}"
 
 # State and backups live beside the folders, never inside them -- anything
 # inside a folder root would sync itself back out to every device.
@@ -69,42 +88,80 @@ QUIET_SECONDS="${QUIET_SECONDS:-120}"
 # Optional. With both set, folder state is checked via the REST API and the run
 # aborts unless every folder is idle. Without them, only the mtime check above
 # applies -- weaker, but it still refuses to touch actively-changing files.
-#   export ST_URL=https://127.0.0.1:8384  ST_KEY=...  ST_FOLDERS="retroarch manicemu"
+# List EVERY folder a MAPPINGS row reads. One left out is one whose sync state
+# is never checked, which is the case this guard exists to catch.
+#   export ST_URL=https://127.0.0.1:8384  ST_KEY=...  \
+#          ST_FOLDERS="retroarch manicemu mister"
 ST_URL="${ST_URL:-}"
 ST_KEY="${ST_KEY:-}"
 ST_FOLDERS="${ST_FOLDERS:-}"
 
-# system | manic subdir | manic ext | retroarch subdir | retroarch ext
+# name | root
 #
-# Only formats proven to be byte-identical between the two belong here. Adding
-# a row is a claim that a rename is sufficient -- verify with `cmp` on a real
-# save from both emulators before trusting a new one.
-MAPPINGS=(
-  "gba|gba|sav|saves/mGBA|srm"
+# A participant is one place saves live. Adding one here does nothing on its
+# own -- it has to appear in a MAPPINGS row before any file is looked at.
+PARTICIPANTS=(
+  "manic|$MANIC_ROOT"
+  "retroarch|$RETRO_ROOT"
+  "mister|$MISTER_ROOT"
 )
 
-# Candidates, left commented until each is verified with save-format-check.sh
-# against the SAME game saved in BOTH emulators with real progress in each.
-# Manic EMU creates a system directory only when you first save in that system,
-# so the left-hand names below are informed guesses until they actually exist.
+# Root directory for a participant name, or empty if it is not declared.
 #
-#   "snes|snes|srm|saves/Snes9x|srm"     both sides already use .srm, so this
-#                                        is likely a plain copy, not a rename
-#   "nes|nes|srm|saves/Mesen|srm"
-#   "gb|gb|sav|saves/Gambatte|srm"       read the RTC warning first
+# It sits here rather than with the other helpers because --seed validation
+# below calls it, and bash only knows a function once the line defining it has
+# actually run -- a definition further down the file would not exist yet.
+participant_root() { # name
+  local row
+  for row in "${PARTICIPANTS[@]}"; do
+    [ "${row%%|*}" = "$1" ] && { printf '%s' "${row#*|}"; return 0; }
+  done
+  return 1
+}
+
+# system | participant:subdir:ext | participant:subdir:ext | ...
 #
-# GB/GBC RTC HAZARD, and it applies to this library specifically: cartridges
-# with a real-time clock -- Pokemon Gold, Silver and Crystal, all three of
-# which are on the phone -- keep clock state alongside the SRAM, and
-# implementations disagree on whether that state is appended to the save file
-# and how it is laid out. A save whose size is a clean power of two carries no
-# appendix; one that is a power of two plus a small tail does, and renaming
-# that into an emulator which does not expect the tail is how a save breaks.
-# save-format-check.sh reports exactly that tail. Verify "gb" using an RTC
-# game, not a plain cartridge, or the test will pass and the mapping will
-# still be wrong for the games you care about.
+# Two or more participants per row. Only formats proven byte-identical between
+# every participant on the row belong here. Adding a row is a claim that a
+# rename is sufficient -- verify with save-format-check.sh on a real save from
+# each side before trusting a new one.
+MAPPINGS=(
+  "gba|manic:gba:sav|retroarch:saves/mGBA:srm"
+  "snes|mister:SNES:sav|retroarch:saves/Snes9x:srm"
+)
+
+# Verified 2026-08-21 with save-format-check.sh, against three games present on
+# both the MiSTer and in RetroArch's Snes9x directory under identical names --
+# ALttP-msu-Deluxe, Retroid, The Legend of Zelda SNES. All six files are 8192
+# bytes, all classify as raw dumps with no footer, and all three pairs return
+# RENAME LIKELY SAFE. That is what put the snes row above.
 #
-# N64 and NDS are absent on purpose and are not candidates -- see the header.
+# Candidates, left commented until each is verified the same way against the
+# SAME game saved in BOTH places with real progress in each:
+#
+#   "snes|manic:snes:srm|retroarch:saves/Snes9x:srm"   both sides already use
+#                                                      .srm, so likely a plain
+#                                                      copy, not a rename
+#
+# NES was attempted on 2026-08-21 and could not be verified: RetroArch has no
+# NES saves on this setup at all -- no saves/Mesen directory exists -- so there
+# is no pair to check. The MiSTer's NES saves do classify as raw power-of-two
+# dumps, which is necessary but nowhere near sufficient.
+#
+# GB/GBC was attempted and is blocked on two independent grounds:
+#
+#   1. RTC. `Pokemon - Crystal Version (USA).sav` on the MiSTer is 33280 bytes
+#      = 32768 + 512. That 512-byte tail is an RTC appendix; Gambatte keeps RTC
+#      state in a separate .rtc file rather than appended to the SRAM, so a
+#      rename hands it 512 bytes it does not expect. Gold, Silver and Crystal
+#      are all affected, and they are the GB games that matter here.
+#   2. Cardinality. The MiSTer keeps THREE Game Boy save directories -- GAMEBOY,
+#      GBC and SGB -- against RetroArch's single Gambatte, and the same game
+#      appears in two of them at once (Link's Awakening DX in GBC and SGB;
+#      Pokemon Yellow in GAMEBOY and GBC). Which one is authoritative is not
+#      answerable from the filesystem.
+#
+# N64 and NDS remain absent on purpose and are not candidates -- see the header.
 
 # --- arguments --------------------------------------------------------------
 
@@ -112,18 +169,26 @@ APPLY=""
 SEED=""
 for arg in "$@"; do
   case "$arg" in
-    --apply)           APPLY=1 ;;
-    --seed=manic)      SEED="manic" ;;
-    --seed=retroarch)  SEED="retroarch" ;;
-    -h|--help)         sed -n '2,45p' "$0"; exit 0 ;;
-    *) echo "usage: $0 [--apply] [--seed=manic|--seed=retroarch]" >&2; exit 1 ;;
+    --apply)    APPLY=1 ;;
+    --seed=*)   SEED="${arg#--seed=}"
+                if ! participant_root "$SEED" >/dev/null; then
+                  echo "unknown participant for --seed: $SEED" >&2
+                  echo "known participants: ${PARTICIPANTS[*]%%|*}" >&2
+                  exit 1
+                fi ;;
+                # The header block ends at the first blank line in the file, so
+                # match that rather than a line number -- the number has already
+                # needed bumping once and silently truncates the help when it is
+                # wrong.
+    -h|--help)  sed -n '2,/^$/p' "$0"; exit 0 ;;
+    *) echo "usage: $0 [--apply] [--seed=<participant>]" >&2; exit 1 ;;
   esac
 done
 
 # --- helpers ----------------------------------------------------------------
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
-copied=0; skipped=0; conflicts=0
+copied=0; skipped=0; conflicts=0; failed=0
 
 log() {
   printf '%s\n' "$*"
@@ -133,22 +198,55 @@ log() {
 
 hash_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 
-# Last hash this script wrote for a given system+game, or empty if unknown.
-state_get() {
+# Last hash this script wrote for a given system+game+participant, or empty.
+#
+# state.tsv v1 was `system<TAB>game<TAB>hash` -- a single hash, because there
+# were only ever two participants and they agreed by construction. That is the
+# entire content of a v1 row: "the two participants on this row both held this
+# hash". It says nothing whatsoever about a third.
+#
+# So the v1 fallback fires ONLY when the row being decided still has exactly two
+# participants. Be exact about what that proves: n==2 is the row's ARITY, not
+# its IDENTITY. Rewrite a two-participant row from manic|retroarch to
+# manic|mister and n is still 2, so mister is handed a hash it never wrote,
+# mismatches it, is judged the one that moved, and overwrites manic. A v1 row
+# carries no participant names at all, so there is nothing in it to check the
+# membership against -- that hole is not closable from a v1 row alone. The arity
+# check narrows it to a row whose membership was edited while a v1 row for that
+# system+game still existed, and no further.
+#
+# Where the fallback does not fire, state_get reports "no record", which lands
+# the game in the unknown-participant branch that refuses to guess. v1 rows are
+# replaced the first time state_put_all rewrites that system+game.
+state_get() { # system game participant participant-count-on-the-row
   [ -f "$STATE_FILE" ] || return 0
-  awk -F'\t' -v s="$1" -v g="$2" '$1==s && $2==g {print $3; exit}' "$STATE_FILE"
+  awk -F'\t' -v s="$1" -v g="$2" -v p="$3" -v n="$4" '
+    $1==s && $2==g {
+      if (NF>=4 && $3==p) { print $4; exit }
+      if (NF==3 && n==2)  { print $3; exit }
+    }' "$STATE_FILE"
 }
 
-state_put() {
+# Record one hash for every participant of a system+game.
+#
+# This only ever runs after all participants have been made identical -- either
+# they already agreed, or one was just copied onto the others -- so a single
+# hash is correct for all of them. Writing them together is also what keeps a
+# partial update from stranding one participant with a stale record and making
+# it look "changed" on the next run.
+state_put_all() { # system game hash participant...
+  local system="$1" game="$2" hash="$3"; shift 3
   [ -n "$APPLY" ] || return 0
   mkdir -p "$WORK_DIR"
-  local tmp="$STATE_FILE.tmp.$$"
+  local tmp="$STATE_FILE.tmp.$$" p
   if [ -f "$STATE_FILE" ]; then
-    awk -F'\t' -v s="$1" -v g="$2" '!($1==s && $2==g)' "$STATE_FILE" > "$tmp"
+    awk -F'\t' -v s="$system" -v g="$game" '!($1==s && $2==g)' "$STATE_FILE" > "$tmp"
   else
     : > "$tmp"
   fi
-  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$tmp"
+  for p in "$@"; do
+    printf '%s\t%s\t%s\t%s\n' "$system" "$game" "$p" "$hash" >> "$tmp"
+  done
   mv "$tmp" "$STATE_FILE"
 }
 
@@ -159,11 +257,14 @@ is_quiet() {
   [ "$age" -ge "$QUIET_SECONDS" ]
 }
 
+# Snapshot a file about to be overwritten. Returns non-zero if the snapshot did
+# not happen, and the caller must treat that as a reason not to overwrite: the
+# whole value of this copy is that it exists before the destination is lost, so
+# proceeding without it trades a recoverable mistake for an unrecoverable one.
 backup() {
   [ -n "$APPLY" ] || return 0
   local dest="$BACKUP_DIR/$STAMP/$2"
-  mkdir -p "$(dirname "$dest")"
-  cp -a "$1" "$dest"
+  mkdir -p "$(dirname "$dest")" && cp -a "$1" "$dest"
 }
 
 # Copy preserving mtime, but only after stashing whatever is being replaced.
@@ -183,7 +284,12 @@ transfer() {
     log "  WOULD COPY  $label"
     return 0
   fi
-  [ -e "$dst" ] && backup "$dst" "$(basename "$dst")"
+  # No snapshot, no overwrite. The bytes at $dst are about to stop existing, and
+  # this is the only copy of them anyone gets to reach for afterwards.
+  if [ -e "$dst" ] && ! backup "$dst" "$(basename "$dst")"; then
+    log "  FAILED      $label (could not back up the file being replaced -- nothing written)"
+    return 1
+  fi
   mkdir -p "$(dirname "$dst")"
 
   local tmp
@@ -201,6 +307,23 @@ transfer() {
   log "  COPIED      $label"
 }
 
+# What to do about a game where at least one transfer failed.
+#
+# state_put_all must NOT run. Recording the winner's hash for participants that
+# never received it is how a half-finished fan-out becomes silent data loss: the
+# participant that missed the copy is then the only one disagreeing with its own
+# record, so the NEXT run reads it as the one that moved and propagates its
+# stale bytes back over everybody, destroying the progress that just won.
+#
+# Leaving the record alone instead means the next run sees the same evidence
+# this one did, minus whatever succeeded -- usually a conflict it will refuse to
+# resolve, which is loud and harmless, and exactly the outcome to want here.
+record_nothing() { # game
+  log "  UNRECORDED  $1 (a copy failed, so the winner's hash was NOT written)"
+  log "              the next run re-decides from the same records this one read"
+  failed=$((failed+1))
+}
+
 # --- preflight --------------------------------------------------------------
 
 # Never let two runs overlap. A cron tick firing while a previous run is still
@@ -212,10 +335,57 @@ if ! flock -n 9; then
   exit 0
 fi
 
-for d in "$MANIC_ROOT" "$RETRO_ROOT"; do
-  [ -d "$d" ] || { echo "ERROR: missing folder: $d" >&2; exit 1; }
-done
+# Made before the mapping walk below, so that walk's warnings can reach the log
+# file and not just the terminal output a cron job discards.
 [ -n "$APPLY" ] && mkdir -p "$WORK_DIR" "$BACKUP_DIR" "$CONFLICT_DIR"
+
+# Only the participants that actually appear in MAPPINGS need to exist. A
+# declared-but-unused participant is not an error -- that is how a new one gets
+# staged before its row is added.
+#
+# The two ways a row can fail here are deliberately NOT the same severity:
+#
+#   undeclared participant   a config error. The name resolves to nothing, so
+#                            nothing about the run can be trusted. Stop.
+#   folder does not exist    a staging state, and a routine one -- the MiSTer's
+#                            saves folder did not exist for days after its row
+#                            was written. Aborting the whole run there would
+#                            stop bridging every OTHER row too, so a healthy
+#                            GBA sync would quietly die while the ten-minute
+#                            cron mailed a failure forever. Skip that row only.
+ACTIVE_MAPPINGS=()
+for row in "${MAPPINGS[@]}"; do
+  IFS='|' read -r -a _fields <<< "$row"
+  _missing=""
+  for spec in "${_fields[@]:1}"; do
+    p="${spec%%:*}"
+    d="$(participant_root "$p")" || { echo "ERROR: mapping names an undeclared participant: $p" >&2; exit 1; }
+    [ -d "$d" ] || _missing="$_missing $p ($d)"
+  done
+  if [ -n "$_missing" ]; then
+    log "WARNING: skipping mapping row '${_fields[0]}' -- no such folder:$_missing"
+    continue
+  fi
+  ACTIVE_MAPPINGS+=("$row")
+done
+unset _fields _missing
+
+# --seed can only break a tie on a row that names it. Naming a participant no
+# row mentions is almost always a typo or a half-finished MAPPINGS edit, and it
+# used to produce a misleading conflict message instead of an explanation. It
+# harms nothing on its own, so it warns rather than stopping the run.
+if [ -n "$SEED" ]; then
+  seed_on_a_row=""
+  for row in "${MAPPINGS[@]}"; do
+    IFS='|' read -r -a _fields <<< "$row"
+    for spec in "${_fields[@]:1}"; do
+      [ "${spec%%:*}" = "$SEED" ] && { seed_on_a_row=1; break 2; }
+    done
+  done
+  unset _fields
+  [ -n "$seed_on_a_row" ] || \
+    log "WARNING: --seed=$SEED names a participant that appears in no mapping row -- it can break no ties"
+fi
 
 if [ -n "$ST_URL" ] && [ -n "$ST_KEY" ] && [ -n "$ST_FOLDERS" ]; then
   for f in $ST_FOLDERS; do
@@ -235,76 +405,205 @@ fi
 
 # --- main -------------------------------------------------------------------
 
-for row in "${MAPPINGS[@]}"; do
-  IFS='|' read -r system m_dir m_ext r_dir r_ext <<< "$row"
-  manic="$MANIC_ROOT/$m_dir"
-  retro="$RETRO_ROOT/$r_dir"
-  echo "[$system]  $manic  <->  $retro"
+for row in ${ACTIVE_MAPPINGS+"${ACTIVE_MAPPINGS[@]}"}; do
+  IFS='|' read -r -a fields <<< "$row"
+  system="${fields[0]}"
+  specs=("${fields[@]:1}")
 
-  # Union of game basenames present on either side.
+  # Resolve each participant's directory and extension once per system.
+  names=(); dirs=(); exts=()
+  for spec in "${specs[@]}"; do
+    IFS=':' read -r p_name p_sub p_ext <<< "$spec"
+    names+=("$p_name")
+    dirs+=("$(participant_root "$p_name")/$p_sub")
+    exts+=("$p_ext")
+  done
+
+  printf '[%s]' "$system"
+  for i in "${!names[@]}"; do printf '  %s=%s' "${names[$i]}" "${dirs[$i]}"; done
+  printf '\n'
+
+  # Union of game basenames across every participant.
   games=$(
-    { [ -d "$manic" ] && find "$manic" -maxdepth 1 -type f -name "*.$m_ext" -printf '%f\n' | sed "s/\.$m_ext\$//"
-      [ -d "$retro" ] && find "$retro" -maxdepth 1 -type f -name "*.$r_ext" -printf '%f\n' | sed "s/\.$r_ext\$//"
-    } 2>/dev/null | sort -u
+    for i in "${!names[@]}"; do
+      [ -d "${dirs[$i]}" ] && find "${dirs[$i]}" -maxdepth 1 -type f -name "*.${exts[$i]}" \
+        -printf '%f\n' | sed "s/\.${exts[$i]}\$//"
+    done 2>/dev/null | sort -u
   )
-  [ -z "$games" ] && { echo "  (no saves on either side)"; continue; }
+  [ -z "$games" ] && { echo "  (no saves on any participant)"; continue; }
 
   while IFS= read -r game; do
     [ -n "$game" ] || continue
-    mf="$manic/$game.$m_ext"
-    rf="$retro/$game.$r_ext"
-    [ -e "$mf" ] || mf=""
-    [ -e "$rf" ] || rf=""
 
-    # Never read a file Syncthing may still be writing.
-    for f in "$mf" "$rf"; do
-      if [ -n "$f" ] && ! is_quiet "$f"; then
-        log "  BUSY        $game (modified <${QUIET_SECONDS}s ago, skipping)"
-        skipped=$((skipped+1)); continue 2
+    # Cleared here, not at the end: several branches below `continue`, so there
+    # is no single end-of-iteration point to clear them at. `declare -A x=()`
+    # does empty an existing array on this bash, and the `=()` is what makes
+    # these two BOUND rather than merely declared -- an unbound array would make
+    # a later ${#pfile[@]} a fatal error under `set -u`. The `unset` in front is
+    # belt-and-braces, not a requirement.
+    unset pfile phash; declare -A pfile=() phash=()
+    present=(); absent=(); busy=""
+    for i in "${!names[@]}"; do
+      f="${dirs[$i]}/$game.${exts[$i]}"
+      if [ -e "$f" ]; then
+        # Never read a file Syncthing may still be writing.
+        if ! is_quiet "$f"; then busy="${names[$i]}"; break; fi
+        pfile["${names[$i]}"]="$f"
+        phash["${names[$i]}"]=$(hash_of "$f")
+        present+=("${names[$i]}")
+      else
+        pfile["${names[$i]}"]="$f"
+        absent+=("${names[$i]}")
+      fi
+    done
+    if [ -n "$busy" ]; then
+      log "  BUSY        $game (${busy} modified <${QUIET_SECONDS}s ago, skipping)"
+      skipped=$((skipped+1)); continue
+    fi
+
+    # Cannot happen -- the game name came from the union of files that exist --
+    # but ${present[0]} under `set -u` would be a crash rather than a message.
+    if [ ${#present[@]} -eq 0 ]; then
+      log "  SKIPPED     $game (no readable copy on any participant)"
+      skipped=$((skipped+1)); continue
+    fi
+
+    # Do every participant present already agree? Then the only question left
+    # is whether anyone is missing the file.
+    agreed=1; first="${present[0]}"
+    for p in "${present[@]}"; do
+      [ "${phash[$p]}" = "${phash[$first]}" ] || { agreed=0; break; }
+    done
+
+    if [ "$agreed" = 1 ]; then
+      if [ ${#absent[@]} -eq 0 ]; then
+        state_put_all "$system" "$game" "${phash[$first]}" "${names[@]}"
+        skipped=$((skipped+1)); continue
+      fi
+      # any_copied is tracked separately from all_copied because a partial
+      # fan-out still WROTE files, and a summary reading "copied: 0" after files
+      # changed on disk is a summary that lies about what the run did.
+      all_copied=1; any_copied=0
+      for p in "${absent[@]}"; do
+        if transfer "${pfile[$first]}" "${pfile[$p]}" "$game  $first -> $p (new)"; then
+          any_copied=1
+        else
+          all_copied=0
+        fi
+      done
+      if [ "$all_copied" = 1 ]; then
+        state_put_all "$system" "$game" "${phash[$first]}" "${names[@]}"
+        copied=$((copied+1))
+      else
+        [ "$any_copied" = 1 ] && copied=$((copied+1))
+        record_nothing "$game"
+      fi
+      continue
+    fi
+
+    # Participants disagree. The record decides who moved -- never the mtime,
+    # because Synctrain leaves the phone's copy hours stale while it still
+    # holds real progress.
+    #
+    # Three outcomes per participant, and the third is the one that matters:
+    # "no record" is NOT evidence of movement. A participant that has never been
+    # bridged is byte-for-byte indistinguishable from one holding new progress,
+    # so treating the two the same lets a newly-added participant's ancient copy
+    # win and overwrite everyone.
+    #
+    # `matched` -- present, has a record, and agrees with it -- is collected
+    # rather than left implied, because when a seed has to be refused the reason
+    # is precisely WHICH participants have records, and the message has to name
+    # them.
+    changed=(); unknown=(); matched=()
+    for p in "${present[@]}"; do
+      last=$(state_get "$system" "$game" "$p" "${#names[@]}")
+      if [ -z "$last" ]; then
+        unknown+=("$p")
+      elif [ "${phash[$p]}" != "$last" ]; then
+        changed+=("$p")
+      else
+        matched+=("$p")
       fi
     done
 
-    mh=""; rh=""
-    [ -n "$mf" ] && mh=$(hash_of "$mf")
-    [ -n "$rf" ] && rh=$(hash_of "$rf")
-    last=$(state_get "$system" "$game")
-
-    # Only one side has it: unambiguous, copy it across.
-    if [ -n "$mh" ] && [ -z "$rh" ]; then
-      transfer "$mf" "$retro/$game.$r_ext" "$game  manic -> retroarch (new)"
-      state_put "$system" "$game" "$mh"; copied=$((copied+1)); continue
-    fi
-    if [ -z "$mh" ] && [ -n "$rh" ]; then
-      transfer "$rf" "$manic/$game.$m_ext" "$game  retroarch -> manic (new)"
-      state_put "$system" "$game" "$rh"; copied=$((copied+1)); continue
-    fi
-
-    [ "$mh" = "$rh" ] && { state_put "$system" "$game" "$mh"; skipped=$((skipped+1)); continue; }
-
-    # Both sides present and differing. The record decides who moved.
-    m_changed=1; r_changed=1
-    if [ -n "$last" ]; then
-      [ "$mh" = "$last" ] && m_changed=0
-      [ "$rh" = "$last" ] && r_changed=0
-    elif [ -n "$SEED" ]; then
-      log "  SEEDING     $game (no record; --seed=$SEED)"
-      if [ "$SEED" = "manic" ]; then m_changed=1; r_changed=0; else m_changed=0; r_changed=1; fi
-    fi
-
-    if [ "$m_changed" = 1 ] && [ "$r_changed" = 0 ]; then
-      transfer "$mf" "$rf" "$game  manic -> retroarch"
-      state_put "$system" "$game" "$mh"; copied=$((copied+1))
-    elif [ "$m_changed" = 0 ] && [ "$r_changed" = 1 ]; then
-      transfer "$rf" "$mf" "$game  retroarch -> manic"
-      state_put "$system" "$game" "$rh"; copied=$((copied+1))
+    winner=""; why=""; why_more=""
+    if [ ${#changed[@]} -gt 0 ] && [ ${#unknown[@]} -gt 0 ]; then
+      # Mixed evidence. --seed deliberately does not rescue this: it exists to
+      # break a first-run tie, and once something has demonstrably moved this is
+      # not a first run for that game. Overriding here would let a stale
+      # newcomer beat progress the record can actually prove.
+      why="${changed[*]} moved since the last bridge, but there is no record at all for ${unknown[*]}"
+    elif [ ${#unknown[@]} -gt 0 ] && [ ${#unknown[@]} -ne ${#present[@]} ]; then
+      # Some participant is unknown, but NOT all of them: the rest hold records
+      # and agree with them, which is positive proof those participants did not
+      # move. A seed says "no one can be identified, so use this one"; here
+      # someone CAN be, and a record beats being told. Honouring the seed here
+      # is the exact shape of the data loss this script exists to avoid -- the
+      # newcomer's ancient copy fanned out over saves proven current, silently
+      # and on exit 0.
+      why="no record exists for ${unknown[*]}, but ${matched[*]} agree with their own records, which proves they did not move"
+      for p in "${unknown[@]}"; do
+        [ "$p" = "$SEED" ] && \
+          why_more="--seed=$SEED was NOT honoured: a seed settles a first run only, and this is not one -- ${matched[*]} already have records"
+      done
+    elif [ ${#unknown[@]} -gt 0 ]; then
+      # Every participant present is unknown, so nothing is on record to be
+      # overridden. This is the genuine first run --seed is for.
+      for p in "${unknown[@]}"; do
+        [ "$p" = "$SEED" ] && winner="$SEED"
+      done
+      if [ -n "$winner" ]; then
+        log "  SEEDING     $game (no record for any of ${unknown[*]}; --seed=$SEED)"
+      else
+        why="no record exists for ${unknown[*]}, and --seed names none of them"
+      fi
+    elif [ ${#changed[@]} -eq 1 ]; then
+      winner="${changed[0]}"
+    elif [ ${#changed[@]} -eq 0 ]; then
+      why="every participant matches its own record, so no participant could be identified as the one that moved"
     else
-      # Both moved since the last bridge, or a first run with no seed given.
+      why="${#changed[@]} participants changed since the last bridge (${changed[*]})"
+    fi
+
+    if [ -n "$winner" ]; then
+      all_copied=1; any_copied=0
+      for p in "${names[@]}"; do
+        [ "$p" = "$winner" ] && continue
+        if transfer "${pfile[$winner]}" "${pfile[$p]}" "$game  $winner -> $p"; then
+          any_copied=1
+        else
+          all_copied=0
+        fi
+      done
+      if [ "$all_copied" = 1 ]; then
+        state_put_all "$system" "$game" "${phash[$winner]}" "${names[@]}"
+        copied=$((copied+1))
+      else
+        [ "$any_copied" = 1 ] && copied=$((copied+1))
+        record_nothing "$game"
+      fi
+    else
       # Guessing here is how save data gets destroyed, so it stops.
-      log "  CONFLICT    $game  (both sides changed -- copied neither)"
+      log "  CONFLICT    $game  ($why -- copied none)"
+      [ -n "$why_more" ] && log "              $why_more"
       if [ -n "$APPLY" ]; then
         d="$CONFLICT_DIR/$STAMP/$system/$game"; mkdir -p "$d"
-        cp -a "$mf" "$d/manic.$m_ext"; cp -a "$rf" "$d/retroarch.$r_ext"
-        log "              both copies stashed in $d"
+        stash_failed=""
+        for i in "${!names[@]}"; do
+          p="${names[$i]}"
+          [ -e "${pfile[$p]}" ] || continue
+          cp -a "${pfile[$p]}" "$d/$p.${exts[$i]}" || stash_failed="$stash_failed $p"
+        done
+        # A conflict is the worst possible moment to be told the snapshot is
+        # safe when it is not -- it is the copy a human reaches for to sort the
+        # conflict out by hand.
+        if [ -n "$stash_failed" ]; then
+          log "              WARNING: could NOT stash$stash_failed into $d"
+          log "              (the originals are untouched, but there is no snapshot of them)"
+        else
+          log "              every copy stashed in $d"
+        fi
       fi
       conflicts=$((conflicts+1))
     fi
@@ -312,7 +611,10 @@ for row in "${MAPPINGS[@]}"; do
 done
 
 echo
-echo "copied: $copied   unchanged/skipped: $skipped   conflicts: $conflicts"
+echo "copied: $copied   unchanged/skipped: $skipped   conflicts: $conflicts   failed: $failed"
 [ -z "$APPLY" ] && echo "(dry run -- re-run with --apply to make these changes)"
+# Conflicts keep precedence over failures: a conflict is a decision this script
+# refused to make and a human has to, which outranks a copy that can be retried.
 [ "$conflicts" -gt 0 ] && exit 2
+[ "$failed" -gt 0 ] && exit 1
 exit 0
