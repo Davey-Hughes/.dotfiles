@@ -236,9 +236,16 @@ git_settings() {
     # --global: .gitattributes only points at it from inside this repo. Filters
     # are not carried by a clone, so without this a fresh machine silently
     # commits the wallpaper paths again -- the exact leak the filter exists to
-    # stop. Keep the sed in sync with .gitattributes' comment.
-    git -C "$DOTFDIR" config filter.kde-wallpaper.clean "sed -E '/^(Image|SlidePaths)=/d'"
-    git -C "$DOTFDIR" config filter.kde-wallpaper.smudge cat
+    # stop.
+    #
+    # BOTH halves, always. The smudge is not a formality here -- it is what puts
+    # the stripped Image=/SlidePaths= back into the working copy. Configure the
+    # clean alone (as this did until 2026-08-23) and git deletes the live
+    # wallpaper on the next checkout, silently: a file whose only difference is
+    # stripped before the comparison reads as unchanged, so nothing warns and
+    # nothing conflicts. See the header of scripts/kde-wallpaper-filter.sh.
+    git -C "$DOTFDIR" config filter.kde-wallpaper.clean  "'$DOTFDIR/scripts/kde-wallpaper-filter.sh' clean"
+    git -C "$DOTFDIR" config filter.kde-wallpaper.smudge "'$DOTFDIR/scripts/kde-wallpaper-filter.sh' smudge"
   else
     echo "git not installed" 2>&1
   fi

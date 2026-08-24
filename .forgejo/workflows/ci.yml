@@ -145,6 +145,10 @@ jobs:
       # the only failure here that a later commit cannot undo.
       - name: Nothing sensitive is tracked
         run: ./tests/test-tracked-files.sh
+      # Paired with the check above: that one proves nothing leaked INTO the
+      # blob, this one proves nothing is lost FROM the working copy.
+      - name: The wallpaper filter round-trips
+        run: ./tests/test-kde-wallpaper-filter.sh
       - name: Documentation references resolve
         run: ./tests/test-docs.sh
       - name: The three XDG env files agree

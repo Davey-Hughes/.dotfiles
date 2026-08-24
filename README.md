@@ -77,6 +77,7 @@ build here, so the checks cover the three ways a dotfiles repo actually breaks:
 | --- | --- |
 | `config/.claude/hooks/test_rm_guard.py` | The `rm` guard hook approving something it should have asked about. Runs on every push because its regressions are measured in deleted files. |
 | `tests/test-tracked-files.sh` | Anything tracked that must not be. `config/.claude/` is a live tool directory — sessions, transcripts and OAuth state sit untracked inside a tracked parent, held back by a `.gitignore` allowlist. Also verifies the `kde-wallpaper` clean filter stripped the local wallpaper paths. |
+| `tests/test-kde-wallpaper-filter.sh` | The Plasma wallpaper filter losing data in either direction — a local path reaching the public blob, or a checkout wiping the live wallpaper out of the working copy. The second half is a regression test: `smudge = cat` did exactly that on 2026-08-22, mid-rebase, and Plasma came back on defaults. |
 | `tests/test-syntax.sh` | A file that will not parse in the shell or program that reads it — `bash -n`, `zsh -n`, `fish --no-execute`, JSON/TOML/YAML, plus `shellcheck` at warning level on the scripts. |
 | `tests/test-xdg-sync.sh` | The three XDG env files drifting apart, which silently gives one shell a different environment than the others. |
 | `tests/test-docs.sh` | A path this README names that no longer exists. |
