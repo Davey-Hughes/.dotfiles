@@ -99,6 +99,8 @@ must_ignore=(
   "config/.gemini/antigravity-cli/sessions/s.json"
   "config/fish/fish_variables"
   "config/git/config"
+  "os/arch/config/ksmserverrc"
+  "os/endeavour/config/ksmserverrc"
   ".claude/settings.local.json"
 )
 section "tripwire: .gitignore still covers the sensitive paths"
