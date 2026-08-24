@@ -4,6 +4,12 @@ Seen=true
 [Applications][firefox-developer-edition]
 Seen=true
 
+[Applications][google-chrome]
+Seen=true
+
+[Applications][org.qbittorrent.qBittorrent]
+Seen=true
+
 [Applications][slack]
 Seen=true
 

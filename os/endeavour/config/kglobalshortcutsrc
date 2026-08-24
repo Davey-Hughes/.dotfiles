@@ -305,5 +305,11 @@ switch to previous activity=none,none,Switch to Previous Activity
 toggle do not disturb=none,none,Toggle do not disturb
 
 [services][org.kde.spectacle.desktop]
+CurrentMonitorScreenShot=none
+OpenWithoutScreenshot=none
 RectangularRegionScreenShot=Meta+Shift+S
 _launch=Print
+
+[slack]
+72223E0C7D5F8E460953E35C5BECE474-Ctrl+Shift+Space=Ctrl+Shift+Space,Ctrl+Shift+Space,Slack shortcut: Ctrl+Shift+Space
+_k_friendly_name=Slack
