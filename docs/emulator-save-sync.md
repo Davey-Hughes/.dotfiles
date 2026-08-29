@@ -235,6 +235,47 @@ its own:
    `Gambatte` need three participants and three rows, or a decision about which
    directory wins.
 
+## melonDS is wired twice, in two different config formats
+
+melonDS exposes `SaveFilePath` and `SavestatePath`, so it is a configuration
+case rather than a symlink one. Both are *directories*, and the UI hint is
+literally "Leave a path blank to use the current ROM's path" — blank being the
+default is why the first Black 2 save landed next to the ROM on the NFS share
+rather than in the bundle. melonDS writes `<path>/<ROM base name>.sav`, and for
+a zipped ROM that base name comes from the **archive**, not the inner `.nds`.
+
+The two machines run different builds, and the config format changed between
+them:
+
+| | Build | Config file | Syntax |
+|---|---|---|---|
+| Davey-Endeavor | AUR `melonds-git` 1.1.r75 | `melonDS.toml` | `Key = "value"` under `[Instance0]` |
+| Deck | flatpak `net.kuribo64.melonDS` 1.1 stable | `melonDS.ini` | flat `Key=value`, no sections |
+
+`os/steamdeck/emulator-saves.sh` writes the INI form. That is right for the
+Deck's stable flatpak and wrong for anything past 1.1, and the failure mode is
+the quiet kind: **the block is guarded by `[ -f "$MD_INI" ]`, so a build that
+writes `melonDS.toml` instead does not error — melonDS is skipped with no output
+and its saves stop syncing.** If that flatpak ever updates past 1.1, teach the
+script both filenames rather than swapping one for the other; the Deck and the
+desktop will not move at the same time.
+
+The keys are per-instance (`[Instance0]`, `[Instance1]`, …), so a second melonDS
+instance needs its own pair. melonDS also rewrites its whole config on exit, so
+edit it only while melonDS is closed or the change is lost.
+
+**Davey-Endeavor's melonDS is wired by hand and nothing reproduces it.** There
+is no `os/arch` counterpart to `emulator-saves.sh` — melonDS was installed on
+the desktop directly rather than by a script, so the two path keys in
+`~/.config/melonDS/melonDS.toml` are the only record that the wiring exists.
+Rebuild that machine and the saves silently go back to the ROM directory.
+
+One coincidence worth keeping deliberately: the Deck reads NDS ROMs from
+`/run/media/deck/SD1TB/Emulation/roms/nds` and the desktop from the NFS share,
+but the zip filenames are identical, so both ends derive the same `.sav` name
+and land on the same file. Renaming a ROM on one side only would break the sync
+with nothing to notice.
+
 ## Sorting RetroArch saves by core, not by content directory
 
 Flat, every `.srm` is keyed only on ROM filename, so the same game on two
