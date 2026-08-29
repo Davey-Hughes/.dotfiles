@@ -36,13 +36,60 @@ sudo pacman -S --needed --noconfirm stow
 
 # --- paru: for the /opt packages below that chaotic-aur does not carry ------
 # Note this is `pacman -S`, not a source build: paru is in SteamOS's holo repo.
-sudo pacman -S --needed --noconfirm paru
+#
+# fakeroot and debugedit are makepkg's problem, not a compiler's. Even a -bin
+# package that only repackages a prebuilt tarball still runs through makepkg,
+# and makepkg's check_software() refuses to start without them -- so leaving
+# them out breaks eden-nightly-bin below even though nothing is compiled.
+#
+# debugedit is the non-obvious one. /etc/makepkg.conf ships
+# OPTIONS=(strip ... debug lto), and the check is gated on `debug` ALONE:
+#
+#     if check_option "debug" "y"; then ... type -p debugedit ... fi
+#
+# so a PKGBUILD setting options=(!strip) -- as eden-nightly-bin does -- does
+# NOT skip it. The binary is then never actually invoked, because !strip means
+# strip.sh (its only caller) never runs. We install a tool purely to satisfy a
+# check. 113 KiB; not worth fighting.
+#
+# base-devel would supply both, but pulling it in just for this would put a
+# compiler toolchain on a 5 GiB rootfs; the toolchain lives in the distrobox
+# instead (container-packages.conf). These two are the only pieces the host
+# genuinely needs.
+#
+# Both were fixed by hand once before and never written down -- pacman.log's
+# first line, 2025-10-02, is `pacman -S --noconfirm fakeroot` -- so the SteamOS
+# 3.8 re-image resurrected the same failure. Hence this comment.
+sudo pacman -S --needed --noconfirm paru fakeroot debugedit
 
 # --- installs into /opt (offloaded to /home), so effectively free ----------
+#
+# THE RE-IMAGE PARADOX: /opt surviving is exactly what breaks these installs.
+#
+# SteamOS bind-mounts /opt to /home/.steamos/offload/opt, so files here outlive
+# the A/B re-image -- which is the whole reason these two packages are allowed
+# on the host at all. But /var/lib/pacman/local does NOT survive it. So after
+# every SteamOS update the files are still on disk while the database has
+# forgotten them, pacman sees unowned files, and the transaction aborts:
+#
+#     error: failed to commit transaction (conflicting files)
+#     eden-nightly-bin: /opt/eden-nightly-bin/... exists in filesystem
+#
+# This hits BOTH packages below, every update, forever. It is not an
+# eden-specific problem and it is not something the AUR helper can fix.
+#
+# --overwrite, scoped to each package's own /opt subtree, re-adopts the orphans.
+# Keep the globs narrow: a wider one is a licence to clobber files that another
+# package legitimately owns. (pacman matches these without FNM_PATHNAME, so `*`
+# spans `/` and covers nested files.)
+#
+# Deleting the directories first would also work, but an unattended `rm -rf` as
+# root is a worse thing to keep in a bootstrap script than a scoped --overwrite.
+#
 # claude-code comes straight from chaotic-aur, so plain pacman handles it.
-sudo pacman -S --needed --noconfirm claude-code
+sudo pacman -S --needed --noconfirm --overwrite '/opt/claude-code/*' claude-code
 
 # eden-nightly-bin is AUR-only, so it needs paru. It is a -bin package: paru
-# repackages a prebuilt tarball rather than compiling, which is why no build
-# toolchain is installed on the host.
-paru -S --needed --noconfirm eden-nightly-bin
+# repackages a prebuilt tarball rather than compiling, which is why no compiler
+# toolchain is installed on the host -- only fakeroot and debugedit, above.
+paru -S --needed --noconfirm --overwrite '/opt/eden-nightly-bin/*' eden-nightly-bin
