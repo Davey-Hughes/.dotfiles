@@ -32,3 +32,9 @@ echo
 echo "Not run here, because EmuDeck is not managed by these scripts:"
 echo "  ./emulator-saves.sh   run once EmuDeck and RetroArch exist, to point"
 echo "                        their save data somewhere Syncthing can read."
+echo
+echo "Not run here, because it needs Steam CLOSED:"
+echo "  ./steam-shortcuts.py  puts the emulators and the ports back in Steam,"
+echo "                        with their artwork. Steam overwrites its own"
+echo "                        shortcut file on exit, so this refuses to run"
+echo "                        while it is up. Do it last."
