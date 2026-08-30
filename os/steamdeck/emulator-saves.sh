@@ -186,13 +186,12 @@ fi
 MD_INI="$VAR/net.kuribo64.melonDS/config/melonDS/melonDS.ini"
 if [ -f "$MD_INI" ]; then
   echo "melonds:"
-  mkdir -p "$SYNC_DIR"/melonds/states
-
-  # Savestates stay in the bundle -- they are tied to the exact build and are
-  # deliberately not shared with RetroArch.
-  old=$(sed -n "s|^SavestatePath=||p" "$MD_INI" | head -1)
-  [ -n "$old" ] && [ -d "$old" ] && cp -an "$old/." "$SYNC_DIR/melonds/states/" 2>/dev/null
-  set_kv "$MD_INI" "SavestatePath" "$SYNC_DIR/melonds/states" "="
+  # Savestates are deliberately NOT synced: they are tied to the exact melonDS
+  # build and will not load across the Deck's flatpak and a native melonds-git.
+  # Point them at a local directory rather than leaving the key blank, which
+  # would write them beside the ROM on the shared NFS library.
+  mkdir -p "$HOME/.local/share/melonDS/states"
+  set_kv "$MD_INI" "SavestatePath" "$HOME/.local/share/melonDS/states" "="
 
   # SRAM saves ARE shared with RetroArch's melonDS DS core: both write the same
   # raw NDS cart dump and differ only in extension (.sav vs .srm). melonDS reads
