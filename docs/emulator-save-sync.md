@@ -268,13 +268,68 @@ edit it only while melonDS is closed or the change is lost.
 is no `os/arch` counterpart to `emulator-saves.sh` — melonDS was installed on
 the desktop directly rather than by a script, so the two path keys in
 `~/.config/melonDS/melonDS.toml` are the only record that the wiring exists.
-Rebuild that machine and the saves silently go back to the ROM directory.
+Rebuild that machine and the saves silently go back to the ROM directory. The
+same now applies to `~/.local/bin/melonds-savelinks.sh` described below: it
+lives outside the repo on both machines and is not restored by a bootstrap.
 
 One coincidence worth keeping deliberately: the Deck reads NDS ROMs from
 `/run/media/deck/SD1TB/Emulation/roms/nds` and the desktop from the NFS share,
 but the zip filenames are identical, so both ends derive the same `.sav` name
 and land on the same file. Renaming a ROM on one side only would break the sync
 with nothing to notice.
+
+## Sharing SRAM saves with RetroArch's melonDS DS core
+
+Standalone melonDS and RetroArch's melonDS DS core write **the same raw NDS cart
+save**: no header, no footer, same length. The only thing that differs is the
+extension — RetroArch names it `<base>.srm`, melonDS names it `<base>.sav` — and
+neither program lets you change that. So one save file can serve both, but only
+through a symlink.
+
+`SaveFilePath` on both machines now points at `~/.local/share/melonds-savelinks`,
+a directory of symlinks `<base>.sav` → `<bundle>/retroarch/saves/melonDS DS/<base>.srm`.
+The `.srm` is the one real file and the only thing Syncthing carries; melonDS
+reaches it through the link. `~/.local/bin/melonds-savelinks.sh` generates the
+links from the machine's NDS ROM directory with `ln -sfn`, so it is idempotent —
+re-run it after adding ROMs.
+
+**The link directory must live outside the bundle.** Syncthing does not sync
+symlinks: put them inside a synced folder and the scan reads the swap as a
+deletion and propagates it. This is the same rule that governs the `adopt`
+helper, applied in the opposite direction — there the real data moves *in* and a
+symlink is left behind outside; here the links stay outside and point *in*.
+
+Both programs write the save in place rather than via temp-file-plus-rename, so
+the symlink survives being written through. That is what makes this work at all,
+and it is worth re-checking after either one updates: if a link ever comes back
+as a regular file, that program started replacing the path instead of truncating
+it and the saves have silently unshared.
+
+**Seed the `.srm` before repointing `SaveFilePath`, not after.** The core creates
+`<base>.srm` at full size and zero-filled the first time a game is loaded, even
+if the game was never saved. Repoint melonDS at a link targeting one of those and
+it reads a blank save and looks like it lost your progress — the real data is
+still sitting in the old directory, untouched, but nothing says so. Note also
+that erased NDS flash is `0xFF`, not `0x00`, so an all-zero `.srm` is not the
+same as no save at all and a game may read it as corrupt rather than absent.
+
+Two things are deliberately *not* shared. Savestates stay on
+`<bundle>/melonds/states`: they are tied to an exact build and will not load
+across the Deck's flatpak and the desktop's `melonds-git`. And DSi-mode saves
+live in NAND rather than in the cart save, so they never enter this scheme.
+
+One ROM does not fit. `The Legend of Zelda - Four Swords Anniversary Edition` is
+a four-file zip whose inner ROM is named `00000000`, so the two programs do not
+derive the same base name from it. It needs a hand-made link if it is ever
+played.
+
+`emulator-saves.sh` used to loop `SaveFilePath` and `SavestatePath` together and
+set both under `$SYNC_DIR/melonds/`. Left that way it would quietly unshare the
+saves on its next run, and its `cp -an "$old/."` would have copied the symlinks
+themselves into the Syncthing folder — `cp -a` implies `-d`. It now manages only
+`SavestatePath` and delegates the save side to `melonds-savelinks.sh`, and if
+that script is missing it warns and leaves `SaveFilePath` alone rather than
+reverting it.
 
 ## Sorting RetroArch saves by core, not by content directory
 

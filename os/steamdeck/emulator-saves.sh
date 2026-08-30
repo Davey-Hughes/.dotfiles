@@ -186,13 +186,28 @@ fi
 MD_INI="$VAR/net.kuribo64.melonDS/config/melonDS/melonDS.ini"
 if [ -f "$MD_INI" ]; then
   echo "melonds:"
-  mkdir -p "$SYNC_DIR"/melonds/{saves,states}
-  for pair in "SaveFilePath:saves" "SavestatePath:states"; do
-    key="${pair%%:*}"; sub="${pair##*:}"
-    old=$(sed -n "s|^$key=||p" "$MD_INI" | head -1)
-    [ -n "$old" ] && [ -d "$old" ] && cp -an "$old/." "$SYNC_DIR/melonds/$sub/" 2>/dev/null
-    set_kv "$MD_INI" "$key" "$SYNC_DIR/melonds/$sub" "="
-  done
+  mkdir -p "$SYNC_DIR"/melonds/states
+
+  # Savestates stay in the bundle -- they are tied to the exact build and are
+  # deliberately not shared with RetroArch.
+  old=$(sed -n "s|^SavestatePath=||p" "$MD_INI" | head -1)
+  [ -n "$old" ] && [ -d "$old" ] && cp -an "$old/." "$SYNC_DIR/melonds/states/" 2>/dev/null
+  set_kv "$MD_INI" "SavestatePath" "$SYNC_DIR/melonds/states" "="
+
+  # SRAM saves ARE shared with RetroArch's melonDS DS core: both write the same
+  # raw NDS cart dump and differ only in extension (.sav vs .srm). melonDS reads
+  # the .srm through a symlink farm, which must stay OUTSIDE $SYNC_DIR --
+  # Syncthing ignores symlinks and reads the swap as a deletion.
+  #
+  # Never point SaveFilePath back at $SYNC_DIR/melonds/saves here. Doing so
+  # silently unshares the saves, and the old `cp -an "$old/."` would copy the
+  # symlinks themselves into the Syncthing folder.
+  if [ -x "$HOME/.local/bin/melonds-savelinks.sh" ]; then
+    "$HOME/.local/bin/melonds-savelinks.sh"
+    set_kv "$MD_INI" "SaveFilePath" "$HOME/.local/share/melonds-savelinks" "="
+  else
+    echo "    WARN: melonds-savelinks.sh missing, leaving SaveFilePath alone" >&2
+  fi
 fi
 
 # --- symlinked emulators ----------------------------------------------------
