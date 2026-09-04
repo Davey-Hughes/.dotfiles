@@ -153,5 +153,10 @@
 	"agentPushNotifEnabled": true,
 	"autoMode": {
 		"environment": []
+	},
+	"attribution": {
+		"commit": "",
+		"pr": "",
+		"sessionUrl": false
 	}
 }
