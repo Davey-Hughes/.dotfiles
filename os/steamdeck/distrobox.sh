@@ -52,6 +52,19 @@ echo "==> Running container-setup.sh inside '$BOX'"
 # Reachable at the same path inside the container because $HOME is shared.
 if ! distrobox enter "$BOX" -- "$SCRIPTDIR/container-setup.sh"; then
   echo "ERROR: container setup failed." >&2
+  # distrobox-init traps EXIT and reduces every failure to a bare "Error: An
+  # error occurred", and the progress display overwrites whatever the failing
+  # command printed. The real message survives only in the container log, since
+  # init does `exec 2>&1` before the first step runs. Print it here rather than
+  # leave the next person to go looking for it.
+  echo "       distrobox hides the real error. Tail of 'podman logs $BOX':" >&2
+  podman logs "$BOX" 2>&1 | tail -n 30 | sed 's/^/       | /' >&2
+  # A container can also go bad permanently -- failing every start, surviving a
+  # reboot -- while its create flags, OCI spec, volumes and rootfs all stay
+  # identical to a container that works. Recreating it clears that, and nothing
+  # in this repo needs editing when it happens.
+  echo "       If the container itself is bad, recreating it fixes it." >&2
+  echo "       Fix: $0 --replace" >&2
   exit 1
 fi
 
