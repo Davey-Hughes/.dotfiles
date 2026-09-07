@@ -90,6 +90,22 @@ if [ -d "$XDG_CONFIG_HOME/.claude" ]; then
 fi
 export ANTIGRAVITY_CONFIG_DIR="${ANTIGRAVITY_CONFIG_DIR:-$XDG_CONFIG_HOME/.gemini/antigravity-cli}"
 
+# android — the SDK, plus the tools' user dir (AVDs, adb keys, caches) that
+# would otherwise sit in ~/Android/Sdk and ~/.android. Set unconditionally,
+# unlike everything above: Arch's android-sdk-cmdline-tools-latest ships a
+# /etc/profile.d snippet exporting ANDROID_HOME=/opt/android-sdk, so a
+# ${VAR:-default} guard would keep that value — and /opt holds only
+# cmdline-tools, none of the platforms, NDKs or system images.
+#
+# ANDROID_USER_HOME is the modern name and the newer tools honour it, but the
+# emulator (37.1.11) still only searches $ANDROID_AVD_HOME, $ANDROID_SDK_HOME
+# and $HOME/.android — hence the two extra variables rather than the one.
+export ANDROID_HOME="$XDG_DATA_HOME/android-sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export ANDROID_USER_HOME="$XDG_DATA_HOME/android"
+export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME"
+export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+
 # --- Non-XDG shell behaviour (kept here so ~/.zshenv sets it before /etc/zshrc) ---
 
 # macOS Terminal.app / zsh: stop it writing per-session restore files to

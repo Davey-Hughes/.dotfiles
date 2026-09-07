@@ -85,3 +85,21 @@ end
 # above: the CLI creates the directory itself when it is missing, so pointing at
 # a not-yet-existing path costs nothing.
 set -q ANTIGRAVITY_CONFIG_DIR; or set -gx ANTIGRAVITY_CONFIG_DIR $XDG_CONFIG_HOME/.gemini/antigravity-cli
+
+# android — the SDK, plus the tools' user dir (AVDs, adb keys, caches) that
+# would otherwise sit in ~/Android/Sdk and ~/.android.
+#
+# Set unconditionally, unlike everything above. Arch's
+# android-sdk-cmdline-tools-latest ships a /etc/profile.d snippet exporting
+# ANDROID_HOME=/opt/android-sdk into the session, so a `set -q` guard would
+# keep that value — and /opt holds only cmdline-tools, none of the platforms,
+# NDKs or system images.
+#
+# ANDROID_USER_HOME is the modern name and the newer tools honour it, but the
+# emulator (37.1.11) still only searches $ANDROID_AVD_HOME, $ANDROID_SDK_HOME
+# and $HOME/.android — hence the two extra variables rather than the one.
+set -gx ANDROID_HOME $XDG_DATA_HOME/android-sdk
+set -gx ANDROID_SDK_ROOT $ANDROID_HOME
+set -gx ANDROID_USER_HOME $XDG_DATA_HOME/android
+set -gx ANDROID_EMULATOR_HOME $ANDROID_USER_HOME
+set -gx ANDROID_AVD_HOME $ANDROID_USER_HOME/avd
