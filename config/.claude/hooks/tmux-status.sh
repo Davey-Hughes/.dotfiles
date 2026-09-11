@@ -16,12 +16,14 @@
 #
 # Never exits non-zero: a PreToolUse hook returning 2 would block the tool call.
 #
-#   tmux-status.sh working|idle|blocked|reset|off   Claude Code hook events
-#   tmux-status.sh subagent +1|-1                   SubagentStart / SubagentStop
-#   tmux-status.sh shell-status <exit-code>         fish_postexec
-#   tmux-status.sh next                             jump to a session wanting you
-#   tmux-status.sh demo                             walk every state
-#   tmux-status.sh --tick                           internal: the spinner loop
+#   tmux-status.sh working|idle|reset|off     Claude Code hook events
+#   tmux-status.sh blocked                    Notification (dialog types only)
+#   tmux-status.sh failed                     StopFailure
+#   tmux-status.sh subagent +1|-1             SubagentStart / SubagentStop
+#   tmux-status.sh shell-status <exit-code>   fish_postexec
+#   tmux-status.sh next                       jump to a session wanting you
+#   tmux-status.sh demo                       walk every state
+#   tmux-status.sh --tick                     internal: the spinner loop
 
 set -uo pipefail
 
@@ -90,6 +92,16 @@ clear_pane() {
 # ~/.tmux.conf reads these options through #{E:...} to expand it.
 styled() {
     printf '#{?#{&&:#{window_active},#{session_attached}},,#[fg=%s]}%s' "$1" "$2"
+}
+
+# Paint "wants you": red, no motion. Same glyph as idle, so the tab bar stays
+# visually uniform -- the colour and the absence of motion are what separate
+# "wants you" from "nothing running".
+mark_blocked() {
+    set_opt "$1" @cc_state blocked || return 1
+    set_opt "$1" @cc_colour ''
+    set_opt "$1" @cc_icon "$(styled "$COL_BLOCK" "$ICON_IDLE")"
+    redraw
 }
 
 # Returns 0 when it spawned a ticker, 1 when one was already live.
@@ -287,13 +299,30 @@ case "${1:-}" in
         refresh_state "$PANE"
         ;;
     blocked)
-        # Notification -- set directly; the next working/idle event supersedes it.
-        # Same glyph as idle, so the tab bar stays visually uniform; red and the
-        # absence of motion are what separate "wants you" from "nothing running".
-        set_opt "$PANE" @cc_state blocked || exit 0
-        set_opt "$PANE" @cc_colour ''
-        set_opt "$PANE" @cc_icon "$(styled "$COL_BLOCK" "$ICON_IDLE")"
-        redraw
+        # Notification, narrowed in settings.json to the types where a dialog is
+        # actually on screen. Notification fires for twelve things, most of which
+        # are informational -- auth_success, agent_completed, the quota
+        # auto-resume trio -- and elicitation_response/_complete fire the instant
+        # you answer a prompt, so an unfiltered hook reddens the tab exactly when
+        # you have just unblocked it.
+        #
+        # @cc_main is deliberately left alone: the turn is still running, and the
+        # next working/idle event supersedes this.
+        mark_blocked "$PANE" || exit 0
+        ;;
+    failed)
+        # StopFailure -- the turn died on an API error (rate_limit, overloaded,
+        # billing_error...). Unlike `blocked` the main loop really has ended, so
+        # clear @cc_main: nothing else will fire a working/idle event for it, and
+        # leaving it busy would make the next refresh_state re-animate a dead
+        # turn. Red because a crashed turn needs you; plain idle made it
+        # indistinguishable from one that finished cleanly.
+        #
+        # A subagent still outstanding here will drop this back to plain idle on
+        # its SubagentStop. Rare, and losing the red beats the machinery to hold
+        # it.
+        set_opt "$PANE" @cc_main 'done'
+        mark_blocked "$PANE" || exit 0
         ;;
     subagent)
         # display-message resolves the option with inheritance and prints empty
