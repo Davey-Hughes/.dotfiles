@@ -26,7 +26,7 @@
 set -uo pipefail
 
 readonly SELF="${BASH_SOURCE[0]}"
-readonly RENDER="$HOME/projects/tmux-powerkit/bin/powerkit-render"
+readonly RENDER="$HOME/.tmux/plugins/tmux-powerkit/bin/powerkit-render"
 readonly CONTINUUM="$HOME/.tmux/plugins/tmux-continuum/scripts/continuum_save.sh"
 
 readonly INTERVAL=5              # seconds; matches status-interval
