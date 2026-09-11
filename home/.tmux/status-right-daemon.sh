@@ -25,7 +25,12 @@
 
 set -uo pipefail
 
-readonly SELF="${BASH_SOURCE[0]}"
+# Resolved, not as-invoked: this is reached through a stow symlink, and GNU
+# stat does not dereference one, so the mtime guard in run_loop would watch
+# the link (whose mtime never changes) instead of the script. That silently
+# pinned a running daemon to its old code across edits.
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+readonly SELF
 readonly RENDER="$HOME/.tmux/plugins/tmux-powerkit/bin/powerkit-render"
 readonly CONTINUUM="$HOME/.tmux/plugins/tmux-continuum/scripts/continuum_save.sh"
 
@@ -62,7 +67,18 @@ run_loop() {
     local rendered previous='' current
     while :; do
         alive || exit 0
-        [[ "$(stat -c %Y "$SELF" 2>/dev/null)" == "$born" ]] || exit 0
+
+        # The script changed under us. Hand the lock to a fresh copy instead of
+        # just exiting: the tmux reload that followed the edit already tried to
+        # start one and lost the flock to this process, so a bare exit would
+        # restore the #() fallback and leave no daemon at all until the next
+        # reload. Drop the EXIT trap so the handoff does not flap status-right.
+        if [[ "$(stat -c %Y "$SELF" 2>/dev/null)" != "$born" ]]; then
+            trap - EXIT
+            exec 9>&-
+            setsid -f "$SELF" --run >/dev/null 2>&1 &
+            exit 0
+        fi
 
         # continuum lived in status-right purely to get called periodically --
         # it emits nothing. It self-throttles internally, so calling it every
