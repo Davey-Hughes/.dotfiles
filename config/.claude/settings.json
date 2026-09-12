@@ -1,6 +1,7 @@
 {
   "env": {
-    "DISABLE_AUTOUPDATER": "1"
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_TMUX_TRUECOLOR": "1"
   },
   "attribution": {
     "commit": "",
@@ -165,7 +166,7 @@
   "effortLevel": "xhigh",
   "tui": "fullscreen",
   "skipWorkflowUsageWarning": true,
-  "theme": "custom:tokyo-night:tokyo-night",
+  "theme": "custom:tokyonight",
   "editorMode": "vim",
   "showMessageTimestamps": true,
   "agentPushNotifEnabled": true,
