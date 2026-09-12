@@ -144,7 +144,6 @@
     "context7@claude-plugins-official": true,
     "playwright@claude-plugins-official": true,
     "code-review@claude-plugins-official": true,
-    "tokyo-night@claude-themes": true,
     "chrome-devtools-mcp@claude-plugins-official": true,
     "feature-dev@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,
@@ -155,14 +154,7 @@
     "rust-analyzer-lsp@claude-plugins-official": true,
     "clangd-lsp@claude-plugins-official": true
   },
-  "extraKnownMarketplaces": {
-    "claude-themes": {
-      "source": {
-        "source": "github",
-        "repo": "matcra587/claude-themes"
-      }
-    }
-  },
+  "extraKnownMarketplaces": {},
   "effortLevel": "xhigh",
   "tui": "fullscreen",
   "skipWorkflowUsageWarning": true,
