@@ -155,6 +155,7 @@
     "clangd-lsp@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {},
+  "feedbackDrafts": "off",
   "effortLevel": "xhigh",
   "tui": "fullscreen",
   "skipWorkflowUsageWarning": true,
