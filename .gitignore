@@ -42,6 +42,11 @@ config/.claude/*
 !config/.claude/skills/
 !config/.claude/themes/
 
+# Claude Code mirrors the skills enabled on claude.ai into skills/synced/,
+# keyed by org and account UUID. It re-downloads them on its own, so they are
+# a cache that happens to live next to the hand-written skills.
+config/.claude/skills/synced/
+
 # Antigravity/Gemini: track ONLY hand-picked user-wide config.
 config/.gemini/*
 !config/.gemini/settings.json
