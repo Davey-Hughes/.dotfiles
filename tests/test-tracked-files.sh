@@ -94,6 +94,7 @@ must_ignore=(
   "config/.claude/statsig/cache"
   "config/.claude/todos/t.json"
   "config/.claude/hooks/__pycache__/rm_guard.cpython-313.pyc"
+  "config/.claude/skills/synced/org_account/docx/SKILL.md"
   "config/.gemini/oauth_creds.json"
   "config/.gemini/installation_id"
   "config/.gemini/antigravity-cli/sessions/s.json"
