@@ -27,7 +27,7 @@ cd_repo_root
 # repo will accept, and only the second one can fail a build.
 #
 # Space-delimited with leading/trailing spaces so `case` can match whole words.
-claude_allow=" CLAUDE.md settings.json keybindings.json agents commands hooks output-styles skills "
+claude_allow=" CLAUDE.md settings.json keybindings.json agents commands hooks output-styles skills themes "
 gemini_allow=" settings.json projects.json trustedFolders.json antigravity-cli "
 antigravity_allow=" settings.json mcp skills rules hooks plugins sidecars "
 
