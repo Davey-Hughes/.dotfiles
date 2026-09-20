@@ -66,6 +66,16 @@
         ]
       }
     ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.config/.claude/hooks/tmux-status.sh blocked"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input",

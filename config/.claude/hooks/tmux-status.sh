@@ -14,10 +14,16 @@
 # working a single detached ticker (--tick) advances the frame and forces a
 # status redraw with `refresh-client -S`. It retires once nothing is working.
 #
+# Claude Code hands every hook its event as JSON on stdin. `working` reads it
+# to catch the AskUserQuestion dialog going up (PreToolUse, tool_name), and
+# `idle` reads it for the turn's last message (Stop, last_assistant_message):
+# a turn that ends on a question paints red like a dialog would, instead of
+# the plain idle glyph that says "done, nothing to see".
+#
 # Never exits non-zero: a PreToolUse hook returning 2 would block the tool call.
 #
 #   tmux-status.sh working|idle|reset|off     Claude Code hook events
-#   tmux-status.sh blocked                    Notification (dialog types only)
+#   tmux-status.sh blocked                    PermissionRequest / Notification (dialogs)
 #   tmux-status.sh failed                     StopFailure
 #   tmux-status.sh subagent +1|-1             SubagentStart / SubagentStop
 #   tmux-status.sh shell-status <exit-code>   fish_postexec
@@ -43,6 +49,10 @@ readonly COL_SUB='#bb9af7'       # tokyo-night purple -- ... waiting on subagent
 # Deliberately not the tokyo-night yellow: next to the orange spinner it was
 # too close to read at a glance, and this is the one state you must act on.
 readonly COL_BLOCK='#f7768e'     # tokyo-night red    -- waiting on you
+# Same red as a dialog on purpose: a turn that ended on "which one?" wants you
+# exactly as much as a permission prompt does, and one colour keeps "red means
+# go there" true. Change this alone to tell the two apart.
+readonly COL_ASKED="$COL_BLOCK"  #                    -- turn ended on a question
 readonly COL_FAIL='#db4b4b'      # tokyo-night error  -- last shell command failed
 
 # Claude Code's own spinner, sampled off a live TUI: a star that swells and
@@ -75,7 +85,7 @@ unset_opt() { tmux set-option -p -u -t "$1" "$2" 2>/dev/null; }
 
 clear_pane() {
     local pane="$1" opt
-    for opt in @cc_state @cc_icon @cc_colour @cc_main @cc_subs; do
+    for opt in @cc_state @cc_icon @cc_colour @cc_main @cc_subs @cc_asked; do
         unset_opt "$pane" "$opt"
     done
 }
@@ -94,14 +104,47 @@ styled() {
     printf '#{?#{&&:#{window_active},#{session_attached}},,#[fg=%s]}%s' "$1" "$2"
 }
 
-# Paint "wants you": red, no motion. Same glyph as idle, so the tab bar stays
-# visually uniform -- the colour and the absence of motion are what separate
-# "wants you" from "nothing running".
-mark_blocked() {
-    set_opt "$1" @cc_state blocked || return 1
+# Paint "wants you": coloured, no motion. Same glyph as idle, so the tab bar
+# stays visually uniform -- the colour and the absence of motion are what
+# separate "wants you" from "nothing running".
+#   mark_wanted <pane> <state> <colour>
+mark_wanted() {
+    set_opt "$1" @cc_state "$2" || return 1
     set_opt "$1" @cc_colour ''
-    set_opt "$1" @cc_icon "$(styled "$COL_BLOCK" "$ICON_IDLE")"
+    set_opt "$1" @cc_icon "$(styled "$3" "$ICON_IDLE")"
     redraw
+}
+mark_blocked() { mark_wanted "$1" blocked "$COL_BLOCK"; }
+
+# The hook event Claude Code piped in, if any. Only read when stdin is really
+# a pipe: run by hand from a terminal there is nothing to read, and cat would
+# sit waiting on the keyboard.
+HOOK_JSON=''
+read_hook_input() {
+    [[ -t 0 ]] && return 0
+    HOOK_JSON="$(cat 2>/dev/null)"
+    return 0
+}
+
+# PreToolUse for the AskUserQuestion dialog. Claude Code serialises the event
+# with JSON.stringify, so the keys are exact and unspaced, and a quote inside a
+# string value is always backslashed -- this cannot match inside tool_input.
+# A substring test rather than jq because this runs on every tool call.
+dialog_going_up() {
+    [[ "$HOOK_JSON" == *'"hook_event_name":"PreToolUse"'* &&
+       "$HOOK_JSON" == *'"tool_name":"AskUserQuestion"'* ]]
+}
+
+# True when the turn's final message ends on a question mark. Looks at the
+# last non-blank line only, after stripping the markdown that tends to wrap a
+# closing question -- "**Which approach?**" counts, "Is it? I think so." does
+# not. Stop fires once a turn, so jq is affordable here.
+asked_question() {
+    [[ -n "$HOOK_JSON" ]] && command -v jq >/dev/null 2>&1 || return 1
+    jq -e '(.last_assistant_message // "") | split("\n")
+           | map(gsub("\\s+$"; "")) | map(select(length > 0)) | (last // "")
+           | sub("[\\s*_)\\]\"]+$"; "") | endswith("?")' \
+        <<<"$HOOK_JSON" >/dev/null 2>&1
 }
 
 # Returns 0 when it spawned a ticker, 1 when one was already live.
@@ -110,7 +153,8 @@ start_ticker() {
     # A held lock means a ticker is live. Two hooks can still race past this;
     # the flock inside run_ticker settles it.
     flock -n "$LOCK" true 2>/dev/null || return 1
-    setsid -f "$SELF" --tick >/dev/null 2>&1 &
+    # </dev/null so the ticker does not inherit the hook's stdin pipe.
+    setsid -f "$SELF" --tick </dev/null >/dev/null 2>&1 &
     return 0
 }
 
@@ -120,10 +164,10 @@ start_ticker() {
 # point -- a backgrounded subagent can outlive the main turn's Stop, and the tab
 # has to keep animating then, or it reads as "done, come look at me".
 refresh_state() {
-    local pane="$1" info main subs was oldcol col
+    local pane="$1" info main subs was oldcol asked col
     info="$(tmux display-message -p -t "$pane" \
-        '#{@cc_main}|#{@cc_subs}|#{@cc_state}|#{@cc_colour}' 2>/dev/null)" || return 0
-    IFS='|' read -r main subs was oldcol <<<"$info"
+        '#{@cc_main}|#{@cc_subs}|#{@cc_state}|#{@cc_colour}|#{@cc_asked}' 2>/dev/null)" || return 0
+    IFS='|' read -r main subs was oldcol asked <<<"$info"
     [[ "$subs" =~ ^[0-9]+$ ]] || subs=0
 
     if [[ "$main" == busy ]] || (( subs > 0 )); then
@@ -143,6 +187,11 @@ refresh_state() {
             set_opt "$pane" @cc_icon "$(styled "$col" "${SPIN[0]}")"
             redraw
         fi
+    elif [[ -n "$asked" ]]; then
+        # The turn ended on a question (see `idle`). Red, static: a session
+        # waiting on your answer, whether or not a dialog is drawing it.
+        [[ "$was" == asked ]] && return 0
+        mark_wanted "$pane" asked "$COL_ASKED"
     else
         [[ "$was" == idle ]] && return 0
         set_opt "$pane" @cc_state idle
@@ -196,18 +245,19 @@ run_ticker() {
 }
 
 # Jump to the next claude session that wants you: blocked first (a prompt is
-# actually up), then idle (its turn finished). Cycles from wherever you are, so
+# actually up, and a turn is stalled behind it), then asked (its turn ended on
+# a question), then idle (its turn finished). Cycles from wherever you are, so
 # repeated presses walk the whole set. Panes with no state are skipped -- those
 # are sessions that have never fired a hook, not sessions waiting on you.
 run_next() {
-    local here targets sess win i found
+    local here targets sess win i found state
     here="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
 
     mapfile -t targets < <(
-        tmux list-panes -a -F '#{pane_id} #{@cc_state} #{pane_current_command}' 2>/dev/null |
-        awk '$3=="claude" && $2=="blocked" {print $1}'
-        tmux list-panes -a -F '#{pane_id} #{@cc_state} #{pane_current_command}' 2>/dev/null |
-        awk '$3=="claude" && $2=="idle" {print $1}'
+        for state in blocked asked idle; do
+            tmux list-panes -a -F '#{pane_id} #{@cc_state} #{pane_current_command}' 2>/dev/null |
+            awk -v s="$state" '$3=="claude" && $2==s {print $1}'
+        done
     )
 
     if (( ${#targets[@]} == 0 )); then
@@ -255,6 +305,8 @@ run_demo() {
     "$SELF" subagent -1
     echo "wants you     ${ICON_IDLE}  red, no motion                    (4s)"
     "$SELF" blocked; sleep 4
+    echo "asked you     ${ICON_IDLE}  same red -- turn ended on a question (4s)"
+    printf '%s' '{"last_assistant_message":"Which one?"}' | "$SELF" idle; sleep 4
     echo "shell failed  ${ICON_SHELL}  red, on fish panes                (4s)"
     "$SELF" shell-status 1; sleep 4
     "$SELF" shell-status 0
@@ -282,26 +334,59 @@ PANE="${TMUX_PANE:-}"
 
 case "${1:-}" in
     working)
-        # UserPromptSubmit / PreToolUse / PostToolUse
+        # UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure.
+        # Any of these means the last question has been answered, so drop it.
+        read_hook_input
         set_opt "$PANE" @cc_main busy
-        refresh_state "$PANE"
+        unset_opt "$PANE" @cc_asked
+        if dialog_going_up; then
+            # The AskUserQuestion dialog. Notification would redden this too,
+            # but as permission_prompt, which Claude Code only sends once the
+            # dialog has sat unanswered for ~6s. Paint it the moment it opens.
+            # PostToolUse does not fire for this tool, so the red holds until
+            # the next tool call or Stop -- the same as it does today.
+            mark_blocked "$PANE" || exit 0
+        else
+            refresh_state "$PANE"
+        fi
         ;;
     idle)
-        # Stop / StopFailure -- the main loop is done, but subagents may still
-        # be running, so refresh_state decides whether that means idle.
+        # Stop -- the main loop is done, but subagents may still be running,
+        # so refresh_state decides whether that means idle. If the turn ended
+        # on a question, flag it: refresh_state paints that red instead of the
+        # plain glyph, and the flag outlives a subagent finishing afterwards.
+        # No hook fires for a question asked in prose, only for dialogs, so
+        # the message text is the only signal there is.
+        read_hook_input
         set_opt "$PANE" @cc_main 'done'
+        if asked_question; then
+            set_opt "$PANE" @cc_asked 1
+        else
+            unset_opt "$PANE" @cc_asked
+        fi
         refresh_state "$PANE"
         ;;
     reset)
         # SessionStart -- a fresh session owns the pane; drop any stale counts.
         set_opt "$PANE" @cc_main 'done'
         set_opt "$PANE" @cc_subs 0
+        unset_opt "$PANE" @cc_asked
         refresh_state "$PANE"
         ;;
     blocked)
-        # Notification, narrowed in settings.json to the types where a dialog is
-        # actually on screen. Notification fires for twelve things, most of which
-        # are informational -- auth_success, agent_completed, the quota
+        # PermissionRequest, plus Notification narrowed in settings.json to the
+        # types where a dialog is actually on screen.
+        #
+        # PermissionRequest fires the instant Claude Code is about to ask you
+        # for permission. It is also a decision hook: JSON on stdout would allow
+        # or deny the tool, so this verb must print nothing. Silence and exit 0
+        # mean "no opinion", and the dialog opens as it always did.
+        #
+        # Notification covers what PermissionRequest does not (MCP elicitation
+        # dialogs, agent_needs_input) and doubles as a fallback for permission
+        # prompts, though Claude Code only sends permission_prompt once the
+        # dialog has sat unanswered for ~6s. It fires for twelve things, most of
+        # which are informational -- auth_success, agent_completed, the quota
         # auto-resume trio -- and elicitation_response/_complete fire the instant
         # you answer a prompt, so an unfiltered hook reddens the tab exactly when
         # you have just unblocked it.
