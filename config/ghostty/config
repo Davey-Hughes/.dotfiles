@@ -6,6 +6,11 @@ config-file = ?os.conf
 confirm-close-surface = false
 
 font-family = Hack FC Ligatured CCG
+# First fallback for anything Hack lacks, ahead of the JetBrains Mono ghostty
+# embeds. Hack is a DejaVu Sans Mono fork with identical metrics, so borrowed
+# glyphs look native; without it the Dingbats block (the Claude spinner stars)
+# straddled two fonts and one frame sat higher than the rest.
+font-family = DejaVu Sans Mono
 font-size = 12
 
 theme = "tokyonight-moon"
