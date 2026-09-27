@@ -20,6 +20,11 @@
 # a turn that ends on a question paints red like a dialog would, instead of
 # the plain idle glyph that says "done, nothing to see".
 #
+# The window is named after the session's /rename name, where it has one:
+# this keeps it in the pane option @cc_name, and automatic-rename-format in
+# ~/.tmux.conf reads it. No hook fires on a rename, but Claude Code retitles
+# the pane, so ~/.tmux.conf runs `name` from pane-title-changed.
+#
 # Never exits non-zero: a PreToolUse hook returning 2 would block the tool call.
 #
 #   tmux-status.sh working|idle|reset|off     Claude Code hook events
@@ -28,6 +33,8 @@
 #   tmux-status.sh subagent +1|-1             SubagentStart / SubagentStop
 #   tmux-status.sh shell-status <exit-code>   fish_postexec
 #   tmux-status.sh next                       jump to a session wanting you
+#   tmux-status.sh name <pane>                pane-title-changed: pick up a /rename
+#   tmux-status.sh names                      every claude pane, at config load
 #   tmux-status.sh demo                       walk every state
 #   tmux-status.sh --tick                     internal: the spinner loop
 
@@ -68,6 +75,8 @@ readonly SPIN=($'\u00b7' $'\u2722' $'\u2736' $'\u273b' \
 readonly TICK=1.0                # seconds per frame; 8 frames = one 8s pulse
 readonly IDLE_EXIT_TICKS=3       # ~3s of nothing working and the ticker quits
 readonly LOCK="${XDG_RUNTIME_DIR:-/tmp}/tmux-cc-ticker.lock"
+# One pid file per live Claude Code session: its tmux pane, name, nameSource.
+readonly SESSIONS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
 
 # ---------------------------------------------------------------------------
 
@@ -85,7 +94,7 @@ unset_opt() { tmux set-option -p -u -t "$1" "$2" 2>/dev/null; }
 
 clear_pane() {
     local pane="$1" opt
-    for opt in @cc_state @cc_icon @cc_colour @cc_main @cc_subs @cc_asked; do
+    for opt in @cc_state @cc_icon @cc_colour @cc_main @cc_subs @cc_asked @cc_name; do
         unset_opt "$pane" "$opt"
     done
 }
@@ -284,6 +293,68 @@ run_next() {
     return 0
 }
 
+# The pane's session name if you gave it one with /rename, else nothing.
+# nameSource "derived" is the auto-generated slug (dotfiles-5b), which says no
+# more than "claude" does. A crashed session leaves its pid file behind and
+# pane ids get reused, so the newest file with a live pid wins.
+session_name() {
+    local pane="$1" pid name
+    command -v jq >/dev/null 2>&1 || return 0
+    while IFS=$'\t' read -r _ pid name; do
+        kill -0 "$pid" 2>/dev/null || continue
+        printf '%s' "$name"
+        return 0
+    done < <(jq -r --arg p ".$pane" '
+        select((.tmux // "") | endswith($p))
+        | [(.startedAt // 0), .pid, (if .nameSource == "user" then .name else "" end)]
+        | @tsv' "$SESSIONS"/*.json 2>/dev/null | sort -rn)
+    return 0
+}
+
+# Returns 0 when @cc_name changed, so callers only rename when it did.
+sync_name() {
+    local pane="$1" name had
+    name="$(session_name "$pane")"
+    had="$(tmux display-message -p -t "$pane" '#{@cc_name}' 2>/dev/null)"
+    [[ "$name" == "$had" ]] && return 1
+    if [[ -n "$name" ]]; then
+        set_opt "$pane" @cc_name "$name"
+    else
+        unset_opt "$pane" @cc_name
+    fi
+}
+
+# tmux only re-reads automatic-rename-format once the pane prints something,
+# and an idle claude pane prints nothing, so a new @cc_name would sit unseen.
+# Setting automatic-rename -- even to the value it has -- marks every window
+# that has it on for a fresh look. Left alone if you turned it off globally.
+rename_now() {
+    [[ "$(tmux show-options -gv automatic-rename 2>/dev/null)" == on ]] &&
+        tmux set-option -g automatic-rename on 2>/dev/null
+    return 0
+}
+
+# Claude Code writes the new name to its pid file and retitles the pane, in no
+# promised order. Look again a moment later rather than trust the first read.
+run_name() {
+    local pane="$1"
+    [[ -n "$pane" ]] || return 0
+    sync_name "$pane" && rename_now
+    sleep 1
+    sync_name "$pane" && rename_now
+    return 0
+}
+
+run_names() {
+    local pane changed=0
+    while read -r pane; do
+        sync_name "$pane" && changed=1
+    done < <(tmux list-panes -a -F '#{pane_id} #{pane_current_command}' 2>/dev/null |
+             awk '$2=="claude" {print $1}')
+    (( changed )) && rename_now
+    return 0
+}
+
 # Walks every state slowly enough to watch, then restores what was there.
 run_demo() {
     local pane="${TMUX_PANE:-}" main subs
@@ -322,11 +393,13 @@ run_demo() {
 
 command -v tmux >/dev/null 2>&1 || exit 0
 
-# These two run without a pane of their own: --tick is detached, and `next` is
-# invoked from a tmux key binding, where TMUX_PANE is not guaranteed.
+# These run without a pane of their own: --tick is detached, and the rest are
+# invoked from tmux, where TMUX_PANE is not guaranteed.
 case "${1:-}" in
-    --tick) run_ticker; exit 0 ;;
-    next)   run_next;   exit 0 ;;
+    --tick) run_ticker;          exit 0 ;;
+    next)   run_next;            exit 0 ;;
+    name)   run_name "${2:-}";   exit 0 ;;
+    names)  run_names;           exit 0 ;;
 esac
 
 PANE="${TMUX_PANE:-}"
