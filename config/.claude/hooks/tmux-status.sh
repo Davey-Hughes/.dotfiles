@@ -23,7 +23,8 @@
 # The window is named after the session's /rename name, where it has one:
 # this keeps it in the pane option @cc_name, and automatic-rename-format in
 # ~/.tmux.conf reads it. No hook fires on a rename, but Claude Code retitles
-# the pane, so ~/.tmux.conf runs `name` from pane-title-changed.
+# the pane, so ~/.tmux.conf runs `name` from pane-title-changed. A /clear
+# keeps the name but not the title change, so SessionStart reads it back.
 #
 # Never exits non-zero: a PreToolUse hook returning 2 would block the tool call.
 #
@@ -441,9 +442,14 @@ case "${1:-}" in
         ;;
     reset)
         # SessionStart -- a fresh session owns the pane; drop any stale counts.
+        # A /clear also ran SessionEnd, whose `off` dropped @cc_name, but the
+        # name outlives it: the pid file keeps it, and the pane title does not
+        # change, so pane-title-changed never fires to put it back. Read it
+        # back here.
         set_opt "$PANE" @cc_main 'done'
         set_opt "$PANE" @cc_subs 0
         unset_opt "$PANE" @cc_asked
+        sync_name "$PANE" && rename_now
         refresh_state "$PANE"
         ;;
     blocked)
