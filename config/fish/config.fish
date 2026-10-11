@@ -179,3 +179,8 @@ if status is-interactive
 end
 
 set -gx ANTIGRAVITY_CONFIG_DIR "$XDG_CONFIG_HOME/.gemini/antigravity-cli"
+
+# $HOME rather than $XDG_DATA_HOME: `openclaw completion --install` treats a
+# $HOME path as dotfile-owned and leaves it be. Any other form it re-appends.
+# OpenClaw Completion
+test -f "$HOME/.local/share/openclaw/completions/openclaw.fish"; and source "$HOME/.local/share/openclaw/completions/openclaw.fish"
