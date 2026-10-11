@@ -81,6 +81,9 @@ case ":$PATH:" in *":$BUN_INSTALL/bin:"*) ;; *) export PATH="$BUN_INSTALL/bin:$P
 # rubygems — relocate the API source-index spec cache (~/.gem/specs)
 export GEM_SPEC_CACHE="${GEM_SPEC_CACHE:-$XDG_CACHE_HOME/gem}"
 
+# Codex uses one home for configuration and state.
+export CODEX_HOME="${CODEX_HOME:-$XDG_CONFIG_HOME/codex}"
+
 # Claude Code / Antigravity — point their config dirs at the stowed XDG copies
 # (mirrors config/fish/conf.d/xdg.fish so bash & zsh behave the same as fish).
 # Claude is guarded on the dir existing so a machine without the stowed config

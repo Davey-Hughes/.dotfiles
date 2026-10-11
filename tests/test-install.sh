@@ -39,12 +39,12 @@ git clone --quiet --no-hardlinks "$ROOT" "$FAKE/.dotfiles" || {
 
 # Locally, overlay uncommitted edits so this tests what you are about to commit
 # rather than what you last committed. Never fires in CI, where the tree is clean.
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+if [ -n "$(git status --porcelain)" ]; then
   while IFS= read -r f; do
     [ -f "$ROOT/$f" ] || continue          # skip deletions
     case "$f" in */*) mkdir -p "$FAKE/.dotfiles/${f%/*}" ;; esac
     cp "$ROOT/$f" "$FAKE/.dotfiles/$f"
-  done < <(git ls-files --modified)
+  done < <({ git diff --cached --name-only; git ls-files --modified --others --exclude-standard; } | sort -u)
   note "working tree is dirty -- uncommitted edits overlaid onto the fixture"
 fi
 
@@ -66,6 +66,11 @@ chmod +x "$FAKE/bin/brew" "$FAKE/bin/tmux"
 # path runs instead of being skipped. This is the branch that decides whether a
 # fresh machine keeps or loses its existing config.
 printf '# pre-existing zshrc, must be preserved\n' > "$FAKE/.zshrc"
+
+# Codex's machine settings and downloaded skills must survive Stow unchanged.
+mkdir -p "$FAKE/.config/codex/skills/existing"
+printf '# machine-local Codex state\n' > "$FAKE/.config/codex/config.pre-xdg.toml"
+printf '# downloaded skill\n' > "$FAKE/.config/codex/skills/existing/SKILL.md"
 
 run_install() {
   # XDG_CONFIG_HOME unset on purpose: the default ($HOME/.config) is the path a
@@ -118,6 +123,21 @@ else
 fi
 
 resolves_into_repo "$FAKE/.zshrc"                  "home/.zshrc"
+resolves_into_repo "$FAKE/.config/codex/config.toml" "config/codex/config.toml"
+resolves_into_repo "$FAKE/.config/codex/AGENTS.md" "config/codex/AGENTS.md"
+resolves_into_repo "$FAKE/.config/codex/hooks.json" "config/codex/hooks.json"
+resolves_into_repo "$FAKE/.config/codex/hooks/destructive-guard.py" "config/codex/hooks/destructive-guard.py"
+resolves_into_repo "$FAKE/.config/codex/hooks/destructive-guard.sh" "config/codex/hooks/destructive-guard.sh"
+resolves_into_repo "$FAKE/.config/codex/hooks/tmux-status.sh" "config/codex/hooks/tmux-status.sh"
+resolves_into_repo "$FAKE/.config/codex/hooks/tmux-session.py" "config/codex/hooks/tmux-session.py"
+resolves_into_repo "$FAKE/.config/codex/themes/tokyonight-moon.tmTheme" "config/codex/themes/tokyonight-moon.tmTheme"
+resolves_into_repo "$FAKE/.config/codex/skills/prep-pr/SKILL.md" "config/codex/skills/prep-pr/SKILL.md"
+if [ "$(cat "$FAKE/.config/codex/config.pre-xdg.toml")" = '# machine-local Codex state' ] &&
+   [ "$(cat "$FAKE/.config/codex/skills/existing/SKILL.md")" = '# downloaded skill' ]; then
+  ok "Codex machine settings and existing skills preserved"
+else
+  fail "Codex machine settings or existing skills changed"
+fi
 resolves_into_repo "$FAKE/.tmux.conf"              "home/.tmux.conf"
 resolves_into_repo "$FAKE/.config/starship.toml"   "config/starship.toml"
 resolves_into_repo "$FAKE/.config/fish/config.fish" "config/fish/config.fish"
@@ -145,7 +165,7 @@ section "stow folded nothing that other software writes into"
 # behaviour, this decides what the repo will accept, and only this can fail a
 # build. Adding a directory means adding it in both places.
 expect_home=(.local/bin .local/share/applications .tmux/plugins)
-expect_config=(.claude fish git systemd/user)
+expect_config=(.claude fish git systemd/user codex/skills codex/themes codex/hooks)
 before=$FAILURES
 unfold_targets=()
 for d in "${expect_home[@]}";   do unfold_targets+=("$FAKE/$d"); done

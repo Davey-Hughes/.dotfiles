@@ -27,6 +27,10 @@ cd_repo_root
 # repo will accept, and only the second one can fail a build.
 #
 # Space-delimited with leading/trailing spaces so `case` can match whole words.
+codex_allow=" AGENTS.md config.toml skills themes hooks.json hooks "
+codex_hooks_allow=" destructive-guard.py destructive-guard.sh tmux-status.sh tmux-session.py "
+codex_themes_allow=" tokyonight-moon.tmTheme "
+codex_skills_allow=" prep-pr "
 claude_allow=" CLAUDE.md settings.json keybindings.json agents commands hooks output-styles skills themes "
 gemini_allow=" settings.json projects.json trustedFolders.json antigravity-cli "
 antigravity_allow=" settings.json mcp skills rules hooks plugins sidecars "
@@ -46,6 +50,10 @@ check_allowlist() { # check_allowlist <prefix/> <allowlist>
 
 section "allowlist: only hand-picked entries under the live tool dirs"
 before=$FAILURES
+check_allowlist "config/codex/" "$codex_allow"
+check_allowlist "config/codex/hooks/" "$codex_hooks_allow"
+check_allowlist "config/codex/skills/" "$codex_skills_allow"
+check_allowlist "config/codex/themes/" "$codex_themes_allow"
 check_allowlist "config/.claude/" "$claude_allow"
 check_allowlist "config/.gemini/" "$gemini_allow"
 check_allowlist "config/.gemini/antigravity-cli/" "$antigravity_allow"
@@ -57,7 +65,7 @@ check_allowlist "config/.gemini/antigravity-cli/" "$antigravity_allow"
 # directory they turn up in. Matched on the basename and on each DIRECTORY
 # component -- so config/.gemini/projects.json (a tracked config file) passes
 # while config/.claude/projects/ (session transcripts) does not.
-deny_basenames='^(\.claude\.json|\.claude\.json\..*|\.credentials\.json|credentials\.json|\.last-cleanup|history\.jsonl|fish_variables|settings\.local\.json|\.env|\.netrc|\.npmrc|id_rsa|id_ecdsa|id_ed25519|.*\.pem)$'
+deny_basenames='^(\.claude\.json|\.claude\.json\..*|\.credentials\.json|credentials\.json|auth\.json|\.last-cleanup|history\.jsonl|fish_variables|settings\.local\.json|\.env|\.netrc|\.npmrc|id_rsa|id_ecdsa|id_ed25519|.*\.pem)$'
 deny_dirs='^(projects|sessions|shell-snapshots|paste-cache|file-history|statsig|todos|security|daemon|jobs|backups|cache|logs|__pycache__)$'
 
 section "denylist: names that must never be tracked anywhere"
@@ -84,6 +92,11 @@ done < <(git ls-files)
 # moment a negation in .gitignore is widened too far -- before anything has been
 # staged, which is the only point at which the mistake is still free to fix.
 must_ignore=(
+  "config/codex/auth.json"
+  "config/codex/config.pre-xdg.toml"
+  "config/codex/sessions/session.jsonl"
+  "config/codex/plugins/config.json"
+  "config/codex/skills/downloaded/SKILL.md"
   "config/.claude/.claude.json"
   "config/.claude/history.jsonl"
   "config/.claude/projects/-Users-x/session.jsonl"

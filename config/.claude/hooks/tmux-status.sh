@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tmux-status.sh -- surface Claude Code / shell activity in the tmux window icon.
+# tmux-status.sh -- surface Claude Code / Codex / shell activity in tmux.
 #
 # Claude Code hooks call `tmux-status.sh <event>`. The resolved state lands in
 # the pane option @cc_state and the rendered glyph in @cc_icon, which
@@ -228,10 +228,10 @@ run_ticker() {
         # A dead tmux server makes this yield nothing, which retires the ticker.
         while read -r pane state colour cmd; do
             [[ "$state" == working ]] || continue
-            # claude is no longer the pane's process: it exited or crashed
+            # Neither assistant is the pane's process: it exited or crashed
             # without SessionEnd, or the pane was reused. Drop the stale state
             # rather than animate a tab nobody is working in.
-            if [[ "$cmd" != claude ]]; then
+            if [[ "$cmd" != claude && "$cmd" != codex ]]; then
                 clear_pane "$pane"
                 continue
             fi
@@ -254,7 +254,7 @@ run_ticker() {
     return 0
 }
 
-# Jump to the next claude session that wants you: blocked first (a prompt is
+# Jump to the next Claude or Codex session that wants you: blocked first (a prompt is
 # actually up, and a turn is stalled behind it), then asked (its turn ended on
 # a question), then idle (its turn finished). Cycles from wherever you are, so
 # repeated presses walk the whole set. Panes with no state are skipped -- those
@@ -266,12 +266,12 @@ run_next() {
     mapfile -t targets < <(
         for state in blocked asked idle; do
             tmux list-panes -a -F '#{pane_id} #{@cc_state} #{pane_current_command}' 2>/dev/null |
-            awk -v s="$state" '$3=="claude" && $2==s {print $1}'
+            awk -v s="$state" '($3=="claude" || $3=="codex") && $2==s {print $1}'
         done
     )
 
     if (( ${#targets[@]} == 0 )); then
-        tmux display-message "no claude session is waiting on you"
+        tmux display-message "no Claude or Codex session is waiting on you"
         return 0
     fi
 
@@ -291,6 +291,7 @@ run_next() {
     [[ -z "$sess" ]] && return 0
     tmux switch-client -t "$sess" 2>/dev/null
     tmux select-window -t "$sess:$win" 2>/dev/null
+    tmux select-pane -t "$target" 2>/dev/null
     return 0
 }
 
@@ -413,7 +414,10 @@ case "${1:-}" in
         read_hook_input
         set_opt "$PANE" @cc_main busy
         unset_opt "$PANE" @cc_asked
-        if dialog_going_up; then
+        if dialog_going_up || { [[ "${TMUX_STATUS_CODEX:-}" == 1 ]] &&
+            jq -e ' .hook_event_name == "PreToolUse" and
+              (.tool_name == "request_user_input" or .tool_name == "request_user_input_async")' \
+                <<<"$HOOK_JSON" >/dev/null 2>&1; }; then
             # The AskUserQuestion dialog. Notification would redden this too,
             # but as permission_prompt, which Claude Code only sends once the
             # dialog has sat unanswered for ~6s. Paint it the moment it opens.
@@ -449,7 +453,11 @@ case "${1:-}" in
         set_opt "$PANE" @cc_main 'done'
         set_opt "$PANE" @cc_subs 0
         unset_opt "$PANE" @cc_asked
-        sync_name "$PANE" && rename_now
+        if [[ "${TMUX_STATUS_CODEX:-}" == 1 ]]; then
+            unset_opt "$PANE" @cc_name
+        else
+            sync_name "$PANE" && rename_now
+        fi
         refresh_state "$PANE"
         ;;
     blocked)

@@ -37,7 +37,7 @@ STOW_FAILED=0
 # tests/test-install.sh asserts every entry below comes out a real directory on
 # a fresh machine, so this list is the single source of truth for the invariant.
 UNFOLD_HOME=(.local/bin .local/share/applications .tmux/plugins)
-UNFOLD_CONFIG=(.claude fish git systemd/user)
+UNFOLD_CONFIG=(.claude fish git systemd/user codex/skills codex/themes codex/hooks)
 
 # Reads one field from /etc/os-release. Parsed, not sourced: os-release is shell
 # syntax, so sourcing it executes whatever the distro put there and drags ~20

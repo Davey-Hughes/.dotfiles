@@ -38,6 +38,61 @@ To add a new config app down the road, you no longer need to update the install 
 
 **One exception.** Stow collapses a directory into a single symlink when the target does not exist — convenient, since files added later then appear without re-stowing. If the app writes back into its own config directory (state, caches, credentials, downloaded plugins), those writes land inside this repo. Add such a directory to `UNFOLD_HOME` or `UNFOLD_CONFIG` at the top of `install.sh`, and to the matching list in `tests/test-install.sh`. Directories only these dotfiles own are better left folded.
 
+## Codex
+
+`config/codex/AGENTS.md` carries personal communication, attribution, shell, and
+file-placement preferences. `config/codex/skills/prep-pr/SKILL.md` provides local
+branch cleanup; invoke it with `$prep-pr`.
+
+Stow links these into `$XDG_CONFIG_HOME/codex` (normally `~/.config/codex`).
+The shell and systemd environment set `CODEX_HOME` to that directory. Codex uses
+one home for config, credentials, sessions, and plugins; its root, skills,
+themes, and hooks directories stay real so runtime state stays outside the
+checkout. `config/codex/config.toml` supplies workspace sandboxing, automatic
+approval review, and the Tokyo Night Moon theme. Codex may write UI and trust
+state back through this config symlink; review its diff before committing.
+With a custom `CODEX_HOME`, link these files into that directory instead.
+
+When migrating an existing install, preserve the entire old directory, back up
+its `config.toml`, then link the dotfiles config into the new home. A
+compatibility `~/.codex` symlink keeps existing plugin paths and running sessions
+resolving. New shells pick up `CODEX_HOME`; GUI launches need a new login.
+Review project and hook trust again after changing the config location.
+
+`config/codex/themes/tokyonight-moon.tmTheme` matches the Ghostty Tokyo Night Moon
+palette for code and diff syntax highlighting. After installation, run `/theme`
+in Codex and select **Tokyo Night Moon**. The picker saves the selection in the
+linked `config.toml`. The themes directory stays real so additional
+downloaded themes do not land in this checkout.
+
+`config/codex/hooks.json` registers a destructive-command guard for shell calls.
+After installation, start a new Codex chat and use `/hooks` to review and trust
+it. The adapter in `config/codex/hooks/` uses the existing
+`config/.claude/hooks/rm_guard.py` classifier directly, so the dotfiles checkout
+must remain available. It leaves safe commands to normal permissions and blocks
+both catastrophic commands and commands the classifier would ask about in
+Claude. Codex does not support a hook returning `ask`; this version has no
+approval bypass. Inspect and run an intentionally blocked command manually
+outside Codex. Run `python3 tests/test-codex-guard.py` to check the adapter.
+
+Classifier failures produce an explicit denial. Codex can still skip untrusted
+hooks or continue after a hook infrastructure error or outer timeout, so check
+`/hooks` for failures. This guard examines shell command text; it does not
+inspect arbitrary scripts or interactive input sent to an existing process.
+
+Codex uses Vim composer input by default. `/vim` toggles it in an existing
+session. Its terminal title shows the chat name, which tmux uses for automatic
+window names; manually renamed windows keep their names. Activity icons and
+prefix-`u` cover both Claude and Codex panes.
+
+The shared resurrect save hook also handles Codex sessions. Lifecycle hooks
+record the current conversation and live process identity under
+`$XDG_STATE_HOME/codex/tmux-sessions`. On Linux, each manual or continuum save
+checks the process start time, a unique Codex process in the pane, and an
+existing transcript before saving `codex resume <id>`. Start or resume Codex,
+or submit a prompt, to register an existing pane. Uncertain matches are left
+unchanged. The dotfiles checkout and trusted lifecycle hooks are required.
+
 ## KDE Plasma (desktop only)
 
 KDE Plasma settings (theme, shortcuts, panels, Dolphin/Konsole/Kate) are tracked

@@ -40,12 +40,20 @@ jobs:
       image: node:24-bookworm        # node + git, which the checkout action needs
     steps:
       - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - name: Install python3
-        run: apt-get update && apt-get install -y --no-install-recommends python3
+      - name: Install python3, tmux, and jq
+        run: apt-get update && apt-get install -y --no-install-recommends python3 tmux jq
       # The suite shells out to bash for the wrapper's degraded path, so bash
       # must be the real one, not the image's dash-as-sh.
       - name: Verdicts the guard must produce
         run: python3 config/.claude/hooks/test_rm_guard.py
+      - name: Codex adapter decisions and failure handling
+        run: python3 tests/test-codex-guard.py
+      - name: Codex tmux activity
+        run: python3 tests/test-codex-tmux.py
+      - name: Codex restore mappings
+        run: python3 tests/test-resurrect-codex.py
+      - name: Codex tmux chat names
+        run: python3 tests/test-codex-tmux-names.py
       # ...and the verdicts it DID produce, for commands that really ran. The
       # suite asserts what somebody thought to write down; this replays a
       # snapshot of real ones, and it is what caught every regression in the

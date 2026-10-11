@@ -36,6 +36,9 @@ run_suite() { # run_suite <label> <cmd...>
 # because it is stowed with it -- the guard has to remain testable on a machine
 # that has ~/.config/.claude but not this repo.
 run_suite "rm-guard"       python3 config/.claude/hooks/test_rm_guard.py
+run_suite "resurrect-codex" python3 tests/test-resurrect-codex.py
+run_suite "codex-tmux"     python3 tests/test-codex-tmux.py
+run_suite "codex-guard"    python3 tests/test-codex-guard.py
 run_suite "tracked-files"  "$HERE/test-tracked-files.sh"
 run_suite "kde-wallpaper"  "$HERE/test-kde-wallpaper-filter.sh"
 run_suite "docs"           "$HERE/test-docs.sh"

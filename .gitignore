@@ -47,6 +47,24 @@ config/.claude/*
 # a cache that happens to live next to the hand-written skills.
 config/.claude/skills/synced/
 
+# Codex: keep credentials, sessions, plugins, and machine settings untracked.
+config/codex/*
+!config/codex/AGENTS.md
+!config/codex/config.toml
+!config/codex/hooks.json
+!config/codex/hooks/
+config/codex/hooks/*
+!config/codex/hooks/destructive-guard.py
+!config/codex/hooks/destructive-guard.sh
+!config/codex/hooks/tmux-status.sh
+!config/codex/hooks/tmux-session.py
+!config/codex/skills/
+config/codex/skills/*
+!config/codex/skills/prep-pr/
+!config/codex/themes/
+config/codex/themes/*
+!config/codex/themes/tokyonight-moon.tmTheme
+
 # Antigravity/Gemini: track ONLY hand-picked user-wide config.
 config/.gemini/*
 !config/.gemini/settings.json

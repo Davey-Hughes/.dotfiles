@@ -1,0 +1,135 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CODEX_HOME:-$HOME/.codex}/hooks/destructive-guard.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking destructive recursive commands"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/tmux-status.sh\"",
+            "timeout": 3,
+            "statusMessage": "Updating tmux activity"
+          }
+        ]
+      }
+    ]
+  }
+}
