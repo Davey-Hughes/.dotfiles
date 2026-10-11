@@ -122,6 +122,26 @@ environment comes from the drop-in
 `os/arch/config/systemd/user/openclaw-gateway.service.d/xdg.conf`, which a
 regenerated unit cannot lose.
 
+With the config and state in non-default places, OpenClaw treats that unit as
+*diagnostic only*: systemd still starts it at login and restarts it on a
+crash, but OpenClaw's own tooling no longer stops, restarts or rewrites it.
+Two places that shows:
+
+- **Upgrades.** OpenClaw comes from the Arch package, so upgrade it with
+  `paru` (`openclaw update` refuses a pacman-owned install). pacman never
+  restarts user services, so restart the gateway afterwards:
+  `systemctl --user restart openclaw-gateway`.
+- **Doctor repairs.** `openclaw doctor --fix` no longer stops and restarts the
+  gateway around its repairs. Do it by hand:
+
+  ```bash
+  systemctl --user stop openclaw-gateway
+  openclaw doctor --fix
+  systemctl --user start openclaw-gateway
+  ```
+
+  Run that from a normal terminal: stopping the gateway ends any OpenClaw chat.
+
 Migrating an existing install: run `scripts/openclaw-xdg-migrate.sh` (dry-run),
 then `scripts/openclaw-xdg-migrate.sh --apply` **from a normal terminal** — it
 stops the gateway, moves `~/.openclaw` to the state dir and its config to the
