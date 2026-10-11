@@ -180,14 +180,15 @@ class SaveTests(Base):
 class PluginTests(Base):
     def setUp(self):
         super().setUp()
-        if not shutil.which('node'):
+        self.node = shutil.which('node')
+        if not self.node:
             self.skipTest('node is not installed')
         self.panes({'%1': {'cmd': 'openclaw', 'screen': footer(KEY_A, 'openxr')},
                     '%2': {'cmd': 'openclaw', 'screen': footer(KEY_B)},
                     '%3': {'cmd': 'claude', 'screen': footer(KEY_A)}})
 
     def drive(self, *steps):
-        result = subprocess.run(['node', '--input-type=module', '-e', DRIVER, '--',
+        result = subprocess.run([self.node, '--input-type=module', '-e', DRIVER, '--',
                                  str(PLUGIN / 'index.js'), str(RENDERER), str(SESSIONS),
                                  json.dumps(list(steps))],
                                 env=self.env, capture_output=True, text=True)
@@ -281,7 +282,10 @@ class PluginTests(Base):
         self.assertEqual(self.opts('%1')['@cc_state'], 'working')
 
     def test_no_tmux_is_harmless(self):
-        self.env['PATH'] = '/nonexistent:/usr/bin:/bin'
+        bin_dir = self.dir / 'no-tmux'
+        bin_dir.mkdir()
+        (bin_dir / 'bash').symlink_to(shutil.which('bash'))
+        self.env['PATH'] = str(bin_dir)
         self.drive(self.hook('model_call_started'), self.end('Done.'))
 
 
