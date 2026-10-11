@@ -54,6 +54,9 @@ jobs:
         run: python3 tests/test-resurrect-codex.py
       - name: Codex tmux chat names
         run: python3 tests/test-codex-tmux-names.py
+      # Drives the gateway plugin through node, which this image already has.
+      - name: OpenClaw tmux activity and restore
+        run: python3 tests/test-openclaw-tmux.py
       # ...and the verdicts it DID produce, for commands that really ran. The
       # suite asserts what somebody thought to write down; this replays a
       # snapshot of real ones, and it is what caught every regression in the

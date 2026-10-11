@@ -1,0 +1,12 @@
+{
+  "name": "tmux-status",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Paint OpenClaw session activity into the tmux tab of each pane showing it.",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

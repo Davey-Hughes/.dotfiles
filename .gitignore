@@ -67,10 +67,13 @@ config/codex/themes/*
 
 # OpenClaw: openclaw.json is machine-local (gateway token, auth profile ids,
 # wizard state) and is never stowed -- OpenClaw rewrites it by atomic rename.
-# Only the $include fragments and skills are tracked.
+# Only the $include fragments, skills, and local plugins are tracked.
 config/openclaw/*
 !config/openclaw/skills.json5
 !config/openclaw/skills/
+!config/openclaw/plugins/
+config/openclaw/plugins/*
+!config/openclaw/plugins/tmux-status/
 
 # Antigravity/Gemini: track ONLY hand-picked user-wide config.
 config/.gemini/*

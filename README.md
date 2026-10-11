@@ -150,9 +150,46 @@ config dir, repoints the absolute paths the wizard wrote, adds the
 fresh machine run `openclaw onboard` first (with the env loaded it writes to the
 XDG paths), then the script to add the `$include`.
 
-Not ported from Claude: hooks (the tmux status hooks are pane-specific and the
-gateway is a daemon; OpenClaw has its own exec approvals), plugins, and the TUI
-settings. Claude's `CLAUDE.md` rules live in the agent workspace's `USER.md`.
+### tmux
+
+OpenClaw TUI panes get the same tmux treatment as Claude and Codex: the
+activity glyph in the tab, prefix-`u`, window names, and resurrect. The agent
+runs in the gateway, not in the pane, so a gateway plugin does this instead of
+a CLI hook: `config/openclaw/plugins/tmux-status/`. On each turn, tool call,
+`ask_user` or `secrets` prompt, and subagent start or end, it finds the panes
+whose TUI footer shows that session (`tmux-session.sh`, the one footer parser)
+and runs the shared `config/.claude/hooks/tmux-status.sh` for each, with
+`TMUX_PANE` set. The session label in the footer names the window, the way a
+Claude `/rename` does. A pane that switches session (`/session`, `/new`,
+Ctrl+P) is reset on the next event from any session.
+
+Enable it once per machine, from a normal terminal. Stow links the plugin into
+`$XDG_CONFIG_HOME/openclaw/plugins`, and both settings go into the machine-local
+`openclaw.json`. `allowConversationAccess` is for `agent_end`. That hook passes
+the final reply, so a turn that ends on a question paints red:
+
+```bash
+openclaw plugins install --link ~/.config/openclaw/plugins/tmux-status --force
+openclaw config set plugins.entries.tmux-status.hooks.allowConversationAccess true
+```
+
+Reload tmux (prefix-`R`) to pick up the icon, window-name, and resurrect changes
+in `.tmux.conf`. After editing the plugin, run `openclaw plugins reload
+tmux-status`. Run `python3 tests/test-openclaw-tmux.py` to check it against a
+fake tmux.
+
+Limits: an exec approval is not a hook, so it shows as the turn ending rather
+than as a prompt. Subagents spawned before the plugin loaded are not counted.
+The footer format is the contract with OpenClaw. If a release changes it,
+parsing fails closed: panes show no state and restore as shells.
+
+Restore saves each placeable pane as `openclaw tui --session <key>`. A bare
+`openclaw` would reopen the TUI's last selected session, so
+`@resurrect-processes` matches `"openclaw tui"` and an unplaced pane comes back
+as a shell.
+
+Not ported from Claude: the `rm` guard (OpenClaw has its own exec approvals) and
+the TUI settings. Claude's `CLAUDE.md` rules live in the agent workspace's `USER.md`.
 
 ## KDE Plasma (desktop only)
 

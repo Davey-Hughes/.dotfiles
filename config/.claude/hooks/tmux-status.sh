@@ -26,12 +26,20 @@
 # the pane, so ~/.tmux.conf runs `name` from pane-title-changed. A /clear
 # keeps the name but not the title change, so SessionStart reads it back.
 #
+# Codex and OpenClaw drive the same states through adapters. Codex's is
+# ~/.config/codex/hooks/tmux-status.sh. OpenClaw's is a gateway plugin,
+# ~/.config/openclaw/plugins/tmux-status, which runs this script once per pane
+# showing the session, with TMUX_PANE set for it. That plugin also owns @cc_name
+# for OpenClaw panes (`label`), from the session label in the TUI footer.
+#
 # Never exits non-zero: a PreToolUse hook returning 2 would block the tool call.
 #
 #   tmux-status.sh working|idle|reset|off     Claude Code hook events
 #   tmux-status.sh blocked                    PermissionRequest / Notification (dialogs)
 #   tmux-status.sh failed                     StopFailure
-#   tmux-status.sh subagent +1|-1             SubagentStart / SubagentStop
+#   tmux-status.sh subagent +1|-1|=N          SubagentStart / SubagentStop; =N
+#                                             sets the count (OpenClaw keeps one)
+#   tmux-status.sh label [name]               OpenClaw: session label, or clear it
 #   tmux-status.sh shell-status <exit-code>   fish_postexec
 #   tmux-status.sh next                       jump to a session wanting you
 #   tmux-status.sh name <pane>                pane-title-changed: pick up a /rename
@@ -228,13 +236,13 @@ run_ticker() {
         # A dead tmux server makes this yield nothing, which retires the ticker.
         while read -r pane state colour cmd; do
             [[ "$state" == working ]] || continue
-            # Neither assistant is the pane's process: it exited or crashed
+            # No assistant is the pane's process: it exited or crashed
             # without SessionEnd, or the pane was reused. Drop the stale state
             # rather than animate a tab nobody is working in.
-            if [[ "$cmd" != claude && "$cmd" != codex ]]; then
-                clear_pane "$pane"
-                continue
-            fi
+            case "$cmd" in
+                claude|codex|openclaw) ;;
+                *) clear_pane "$pane"; continue ;;
+            esac
             working=1
             set_opt "$pane" @cc_icon \
                 "$(styled "${colour:-$COL_WORK}" "${SPIN[frame % ${#SPIN[@]}]}")"
@@ -254,7 +262,7 @@ run_ticker() {
     return 0
 }
 
-# Jump to the next Claude or Codex session that wants you: blocked first (a prompt is
+# Jump to the next Claude, Codex or OpenClaw session that wants you: blocked first (a prompt is
 # actually up, and a turn is stalled behind it), then asked (its turn ended on
 # a question), then idle (its turn finished). Cycles from wherever you are, so
 # repeated presses walk the whole set. Panes with no state are skipped -- those
@@ -266,12 +274,12 @@ run_next() {
     mapfile -t targets < <(
         for state in blocked asked idle; do
             tmux list-panes -a -F '#{pane_id} #{@cc_state} #{pane_current_command}' 2>/dev/null |
-            awk -v s="$state" '($3=="claude" || $3=="codex") && $2==s {print $1}'
+            awk -v s="$state" '($3=="claude" || $3=="codex" || $3=="openclaw") && $2==s {print $1}'
         done
     )
 
     if (( ${#targets[@]} == 0 )); then
-        tmux display-message "no Claude or Codex session is waiting on you"
+        tmux display-message "no assistant session is waiting on you"
         return 0
     fi
 
@@ -455,6 +463,8 @@ case "${1:-}" in
         unset_opt "$PANE" @cc_asked
         if [[ "${TMUX_STATUS_CODEX:-}" == 1 ]]; then
             unset_opt "$PANE" @cc_name
+        elif [[ "${TMUX_STATUS_OPENCLAW:-}" == 1 ]]; then
+            :   # the plugin keeps @cc_name current through `label`
         else
             sync_name "$PANE" && rename_now
         fi
@@ -504,6 +514,10 @@ case "${1:-}" in
         case "${2:-}" in
             +1) n=$(( n + 1 )) ;;
             -1) (( n > 0 )) && n=$(( n - 1 )) ;;
+            # OpenClaw: the plugin counts each requester's live children itself
+            # and sends the total. A count kept in the pane would drift when the
+            # TUI switches sessions while children are running.
+            =*) [[ "${2#=}" =~ ^[0-9]+$ ]] && n=$(( 10#${2#=} )) ;;
         esac
         set_opt "$PANE" @cc_subs "$n"
         refresh_state "$PANE"
@@ -512,6 +526,20 @@ case "${1:-}" in
         # SessionEnd
         clear_pane "$PANE"
         redraw
+        ;;
+    label)
+        # OpenClaw: the session label from the TUI footer, which the gateway
+        # plugin reads for each pane. It plays the role a /rename name plays
+        # for claude: automatic-rename-format in ~/.tmux.conf shows @cc_name.
+        # Empty clears it, and the window falls back to "openclaw".
+        had="$(tmux display-message -p -t "$PANE" '#{@cc_name}' 2>/dev/null)"
+        [[ "${2:-}" == "$had" ]] && exit 0
+        if [[ -n "${2:-}" ]]; then
+            set_opt "$PANE" @cc_name "$2"
+        else
+            unset_opt "$PANE" @cc_name
+        fi
+        rename_now
         ;;
     shell-status)
         # fish_postexec, with the exit status of the command that just ran.
