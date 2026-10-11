@@ -1,0 +1,14 @@
+// Tracked OpenClaw fragment. Stowed into $XDG_CONFIG_HOME/openclaw and pulled
+// in by the machine-local openclaw.json as:
+//
+//   skills: { $include: "./skills.json5" }
+//
+// It resolves into the dotfiles checkout, so OpenClaw treats it as read-only:
+// `openclaw config set skills.*` fails closed instead of flattening it back
+// into openclaw.json. Edit this file directly.
+{
+  load: {
+    // Personal skills tracked beside this file (config/openclaw/skills/).
+    extraDirs: ["~/.config/openclaw/skills"],
+  },
+}

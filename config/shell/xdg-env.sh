@@ -84,6 +84,17 @@ export GEM_SPEC_CACHE="${GEM_SPEC_CACHE:-$XDG_CACHE_HOME/gem}"
 # Codex uses one home for configuration and state.
 export CODEX_HOME="${CODEX_HOME:-$XDG_CONFIG_HOME/codex}"
 
+# OpenClaw — split along XDG lines instead of one ~/.openclaw: the config file
+# under XDG config, everything else (state database, sessions, credentials,
+# agent workspace, logs) under XDG data. The config dir must stay a REAL
+# directory: OpenClaw replaces openclaw.json by atomic rename and refuses a
+# symlinked parent. Tracked fragments are stowed in beside it and pulled in
+# with $include; they resolve into this checkout, which OPENCLAW_INCLUDE_ROOTS
+# admits (read-only to OpenClaw). See the OpenClaw section of the README.
+export OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$XDG_CONFIG_HOME/openclaw/openclaw.json}"
+export OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$XDG_DATA_HOME/openclaw}"
+export OPENCLAW_INCLUDE_ROOTS="${OPENCLAW_INCLUDE_ROOTS:-$HOME/.dotfiles/config/openclaw}"
+
 # Claude Code / Antigravity — point their config dirs at the stowed XDG copies
 # (mirrors config/fish/conf.d/xdg.fish so bash & zsh behave the same as fish).
 # Claude is guarded on the dir existing so a machine without the stowed config

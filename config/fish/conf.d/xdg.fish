@@ -75,6 +75,13 @@ set -q GEM_SPEC_CACHE; or set -gx GEM_SPEC_CACHE $XDG_CACHE_HOME/gem
 # codex — configuration and state under XDG.
 set -q CODEX_HOME; or set -gx CODEX_HOME $XDG_CONFIG_HOME/codex
 
+# openclaw — config file under XDG config, state/workspace under XDG data, and
+# the stowed $include fragments admitted from this checkout. Mirrors the POSIX
+# copy in shell/xdg-env.sh, which explains the split.
+set -q OPENCLAW_CONFIG_PATH; or set -gx OPENCLAW_CONFIG_PATH $XDG_CONFIG_HOME/openclaw/openclaw.json
+set -q OPENCLAW_STATE_DIR; or set -gx OPENCLAW_STATE_DIR $XDG_DATA_HOME/openclaw
+set -q OPENCLAW_INCLUDE_ROOTS; or set -gx OPENCLAW_INCLUDE_ROOTS $HOME/.dotfiles/config/openclaw
+
 # claude code — config dir (plugins, sessions, memory) under XDG instead of ~/.claude.
 # Lives here (not the is-interactive block in config.fish) so NON-interactive fish — GUI
 # launches, task runners, other shells' subprocesses — resolve the same store. Mirrors the
