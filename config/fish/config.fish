@@ -180,6 +180,9 @@ end
 
 set -gx ANTIGRAVITY_CONFIG_DIR "$XDG_CONFIG_HOME/.gemini/antigravity-cli"
 
+# Keep OpenClaw in the foreground process so tmux sees its process title.
+set -q OPENCLAW_NO_RESPAWN; or set -gx OPENCLAW_NO_RESPAWN 1
+
 # $HOME rather than $XDG_DATA_HOME: `openclaw completion --install` treats a
 # $HOME path as dotfile-owned and leaves it be. Any other form it re-appends.
 # OpenClaw Completion
