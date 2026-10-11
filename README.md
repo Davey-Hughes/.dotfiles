@@ -48,21 +48,30 @@ Stow links these into `$XDG_CONFIG_HOME/codex` (normally `~/.config/codex`).
 The shell and systemd environment set `CODEX_HOME` to that directory. Codex uses
 one home for config, credentials, sessions, and plugins; its root, skills,
 themes, and hooks directories stay real so runtime state stays outside the
-checkout. `config/codex/config.toml` supplies workspace sandboxing, automatic
-approval review, and the Tokyo Night Moon theme. Codex may write UI and trust
-state back through this config symlink; review its diff before committing.
-With a custom `CODEX_HOME`, link these files into that directory instead.
+checkout. On first setup, `install.sh` copies `templates/codex/config.toml` to
+`$XDG_CONFIG_HOME/codex/config.toml` as a real, machine-local file. The template
+supplies workspace sandboxing, automatic approval review, and the Tokyo Night
+Moon theme; project trust, hook trust, and UI state stay in the local copy.
+Repeat installs preserve it, so later template edits do not change existing
+settings. With a custom `CODEX_HOME`, link the tracked files there and copy the
+template only if no config exists.
 
 When migrating an existing install, preserve the entire old directory, back up
-its `config.toml`, then link the dotfiles config into the new home. A
+its `config.toml`, then copy that config into the new home as a real file. A
 compatibility `~/.codex` symlink keeps existing plugin paths and running sessions
 resolving. New shells pick up `CODEX_HOME`; GUI launches need a new login.
 Review project and hook trust again after changing the config location.
 
+When updating from the old tracked-config layout, back up the live config before
+changing revisions, then run `./install.sh` after updating. The installer
+replaces the old Stow symlink with a real file and preserves its contents while
+the target exists. If the old target has already disappeared, it seeds defaults
+instead; restore your backup to recover local preferences and trust state.
+
 `config/codex/themes/tokyonight-moon.tmTheme` matches the Ghostty Tokyo Night Moon
 palette for code and diff syntax highlighting. After installation, run `/theme`
 in Codex and select **Tokyo Night Moon**. The picker saves the selection in the
-linked `config.toml`. The themes directory stays real so additional
+machine-local `config.toml`. The themes directory stays real so additional
 downloaded themes do not land in this checkout.
 
 `config/codex/hooks.json` registers a destructive-command guard for shell calls.

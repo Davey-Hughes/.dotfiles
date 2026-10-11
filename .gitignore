@@ -50,7 +50,6 @@ config/.claude/skills/synced/
 # Codex: keep credentials, sessions, plugins, and machine settings untracked.
 config/codex/*
 !config/codex/AGENTS.md
-!config/codex/config.toml
 !config/codex/hooks.json
 !config/codex/hooks/
 config/codex/hooks/*

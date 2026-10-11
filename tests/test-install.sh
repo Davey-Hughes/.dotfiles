@@ -45,6 +45,9 @@ if [ -n "$(git status --porcelain)" ]; then
     case "$f" in */*) mkdir -p "$FAKE/.dotfiles/${f%/*}" ;; esac
     cp "$ROOT/$f" "$FAKE/.dotfiles/$f"
   done < <({ git diff --cached --name-only; git ls-files --modified --others --exclude-standard; } | sort -u)
+  while IFS= read -r f; do
+    rm -f "$FAKE/.dotfiles/$f"
+  done < <({ git diff --cached --name-only --diff-filter=D; git diff --name-only --diff-filter=D; } | sort -u)
   note "working tree is dirty -- uncommitted edits overlaid onto the fixture"
 fi
 
@@ -123,7 +126,14 @@ else
 fi
 
 resolves_into_repo "$FAKE/.zshrc"                  "home/.zshrc"
-resolves_into_repo "$FAKE/.config/codex/config.toml" "config/codex/config.toml"
+codex_config="$FAKE/.config/codex/config.toml"
+codex_defaults="$FAKE/.dotfiles/templates/codex/config.toml"
+if [ -f "$codex_config" ] && [ ! -L "$codex_config" ] &&
+   cmp -s "$codex_config" "$codex_defaults"; then
+  ok "Codex config is a real file seeded from portable defaults"
+else
+  fail "Codex config was not copied from portable defaults into a real file"
+fi
 resolves_into_repo "$FAKE/.config/codex/AGENTS.md" "config/codex/AGENTS.md"
 resolves_into_repo "$FAKE/.config/codex/hooks.json" "config/codex/hooks.json"
 resolves_into_repo "$FAKE/.config/codex/hooks/destructive-guard.py" "config/codex/hooks/destructive-guard.py"
@@ -235,6 +245,10 @@ done < <(find -L "$FAKE" -maxdepth 4 -type l -not -path "$FAKE/.dotfiles/*" 2>/d
 [ "$FAILURES" -eq "$before" ] && ok "every symlink under the fake \$HOME resolves"
 
 section "second run: idempotent"
+# Codex writes trust and UI state here. A repeat install must preserve it and
+# must not send those writes back into the checkout.
+printf '\n[projects."/fixture/project"]\ntrust_level = "trusted"\n' >> "$codex_config"
+cp "$codex_config" "$FAKE/codex-local.toml"
 backups_before=$(find "$FAKE/.dotfiles-backup" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
 if run_install 2; then
   ok "install.sh exited 0 again"
@@ -249,5 +263,36 @@ else
   fail "the second run created another backup dir ($backups_before -> $backups_after): it treated its own symlinks as conflicts"
 fi
 resolves_into_repo "$FAKE/.zshrc" "home/.zshrc"
+if cmp -s "$codex_config" "$FAKE/codex-local.toml" &&
+   [ ! -L "$codex_config" ]; then
+  ok "repeat install preserved Codex's local settings and trust state"
+else
+  fail "repeat install replaced or relinked Codex's local config"
+fi
+if [ "$(git -C "$FAKE/.dotfiles" status --porcelain)" = "$fixture_status" ]; then
+  ok "Codex's local writes stayed outside the checkout"
+else
+  fail "Codex's local writes dirtied the checkout"
+fi
+
+section "migrate the old tracked config symlink"
+mv "$codex_config" "$FAKE/.dotfiles/config/codex/config.toml"
+ln -s ../../.dotfiles/config/codex/config.toml "$codex_config"
+if run_install 3 && [ ! -L "$codex_config" ] &&
+   cmp -s "$codex_config" "$FAKE/codex-local.toml"; then
+  ok "old config symlink became a real file with its local state intact"
+else
+  fail "old config symlink was not migrated without losing settings"
+fi
+
+section "recover the old symlink after its repo target was removed"
+rm -f "$codex_config" "$FAKE/.dotfiles/config/codex/config.toml"
+ln -s ../../.dotfiles/config/codex/config.toml "$codex_config"
+if run_install 4 && [ ! -L "$codex_config" ] &&
+   cmp -s "$codex_config" "$codex_defaults"; then
+  ok "dangling legacy config symlink was replaced with portable defaults"
+else
+  fail "dangling legacy config symlink did not recover from defaults"
+fi
 
 summary "install"

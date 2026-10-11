@@ -27,7 +27,7 @@ cd_repo_root
 # repo will accept, and only the second one can fail a build.
 #
 # Space-delimited with leading/trailing spaces so `case` can match whole words.
-codex_allow=" AGENTS.md config.toml skills themes hooks.json hooks "
+codex_allow=" AGENTS.md skills themes hooks.json hooks "
 codex_hooks_allow=" destructive-guard.py destructive-guard.sh tmux-status.sh tmux-session.py "
 codex_themes_allow=" tokyonight-moon.tmTheme "
 codex_skills_allow=" prep-pr "
@@ -97,6 +97,7 @@ done < <(git ls-files)
 # staged, which is the only point at which the mistake is still free to fix.
 must_ignore=(
   "config/codex/auth.json"
+  "config/codex/config.toml"
   "config/codex/config.pre-xdg.toml"
   "config/codex/sessions/session.jsonl"
   "config/codex/plugins/config.json"

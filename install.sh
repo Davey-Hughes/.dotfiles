@@ -124,7 +124,7 @@ backup_conflicts() {
   local stow_dir="$1" target="$2" pkg="$3"
   local rel conflicts
   for _ in 1 2 3 4 5; do
-    conflicts=$(stow -n -v2 -d "$stow_dir" -t "$target" "$pkg" 2>&1 | sed -n \
+    conflicts=$(stow -n -v2 --ignore='^codex/config[.]toml$' -d "$stow_dir" -t "$target" "$pkg" 2>&1 | sed -n \
       -e 's/.* over existing target \(.*\) since .*/\1/p' \
       -e 's/.* over existing directory target \(.*\)/\1/p' \
       -e 's/.*existing target is not owned by stow: \(.*\)/\1/p' \
@@ -141,9 +141,38 @@ backup_conflicts() {
 stow_pkg() {
   local stow_dir="$1" target="$2" pkg="$3"
   backup_conflicts "$stow_dir" "$target" "$pkg"
-  if ! stow -d "$stow_dir" -t "$target" "$pkg"; then
+  # A leftover config from the old layout is machine state, even if it still
+  # exists in the source tree. Only codex_settings() may install that file.
+  if ! stow --ignore='^codex/config[.]toml$' -d "$stow_dir" -t "$target" "$pkg"; then
     echo "ERROR: stow failed for package '$pkg' (dir=$stow_dir target=$target)" >&2
     STOW_FAILED=1
+  fi
+}
+
+# Seed a real config once. Codex writes project/hook trust and UI state into it,
+# so it must not be a Stow link. Preserve the old link's contents when migrating;
+# if its repo target was already removed, start from the portable defaults.
+codex_settings() {
+  local target="$XDG_CONFIG_HOME/codex/config.toml"
+  local source="$DOTFDIR/templates/codex/config.toml"
+  local link link_dir legacy_dir tmp
+  if [ -L "$target" ]; then
+    link=$(readlink "$target") || return 1
+    case "$link" in /*) ;; *) link="${target%/*}/$link" ;; esac
+    link_dir=$(cd "${link%/*}" 2>/dev/null && pwd -P) || return 0
+    legacy_dir=$(cd "$DOTFDIR/config/codex" && pwd -P) || return 1
+    [ "$link_dir/${link##*/}" = "$legacy_dir/config.toml" ] || return 0
+    [ ! -f "$target" ] || source="$target"
+  elif [ -e "$target" ]; then
+    return 0
+  fi
+
+  tmp=$(mktemp "$XDG_CONFIG_HOME/codex/.config.toml.XXXXXX") || return 1
+  if cp "$source" "$tmp" && mv -f "$tmp" "$target"; then
+    echo "  initialized machine-local Codex config at $target"
+  else
+    rm -f "$tmp"
+    return 1
   fi
 }
 
@@ -203,6 +232,11 @@ symlinks() {
   # Leaf paths only: mkdir -p makes every parent real as well.
   for dir in "${UNFOLD_HOME[@]}";   do mkdir -p "$HOME/$dir"; done
   for dir in "${UNFOLD_CONFIG[@]}"; do mkdir -p "$XDG_CONFIG_HOME/$dir"; done
+
+  if ! codex_settings; then
+    echo "ERROR: could not initialize the machine-local Codex config" >&2
+    STOW_FAILED=1
+  fi
 
   pushd "$DOTFDIR" >/dev/null || exit 1
 
