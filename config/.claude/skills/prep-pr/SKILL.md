@@ -1,7 +1,6 @@
 ---
 name: prep-pr
 description: Use when a working branch needs to become a pull request in an open source repo, or when asked to prep, tidy, or clean up a branch before opening a PR - symptoms are WIP and fixup commits, commits out of logical order, leftover explanatory comments the repo would not have written, and commit messages written for yourself rather than for a maintainer.
-disable-model-invocation: true
 ---
 
 # prep-pr
