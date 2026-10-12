@@ -76,18 +76,14 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          # test-tracked-files.sh reads the committed blob of the Plasma
-          # appletsrc to prove the wallpaper clean filter ran. A depth-1 clone
-          # still has HEAD, which is all it needs -- but fetch-depth: 0 keeps
-          # that true if the check ever grows to walk history.
           fetch-depth: 0
-      - name: Install the parsers
+      - name: Install the parsers and Stow
         # python3-yaml, not pip: the check refuses to skip YAML in CI.
         # xz-utils for the shellcheck tarball below.
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            python3 python3-yaml zsh fish xz-utils
+            python3 python3-yaml zsh fish xz-utils stow
       # Pinned to a release asset and checksummed BEFORE it reaches PATH, rather
       # than apt's shellcheck: the Debian version moves independently of the one
       # the tree was made clean against, and a lint gate that reports different
@@ -156,10 +152,8 @@ jobs:
       # the only failure here that a later commit cannot undo.
       - name: Nothing sensitive is tracked
         run: ./tests/test-tracked-files.sh
-      # Paired with the check above: that one proves nothing leaked INTO the
-      # blob, this one proves nothing is lost FROM the working copy.
-      - name: The wallpaper filter round-trips
-        run: ./tests/test-kde-wallpaper-filter.sh
+      - name: KDE snapshots preserve local desktop state
+        run: python3 tests/test-kde-config.py
       - name: Documentation references resolve
         run: ./tests/test-docs.sh
       - name: The three XDG env files agree
@@ -179,8 +173,8 @@ jobs:
       image: node:24-bookworm
     steps:
       - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - name: Install stow
-        run: apt-get update && apt-get install -y --no-install-recommends stow
+      - name: Install stow and python3
+        run: apt-get update && apt-get install -y --no-install-recommends stow python3
       # Debian ships stow 2.3.1 where macOS Homebrew has 2.4.x, and install.sh
       # parses stow's conflict messages by hand (backup_conflicts). Those strings
       # are not a stable interface, so running the older one here is coverage,

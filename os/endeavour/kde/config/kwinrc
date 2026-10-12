@@ -1,0 +1,17 @@
+[Desktops]
+Number=4
+Rows=1
+
+[Plugins]
+krohnkiteEnabled=true
+slideEnabled=false
+
+[Script-krohnkite]
+screenGapBetween=4
+screenGapBottom=4
+screenGapLeft=4
+screenGapRight=4
+screenGapTop=4
+
+[Xwayland]
+Scale=1.45

@@ -29,7 +29,7 @@ The clone path matters: `install.sh` resolves everything from `$HOME/.dotfiles`,
 
 **What `install.sh` does:**
 1. Validates `stow` is installed.
-2. Uses `stow` to symlink the common `config/` (into `$XDG_CONFIG_HOME`) and `home/` (into `~`), then detects your OS and stows any matching `os/<platform>/{config,home}` layer on top.
+2. Uses `stow` to symlink the common `config/` (into `$XDG_CONFIG_HOME`) and `home/` (into `~`), then detects your OS and stows any matching `os/<platform>/{config,home}` layer on top. On EndeavourOS, installs KDE snapshots as real, writable files instead of symlinks.
 3. Applies essential global Git configurations.
 4. Auto-detects your OS (macOS or Linux) and executes `brew bundle` using the appropriate Brewfile inside `os/` (if Homebrew is installed).
 
@@ -202,20 +202,62 @@ the TUI settings. Claude's `CLAUDE.md` rules live in the agent workspace's `USER
 
 ## KDE Plasma (desktop only)
 
-KDE Plasma settings (theme, shortcuts, panels, Dolphin/Konsole/Kate) are tracked
-under `os/endeavour/config/` and symlinked into `~/.config` on the desktop only.
-KDE writes through the symlinks (KConfig `directWriteFallback`), so tweaking
-settings in System Settings edits the repo copy directly.
+KDE Plasma settings (theme, shortcuts, panels, Dolphin/Konsole/Kate) are curated
+snapshots under `os/endeavour/kde/config/`, outside the Stow tree. KDE writes to
+real files under `$XDG_CONFIG_HOME` (normally `~/.config`), so everyday desktop
+activity leaves this repo alone. Python 3 is required on the desktop.
 
-That write-through is why these files are **not** in the shared `arch` layer:
-they carry one machine's hardware (`kcminputrc` names a specific mouse, `kwinrc`
-keys tiling to output UUIDs, the appletsrc places panels per screen), and a
-second machine editing the same symlinked file would silently rewrite the
-desktop's tracked config. The Steam Deck keeps stock SteamOS Plasma.
+On EndeavourOS, `install.sh` seeds missing configs and converts legacy KDE
+Stow links into real files, preserving their full contents. Folded Kate and
+`kdedefaults` directory links are copied with their extra local files intact.
+Existing real configs are preserved on repeat installs. Stow ignores legacy
+KDE sources, so an old file left in its source tree cannot relink the desktop.
+The Steam Deck keeps stock SteamOS Plasma.
+
+After changing preferences in System Settings, preview and capture them:
+
+```bash
+python3 scripts/kde-config.py capture          # preview only
+python3 scripts/kde-config.py capture --write  # save the displayed changes
+git diff -- os/endeavour/kde/config
+```
+
+Capture reads only files already selected by the snapshot tree. It omits
+desktop UUIDs and output-specific tiling groups, wallpaper paths, color-scheme
+hashes, file-view timestamps, applet tabs/dialog geometry, activity/screen
+bindings, notification discovery state, and similar known runtime fields.
+The exclusions are listed in `scripts/kde-config.py`; review the diff before
+committing, since new KDE versions or plugins can add fields. To manage a new
+config, add a snapshot file first, then capture it.
+
+To apply tracked preferences to this desktop:
+
+```bash
+python3 scripts/kde-config.py apply --dry-run
+python3 scripts/kde-config.py apply
+```
+
+Apply merges snapshot keys into live files, preserving unmentioned local keys,
+groups, and wallpaper paths. It does not delete extra local applets or settings.
+Snapshots retain panel/applet IDs and device-specific mouse preferences; they
+remain specific to this desktop and do not remap layouts onto different
+hardware. Output-specific KWin tiling remains local. Applications may need a
+restart or a new login to read applied settings; apply while the affected apps
+are closed or from a separate session to avoid their in-memory settings
+overwriting the files. The command does not restart the desktop.
+
+For a manual migration, run `python3 scripts/kde-config.py install --dry-run`,
+then `python3 scripts/kde-config.py install`. Migration and apply save changed
+live contents under `$XDG_STATE_HOME/dotfiles/kde-backups` (normally
+`~/.local/state/dotfiles/kde-backups`). Migrate before deleting old live Stow
+targets; a dangling legacy link can only be seeded from the curated snapshot,
+which cannot recover omitted runtime state. Foreign symlinks are refused.
+The old wallpaper Git filter is retired; its state sidecar is left in place
+for recovery, but is no longer used.
 
 **Dependency:** `kwinrc` enables the [`krohnkite`](https://github.com/anametologin/krohnkite)
 tiling script. Install it from the AUR (e.g. `paru -S kwin-scripts-krohnkite`) for
-tiling to work; the config symlinks fine without it, tiling just stays inactive.
+tiling to work; the config installs fine without it, tiling just stays inactive.
 
 Hardware/state files (monitor layout, file-index state, KDE Connect pairing keys,
 activity stats) are intentionally **not** tracked.
@@ -238,8 +280,8 @@ build here, so the checks cover the three ways a dotfiles repo actually breaks:
 | Check | What it catches |
 | --- | --- |
 | `config/.claude/hooks/test_rm_guard.py` | The `rm` guard hook approving something it should have asked about. Runs on every push because its regressions are measured in deleted files. |
-| `tests/test-tracked-files.sh` | Anything tracked that must not be. `config/.claude/` is a live tool directory — sessions, transcripts and OAuth state sit untracked inside a tracked parent, held back by a `.gitignore` allowlist. Also verifies the `kde-wallpaper` clean filter stripped the local wallpaper paths. |
-| `tests/test-kde-wallpaper-filter.sh` | The Plasma wallpaper filter losing data in either direction — a local path reaching the public blob, or a checkout wiping the live wallpaper out of the working copy. The second half is a regression test: `smudge = cat` did exactly that on 2026-08-22, mid-rebase, and Plasma came back on defaults. |
+| `tests/test-tracked-files.sh` | Anything tracked that must not be. `config/.claude/` is a live tool directory — sessions, transcripts and OAuth state sit untracked inside a tracked parent, held back by a `.gitignore` allowlist. Also verifies KDE snapshots omit local wallpaper paths. |
+| `tests/test-kde-config.py` | Capture leaking runtime state, apply losing local settings, or migration leaving writable configs linked into the repo. Tests files, folded directories, missing legacy targets, repeat installs, and the EndeavourOS installer hook. |
 | `tests/test-syntax.sh` | A file that will not parse in the shell or program that reads it — `bash -n`, `zsh -n`, `fish --no-execute`, JSON/TOML/YAML, plus `shellcheck` at warning level on the scripts. |
 | `tests/test-xdg-sync.sh` | The three XDG env files drifting apart, which silently gives one shell a different environment than the others. |
 | `tests/test-docs.sh` | A path this README names that no longer exists. |

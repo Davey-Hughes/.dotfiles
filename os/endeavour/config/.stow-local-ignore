@@ -1,0 +1,3 @@
+# KDE snapshots are installed as real files by scripts/kde-config.py.
+# Ignore any legacy sources left behind by KDE or an older checkout.
+(^|/)(dolphinrc|kate|kate-externaltoolspluginrc|katerc|katevirc|kcminputrc|kdedefaults|kdeglobals|kglobalshortcutsrc|konsolerc|ksmserverrc|kwinrc|kwinrulesrc|plasma-org\.kde\.plasma\.desktop-appletsrc|plasmanotifyrc|plasmashellrc)(/|$)

@@ -14,7 +14,7 @@
 #   3. tripwire   the .gitignore patterns themselves still match -- this fires
 #                 when the allowlist breaks, which is BEFORE anything is staged,
 #                 rather than after the fact like layers 1 and 2
-#   4. filters    the kde-wallpaper clean filter did its job, and no obvious
+#   4. content    KDE snapshots contain no wallpaper paths, and no obvious
 #                 credential shape reached a tracked file
 set -uo pipefail
 # shellcheck source=tests/lib.sh
@@ -123,6 +123,7 @@ must_ignore=(
   "config/git/config"
   "os/arch/config/ksmserverrc"
   "os/endeavour/config/ksmserverrc"
+  "os/endeavour/kde/config/ksmserverrc"
   ".claude/settings.local.json"
 )
 section "tripwire: .gitignore still covers the sensitive paths"
@@ -135,28 +136,17 @@ for p in "${must_ignore[@]}"; do
 done
 [ "$FAILURES" -eq "$before" ] && ok "${#must_ignore[@]} sensitive paths still ignored"
 
-# --- 4a. kde-wallpaper clean filter -------------------------------------------
-# .gitattributes routes the Plasma appletsrc through a clean filter that strips
-# Image=/SlidePaths= (local wallpaper paths, rewritten every 30 min by the
-# slideshow). The filter is configured PER CLONE by install.sh, and filters are
-# not carried by a clone -- so a machine that never ran install.sh commits the
-# paths straight back. This reads the stored blob, which is the only place the
-# answer is visible.
-appletsrc='os/endeavour/config/plasma-org.kde.plasma.desktop-appletsrc'
-section "kde-wallpaper filter: no local paths in the committed blob"
-if ! git ls-files --error-unmatch -- "$appletsrc" >/dev/null 2>&1; then
-  skip "$appletsrc is not tracked"
-elif ! git rev-parse --verify -q HEAD >/dev/null; then
-  skip "no commits yet"
+# --- 4a. KDE snapshots --------------------------------------------------------
+# Check the snapshot itself, which also catches copying a raw live config
+# before it is committed. Git no longer filters these files.
+appletsrc='os/endeavour/kde/config/plasma-org.kde.plasma.desktop-appletsrc'
+section "KDE snapshot: no local wallpaper paths"
+if [ ! -f "$appletsrc" ]; then
+  fail "$appletsrc is missing"
+elif grep -qE '^(Image|SlidePaths)=' "$appletsrc"; then
+  fail "$appletsrc contains local wallpaper paths -- use kde-config.py capture"
 else
-  # cat-file, never `git show`: this has to read the blob exactly as stored,
-  # with no filter applied on the way out.
-  leaked=$(git cat-file blob "HEAD:$appletsrc" 2>/dev/null | grep -cE '^(Image|SlidePaths)=')
-  if [ "${leaked:-0}" -gt 0 ]; then
-    fail "$leaked wallpaper path line(s) in the committed $appletsrc -- the clean filter was not configured in the clone that committed it (install.sh git_settings)"
-  else
-    ok "committed blob carries no Image=/SlidePaths= lines"
-  fi
+  ok "no Image=/SlidePaths= lines in the KDE snapshot"
 fi
 
 # --- 4b. credential shapes ----------------------------------------------------

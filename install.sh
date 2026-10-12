@@ -176,6 +176,20 @@ codex_settings() {
   fi
 }
 
+# KDE writes runtime state into its configs. Seed missing files and detach old
+# Stow links, but leave existing desktop preferences alone on repeat installs.
+kde_settings() {
+  local layer
+  for layer in $(os_layers); do
+    [ "$layer" = endeavour ] || continue
+    if ! command -v python3 &>/dev/null; then
+      echo "ERROR: python3 is required to install the KDE snapshots" >&2
+      return 1
+    fi
+    XDG_CONFIG_HOME="$XDG_CONFIG_HOME" python3 "$DOTFDIR/scripts/kde-config.py" install || return 1
+  done
+}
+
 # Pull in git submodules (tpm, zsh-autosuggestions) that .zshrc/.tmux.conf
 # source. A plain `git clone` leaves these empty; without them zsh errors on
 # every startup and tmux's plugin manager never loads. Non-fatal so an offline
@@ -238,6 +252,12 @@ symlinks() {
     STOW_FAILED=1
   fi
 
+  if ! kde_settings; then
+    echo "ERROR: could not initialize the machine-local KDE configs" >&2
+    STOW_FAILED=1
+    return 1
+  fi
+
   pushd "$DOTFDIR" >/dev/null || exit 1
 
   # Common configs (all platforms)
@@ -275,20 +295,9 @@ git_settings() {
     # excludesfile elsewhere silently shadows that path -- the old setup did
     # exactly that and left a dead ~/.config/git/ignore ignoring nothing.
 
-    # Back the kde-wallpaper filter named by .gitattributes. Repo-local, not
-    # --global: .gitattributes only points at it from inside this repo. Filters
-    # are not carried by a clone, so without this a fresh machine silently
-    # commits the wallpaper paths again -- the exact leak the filter exists to
-    # stop.
-    #
-    # BOTH halves, always. The smudge is not a formality here -- it is what puts
-    # the stripped Image=/SlidePaths= back into the working copy. Configure the
-    # clean alone (as this did until 2026-08-23) and git deletes the live
-    # wallpaper on the next checkout, silently: a file whose only difference is
-    # stripped before the comparison reads as unchanged, so nothing warns and
-    # nothing conflicts. See the header of scripts/kde-wallpaper-filter.sh.
-    git -C "$DOTFDIR" config filter.kde-wallpaper.clean  "'$DOTFDIR/scripts/kde-wallpaper-filter.sh' clean"
-    git -C "$DOTFDIR" config filter.kde-wallpaper.smudge "'$DOTFDIR/scripts/kde-wallpaper-filter.sh' smudge"
+    # KDE's live files now stay outside Git. Retire the old clone-local filter;
+    # preserve its sidecar in XDG state as a possible recovery source.
+    git -C "$DOTFDIR" config --remove-section filter.kde-wallpaper 2>/dev/null || true
   else
     echo "git not installed" 2>&1
   fi
@@ -324,16 +333,18 @@ install_packages() {
   fi
 }
 
-# Run the core setup tasks automatically
-init_submodules
-symlinks
-git_settings
-install_packages
-tmux_plugins
+# Sourcing exposes the installer functions for isolated integration tests.
+if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then
+  init_submodules
+  symlinks
+  git_settings
+  install_packages
+  tmux_plugins
 
-if [ "$STOW_FAILED" -ne 0 ]; then
-  echo "Dotfiles installation finished WITH ERRORS (see above)." >&2
-  exit 1
+  if [ "$STOW_FAILED" -ne 0 ]; then
+    echo "Dotfiles installation finished WITH ERRORS (see above)." >&2
+    exit 1
+  fi
+
+  echo "Dotfiles installation complete!"
 fi
-
-echo "Dotfiles installation complete!"

@@ -99,6 +99,7 @@ config/.gemini/antigravity-cli/*
 # arch layer a copy stayed behind at the old path -- untracked, unignored, and
 # offering a logout's worth of session client IDs to the next `git add`.
 os/*/config/ksmserverrc
+os/*/kde/config/ksmserverrc
 
 # install.sh generates the global git config per-machine into
 # $XDG_CONFIG_HOME/git/config -- this directory once stowed. That is machine

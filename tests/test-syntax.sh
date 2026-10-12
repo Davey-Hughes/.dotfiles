@@ -24,6 +24,7 @@ check_each() { # check_each <label> <regex over tracked paths> <cmd...>
   local before=$FAILURES
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    [ -f "$f" ] || continue  # a local deletion is absent from the next commit
     n=$((n + 1))
     if ! out=$("$@" "$f" 2>&1); then
       fail "$f"
@@ -111,6 +112,7 @@ if need shellcheck "shell scripts"; then
   n=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    [ -f "$f" ] || continue
     n=$((n + 1))
     if ! out=$(shellcheck --severity=warning -f gcc "$f" 2>&1); then
       while IFS= read -r line; do

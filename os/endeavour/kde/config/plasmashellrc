@@ -1,0 +1,29 @@
+[PlasmaViews][Panel 29]
+alignment=132
+floating=0
+panelLengthMode=2
+panelOpacity=1
+panelVisibility=1
+shell=org.kde.plasma.desktop
+
+[PlasmaViews][Panel 29][Defaults]
+maxLength=3360
+minLength=3360
+thickness=44
+
+[PlasmaViews][Panel 3]
+alignment=132
+floating=0
+panelLengthMode=2
+panelOpacity=1
+panelVisibility=1
+shell=org.kde.plasma.desktop
+
+[PlasmaViews][Panel 3][Defaults]
+maxLength=3440
+minLength=3402
+thickness=44
+
+[PlasmaViews][Panel 3][Horizontal3440]
+maxLength=3440
+minLength=3402
