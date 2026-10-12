@@ -216,7 +216,7 @@ immutability=1
 plugin=org.kde.plasma.icontasks
 
 [Containments][3][Applets][6][Configuration][General]
-launchers=preferred://filemanager,applications:firefox-developer-edition.desktop,applications:com.mitchellh.ghostty.desktop,applications:steam.desktop,applications:vesktop.desktop,applications:slack.desktop
+launchers=preferred://filemanager,applications:firefox-developer-edition.desktop,applications:com.mitchellh.ghostty.desktop,applications:obsidian.desktop,applications:steam.desktop,applications:vesktop.desktop,applications:slack.desktop
 unhideOnAttention=false
 
 [Containments][3][Applets][7]

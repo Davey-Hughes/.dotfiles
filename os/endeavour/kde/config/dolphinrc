@@ -1,5 +1,6 @@
 [DetailsMode]
 PreviewSize=16
+RightPadding=0
 
 [General]
 AlwaysShowTabBar=true
