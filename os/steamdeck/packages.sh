@@ -34,6 +34,18 @@ sudo pacman -S --needed --noconfirm starship zoxide eza
 # --- needed by the dotfiles installer itself -------------------------------
 sudo pacman -S --needed --noconfirm stow
 
+# --- make: here by choice, under none of the five rules above ---------------
+# Wanted on the host for a checkout's own housekeeping targets, typed straight
+# into the host shell (`make clean`). It was installed by hand for exactly that
+# on 2026-09-07 and never written down, so the next SteamOS update took it away
+# again -- the same story as fakeroot below. 1.7 MiB.
+#
+# It is not a build tool here. The host has no compiler: `gcc` and `g++` are
+# distrobox wrappers (container-packages.conf), so a host `make` that compiles
+# pays the container round-trip once per translation unit. Build inside the
+# container -- `distrobox enter arch`, where base-devel has its own make.
+sudo pacman -S --needed --noconfirm make
+
 # --- paru: for the /opt packages below that chaotic-aur does not carry ------
 # Note this is `pacman -S`, not a source build: paru is in SteamOS's holo repo.
 #
