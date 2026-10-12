@@ -7,6 +7,11 @@
 # distrobox before distrobox.sh can use them, and flatpaks.sh needs the flatpak
 # binary packages.sh provides.
 #
+# fstab.sh depends on none of them and goes last for a different reason: it is
+# the one step that needs the NAS. It ends in `mount -a`, which fails wherever
+# the shares are out of reach, and a Deck being set up away from home should
+# still get everything above it.
+#
 # Most of what this used to install on the rootfs now goes elsewhere -- see the
 # header comments in packages.sh, container-packages.conf and flatpaks.sh for
 # the split and why it exists.
@@ -26,6 +31,7 @@ sudo steamos-readonly disable
 ./rustup.sh        || exit 1
 ./flatpaks.sh      || exit 1
 ./distrobox.sh     || exit 1
+./fstab.sh         || exit 1
 
 echo "Steam Deck setup complete."
 echo
