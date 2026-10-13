@@ -7,17 +7,16 @@
 #   ~/.openclaw/openclaw.json   -> $OPENCLAW_CONFIG_PATH  (~/.config/openclaw/openclaw.json)
 #   ~/.openclaw/                -> $OPENCLAW_STATE_DIR    (~/.local/share/openclaw)
 #
-# The gateway holds its SQLite state open, so the move happens with the user
-# service stopped -- the documented relocation path is stop, move the whole
-# state dir, point the service at it, start, rerun doctor. Run this from your
-# own terminal, NOT from an OpenClaw chat: stopping the gateway ends the session
-# that would be running it.
+# A running gateway holds its SQLite state open, so this refuses to move it
+# while a local openclaw-gateway unit is active. Stop that first, from your own
+# terminal rather than an OpenClaw chat: stopping the gateway ends the session
+# that would be running this. Nothing is started again afterwards.
 #
 # Also the bootstrap for a fresh machine: with no ~/.openclaw it only adds the
 # $include lines to an existing openclaw.json (run `openclaw onboard` first).
 #
 # Dry-run by default, like scripts/xdg-migrate.sh -- pass --apply to act.
-# Requires install.sh to have run (env files, unfolded config dir, drop-in).
+# Requires install.sh to have run (env files, unfolded config dir).
 
 set -euo pipefail
 
@@ -61,7 +60,7 @@ if [ -d "$OLD" ] && [ ! -L "$OLD" ]; then
   [ -e "$CFG" ] && die "$CFG already exists; refusing to overwrite it"
 
   if systemctl --user is-active --quiet "$UNIT" 2>/dev/null; then
-    run systemctl --user stop "$UNIT"
+    die "$UNIT is running and holds the state open; stop it first: systemctl --user stop $UNIT"
   fi
   run mkdir -p "$(dirname "$STATE")" "$CFG_DIR"
   run mv "$OLD" "$STATE"
@@ -120,10 +119,7 @@ else
   say "no $CFG yet -- run 'openclaw onboard', then rerun this"
 fi
 
-# --- 3. restart under the drop-in environment ---------------------------------
 if [ "$MOVED" -eq 1 ]; then
-  run systemctl --user daemon-reload
-  run systemctl --user start "$UNIT"
   echo ""
   echo "Next: openclaw doctor && openclaw status"
 fi

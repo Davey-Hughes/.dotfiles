@@ -34,10 +34,6 @@ STOW_FAILED=0
 # and refuses a symlinked parent directory; the tracked $include fragments and
 # skills link in per-entry beside the real, untracked openclaw.json.
 #
-# `systemd/user/openclaw-gateway.service.d` is here because systemd did not
-# pick up the drop-in through a folded (symlinked) .d directory; a real
-# directory holding a symlinked .conf loads reliably.
-#
 # `systemd/user` is here because `systemctl --user enable` writes its symlinks
 # into $XDG_CONFIG_HOME/systemd/user/*.wants/; folded, every unit anyone ever
 # enables would be created inside this repo.
@@ -45,8 +41,7 @@ STOW_FAILED=0
 # tests/test-install.sh asserts every entry below comes out a real directory on
 # a fresh machine, so this list is the single source of truth for the invariant.
 UNFOLD_HOME=(.local/bin .local/share/applications .tmux/plugins)
-UNFOLD_CONFIG=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw
-               systemd/user/openclaw-gateway.service.d)
+UNFOLD_CONFIG=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw)
 
 # Reads one field from /etc/os-release. Parsed, not sourced: os-release is shell
 # syntax, so sourcing it executes whatever the distro put there and drags ~20
