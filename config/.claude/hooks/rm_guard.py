@@ -14,8 +14,7 @@ Covered, each with its own notion of "which argument is the target":
     rsync --delete          the DESTINATION (last operand)
     rsync --remove-source-files   the SOURCE -- the opposite end
     rclone sync/purge/...   the destination / the named remote path
-    git clean -f            the working tree
-    git worktree remove -f  the worktree directory, untracked files included
+    git clean               only with a relocated work tree -- see below
     ssh host '<cmd>'        re-analysed remotely, with no local safe roots
 
 An operand is judged over every path it can actually become, not as written:
@@ -30,21 +29,38 @@ An operand is judged over every path it can actually become, not as written:
 Deliberately NOT covered:
 
     non-recursive rm    without -r, rm cannot descend into a directory.
-    git rm              a working-tree operation: only touches tracked files,
-                        never untracked data, all of it recoverable from history.
-                        `git clean` is the opposite and IS covered.
-    git worktree remove without --force
-                        git refuses it outright on a worktree holding an
-                        untracked or modified file, and on a path that is not a
-                        registered worktree at all -- so unlike rm -r it cannot
-                        descend into a directory it was merely pointed at. Only
-                        ignored files can go, and only from inside a worktree.
-                        Verified against git 2.55; --force IS covered.
     rg                  read-only. `-x` is --line-regexp and `-r` is --replace
                         (rewrites printed output, never the file). A rule here
                         would only collide with fd's exec flags and misfire.
     dd, diskutil        catastrophic but device-shaped, not path-shaped. They
                         need a different check than a path classifier.
+
+Git is left alone: no ask, and no allow either. Its deletions are bounded by git
+rather than by their operand, so there is no path to judge -- verified against
+git 2.56:
+
+    git clean           only untracked files inside the repository it runs in.
+                        `git clean -f /etc` is "outside repository", not a wipe.
+    git worktree remove only a registered worktree. Anything else is "not a
+                        working tree", --force or not.
+    git rm              only tracked files, all of them recoverable from history.
+
+Judging those paths anyway asked on 84 real commands and protected nothing; in
+Codex, where an ask becomes a refusal, it stopped 84 tasks. Not an allow, because
+an allow approves the whole call: it was tried, and `man git clean && curl -X
+DELETE ...` came back approved on the strength of a word.
+
+The exception is a git clean whose tree has been MOVED, which still asks.
+--work-tree and GIT_WORK_TREE make it any path; --git-dir or GIT_DIR alone make
+it the cwd whether or not that is a repository; `git config core.worktree`
+persists a path for the next clean; and `git init` makes the cwd a repository
+with nothing tracked. Any of those turns `git clean -fdx` into rm -rf of a
+directory git never bounded -- `git --work-tree=/ clean -fdx` is rm -rf / minus
+the tracked files. No real command has done it.
+
+That check is per line, so it cannot see a relocation made by an earlier tool
+call -- a `git config core.worktree /` alone, then a clean. Over-asking is the
+known cost the other way: `git rev-parse --git-dir && git clean -fdx` asks.
 
 Within that scope it is an allowlist, not a blocklist: an operand must be
 *proven* safe or the command falls through to `ask`. Every parse failure,
@@ -545,7 +561,33 @@ RCLONE_WORD_RE = re.compile(r"(?<![\w-])rclone(?![\w-])")
 RCLONE_ACTION_RE = re.compile(
     r"(?<![\w-])(?:" + "|".join(sorted(RCLONE_DESTRUCTIVE, key=len, reverse=True)) + r")(?![\w-])")
 GIT_WORD_RE = re.compile(r"(?<![\w-])git(?![\w-])")
-GIT_CLEAN_RE = re.compile(r"(?<![\w-])clean(?![\w-])")
+# `clean` as git's subcommand, not the word anywhere on a line that runs git.
+# The bare word made `git diff --quiet && echo clean` and `make clean` danger,
+# and a `source` or `bash -c` beside them then asked on 53 real commands that
+# were never a git clean. No separator may sit between the two words, which is
+# GIT_RM_RE's rule with a token class wide enough for `-C "$S/repo"`.
+GIT_CLEAN_RE = re.compile(
+    r"(?<![\w-])git(?![\w-])(?:[ \t]+[^\s;&|]+){0,8}?[ \t]+clean(?![\w-])")
+# Anything that moves git clean's work tree off the repository it would find on
+# its own -- see the module docstring and git_relocates. Config keys are
+# case-insensitive to git, so `git config Core.WorkTree /` is the same key.
+# `gitdir:` is a .git FILE pointing elsewhere, which makes its directory a work
+# tree exactly as `git init` does.
+GIT_RELOCATE_RE = re.compile(
+    r"(?<![\w-])(?:--work-tree|--git-dir|GIT_WORK_TREE|GIT_DIR)(?![\w-])"
+    r"|(?i:core\.worktree)|(?<![\w-])gitdir:")
+GIT_CLEAN_LABEL = ("git clean removes untracked and ignored files, "
+                   "which are not in history and cannot be restored")
+GIT_RELOCATED = ("the work tree is relocated (--work-tree, --git-dir, GIT_DIR, "
+                 "core.worktree, gitdir: or git init), so git clean is bounded "
+                 "by that path and not by a repository")
+# ...and the same, per token after the shell has removed its quoting. An option
+# held in a variable (`OPT=--work-tree=/`) counts too, since `git $OPT clean` is
+# how it would be spent.
+GIT_RELOCATE_TOKEN_RE = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*=)?--(?:work-tree|git-dir)(?:=|$)"
+    r"|^(?:GIT_WORK_TREE|GIT_DIR)="
+    r"|(?:^|=)core\.worktree(?:=|$)", re.I)
 
 # Each pair is (command name, the flag that makes it destructive). Both must
 # appear before the conservative bail-outs fire, so `git diff -r $(...)` -- a
@@ -1869,11 +1911,9 @@ def rclone_targets(argv):
 def strip_redirections(argv):
     """-> argv without redirections. `2>/dev/null` is not three more operands.
 
-    shlex splits a redirection into its own tokens, so a command that sends its
-    noise away arrives carrying `/dev/null` -- an absolute path outside every
-    safe root, and enough on its own to hold up the whole line. The rm scanner
-    has dropped these since it was written; the subcommands below take their
-    operands as a plain list and never did.
+    shlex splits a redirection into its own tokens. git reads no operands any
+    more, but it still has to find its subcommand, and `git >/dev/null clean`
+    put `>` where git_subcommand looks for one.
     """
     out, i = [], 0
     while i < len(argv):
@@ -1888,25 +1928,31 @@ def strip_redirections(argv):
     return out
 
 
-def git_clean_targets(argv):
-    """git clean -f: -> (destructive, targets). Removes untracked and (with -x)
-    ignored files. Unlike `git rm`, none of it is recoverable from history."""
-    i, sub = git_subcommand(argv)
-    if sub != "clean":
-        return False, []
-    forced, paths = False, []
-    for t in argv[i + 1:]:
-        if t.startswith("--"):
-            if t == "--force":
-                forced = True
-        elif t.startswith("-") and len(t) > 1:
-            if "f" in t:
-                forced = True
-        else:
-            paths.append(t)
-    if not forced:
-        return False, []  # git clean refuses to do anything without -f
-    return True, paths or ["."]
+def git_relocates(text, toks, bounds):
+    """-> does anything on this line move the tree a git clean would clean?
+
+    Per LINE, not per segment: `export GIT_DIR=...; git clean -fdx` moves it
+    from the segment before. And read twice, because each reading misses what
+    the other sees. The raw text sees inside a masked substitution. The tokens
+    see past quoting, which the shell strips before git looks at anything --
+    `--work-tr""ee=/` reaches git as `--work-tree=/`, and no regex over the raw
+    text can promise to undo every spelling of that.
+    """
+    if GIT_RELOCATE_RE.search(text):
+        return True
+    if any(GIT_RELOCATE_TOKEN_RE.search(t) for t in toks):
+        return True
+    # `git init` relocates by creating: the cwd becomes a repository with
+    # nothing tracked, so a clean after it removes everything under the cwd.
+    # Any git token, not command_word's: it stops at a wrapper's own option, so
+    # `sudo -u root git init` would hide the init.
+    for start, end in bounds:
+        seg = strip_redirections(toks[start:end])
+        for j, t in enumerate(seg):
+            if (os.path.basename(t) in GIT_NAMES
+                    and git_subcommand(seg[j:])[1] == "init"):
+                return True
+    return False
 
 
 def git_subcommand(argv):
@@ -1920,33 +1966,6 @@ def git_subcommand(argv):
             continue
         i += 1
     return (i, argv[i]) if i < len(argv) else (i, "")
-
-
-def git_worktree_targets(argv):
-    """git worktree remove: -> (destructive, targets, forced).
-
-    With --force it deletes the worktree directory outright, untracked files
-    included -- the property that puts `git clean` in scope and keeps `git rm`
-    out of it. Without it, git declines every worktree that holds anything
-    unrecoverable, so the flag is the part worth reporting.
-    """
-    i, sub = git_subcommand(argv)
-    if sub != "worktree":
-        return False, [], False
-    rest = argv[i + 1:]
-    if not rest or rest[0] != "remove":
-        return False, [], False
-    forced, paths = False, []
-    for t in rest[1:]:
-        if t.startswith("--"):
-            if t == "--force":
-                forced = True
-        elif t.startswith("-") and len(t) > 1:
-            if "f" in t:
-                forced = True
-        else:
-            paths.append(t)
-    return True, paths, forced
 
 
 def ssh_remote_command(argv):
@@ -1978,11 +1997,12 @@ HANDLED = {"find", "fd", "fdfind", "rsync", "rclone", "ssh"} | GIT_NAMES
 
 
 def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
-                    may_clear=False):
+                    may_clear=False, git_relocated=False):
     """-> [Finding] for the non-rm commands in one segment.
 
     may_clear is decided per SEGMENT by analyse, because that is the unit a
     rebinding can sit before or after; every target found in here shares it.
+    git_relocated is decided per LINE, for the reason GIT_RELOCATE_RE gives.
     """
     out = []
     segment = argv
@@ -2046,53 +2066,12 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                      else "rclone %s destroys what it names" % sub)
             rate(targets, label, f"rclone {sub} with no operand")
     elif base in GIT_NAMES:
-        gargv = strip_redirections(argv)
-        destructive, paths = git_clean_targets(gargv)
-        label = ("git clean removes untracked and ignored files, "
-                 "which are not in history and cannot be restored")
-        worktree = forced = False
-        if not destructive:
-            destructive, paths, forced = git_worktree_targets(gargv)
-            worktree = destructive
-            label = ("git worktree remove deletes the worktree directory, "
-                     "untracked files included")
-        if worktree and not forced:
-            # Bounded by git rather than by the path, which is why no operand is
-            # judged here: `remove` declines a worktree holding an untracked or
-            # modified file, and declines a path that is not a registered
-            # worktree at all. There is no spelling of the operand that turns
-            # this into an rm -rf -- an unset variable is a usage error, not a
-            # delete. Only ignored files can go, and only from inside a worktree.
-            out.append(Finding("allow", segment, label,
-                               paths[0] if paths else None,
-                               "git refuses to remove a worktree holding "
-                               "anything unrecoverable without --force"))
-        elif destructive:
-            for t in paths:
-                # bare_var_ok stays False here, and for worktree remove that
-                # is knowingly conservative rather than true: with no operand
-                # git prints its usage and with an empty one it says `'' is not
-                # a working tree`, so `remove --force "$W"` cannot become a
-                # delete and the reason it gets ("falls back to the current
-                # directory") describes git clean, not this. Setting it to
-                # `worktree` was measured -- 9 more allows across 579 real
-                # verdicts, against one corpus command moving ask -> allow, so
-                # it costs a fixture regeneration to buy almost nothing. Left
-                # here rather than done, and the price is recorded so the next
-                # person does not have to measure it again.
-                d, r = classify_operand(t, cwd, bare_var_ok=False,
-                                        assigned=assigned, loops=loops,
-                                        may_clear=may_clear)
-                # git clean runs in the tree you are standing in, and untracked
-                # and ignored files are not in history: even a "safe" path only
-                # earns a prompt there, never a silent pass, and saying "literal
-                # relative path" would read like a clean bill. A forced worktree
-                # remove is already bounded to one registered worktree, so it
-                # keeps the ordinary path verdict instead.
-                if d == "allow" and not worktree:
-                    d, r = "ask", ("the path itself is bounded, but nothing "
-                                   "under it is recoverable")
-                out.append(Finding(d, segment, label, t, r))
+        # No finding at all unless the tree moved -- see the module docstring.
+        # `clean` anywhere in the segment rather than git_subcommand's answer,
+        # because `git $OPT clean` puts an expansion where it looks.
+        if git_relocated and "clean" in argv:
+            out.append(Finding("ask", segment, GIT_CLEAN_LABEL, None,
+                               GIT_RELOCATED))
     elif base == "ssh":
         # assigned is deliberately NOT passed into the recursion. The local shell
         # expands a double-quoted remote command before ssh runs, and shlex has
@@ -2283,10 +2262,20 @@ def analyse(cmd, cwd, depth=0):
             findings.append(Finding(d, segment, None, op, r))
 
     # --- everything else, one segment at a time.
+    git_relocated = git_relocates(text, toks, bounds)
     for start, end in bounds:
         findings.extend(
             analyse_segment(toks[start:end], cwds, depth, assigned, loops,
-                            start < rebind_at))
+                            start < rebind_at, git_relocated))
+
+    # A relocated clean the segments never saw: inside a substitution that is
+    # not in command position (`echo $(git --work-tree=/ clean -fdx)`), whose
+    # body mask_opaque hid from the tokens, or with its subcommand spelled by
+    # one (`git --work-tree=/ $(echo clean)`). The raw text still shows it.
+    if (git_relocated and GIT_CLEAN_RE.search(text)
+            and not any(f.reason == GIT_RELOCATED for f in findings)):
+        findings.append(bare("ask", f"{mark('git clean')} on a line that "
+                                    f"relocates its work tree -- {GIT_RELOCATED}"))
 
     if not found_rm and not findings:
         # Nothing survived parsing. Every construct that could execute a string

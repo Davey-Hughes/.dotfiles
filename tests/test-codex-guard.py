@@ -35,6 +35,18 @@ class GuardTests(unittest.TestCase):
         self.assert_denied(result)
         self.assertIn("cannot open a confirmation", str(result))
 
+    def test_git_is_left_to_codex(self):
+        for command in ["git clean -fdx", "git worktree remove --force /home/u/wt",
+                        'git -C "$S/replay" clean -fdq']:
+            with self.subTest(command=command):
+                self.assertIsNone(guard.evaluate(payload(command)))
+
+    def test_relocated_git_clean(self):
+        for command in ["git --work-tree=/ clean -fdx", 'git --work-tr""ee=/ clean -fdx',
+                        "git init -q && git clean -fdx"]:
+            with self.subTest(command=command):
+                self.assert_denied(guard.evaluate(payload(command)))
+
     def test_catastrophic_and_compound_commands(self):
         for command in ["rm -rf /", "git status && rm -rf /etc/example",
                         "find /etc -delete", "rsync --delete src/ /etc/example/"]:

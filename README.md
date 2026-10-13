@@ -80,7 +80,10 @@ it. The adapter in `config/codex/hooks/` uses the existing
 `config/.claude/hooks/rm_guard.py` classifier directly, so the dotfiles checkout
 must remain available. It leaves safe commands to normal permissions and blocks
 both catastrophic commands and commands the classifier would ask about in
-Claude. Codex does not support a hook returning `ask`; this version has no
+Claude. Git commands pass through, because git bounds its own deletions; the
+one exception is a `git clean` on a line that moves its work tree
+(`--work-tree`, `--git-dir`, `GIT_DIR`, `GIT_WORK_TREE`, `core.worktree`, or a
+`git init`). Codex does not support a hook returning `ask`; this version has no
 approval bypass. Inspect and run an intentionally blocked command manually
 outside Codex. Run `python3 tests/test-codex-guard.py` to check the adapter.
 

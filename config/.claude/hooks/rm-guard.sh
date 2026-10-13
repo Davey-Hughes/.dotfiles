@@ -41,9 +41,12 @@ fi
 # Over-asking is the correct failure here.
 #
 # Two things it does NOT ask about, matching rm_guard.py's scope: rm without a
-# recursion flag, and `git rm` (a working-tree operation, recoverable from
-# history). Both are tracked per pipeline segment so `git rm -r x && rm -rf /`
-# still asks on the second segment.
+# recursion flag, and git -- `git rm`, `git clean` and `git worktree remove` are
+# all bounded by git rather than by their operand. Both are tracked per pipeline
+# segment so `git rm -r x && rm -rf /` still asks on the second segment. The one
+# git exception is rm_guard.py's too: a `git clean` on a line that relocates the
+# work tree (--work-tree, --git-dir, GIT_DIR, core.worktree, git init) is bounded
+# by that path instead.
 #
 # Note this path only ever ASKS. It has no allow, so it cannot do what
 # rm_guard.py's RISKY_NEIGHBOURS exists to stop -- hand a whole tool call a
@@ -58,15 +61,25 @@ verdict() {
   [ "$n_fd"     = 1 ] && [ "$f_fdexec"  = 1 ] && ask
   [ "$n_rsync"  = 1 ] && [ "$f_rsdel"   = 1 ] && ask
   [ "$n_rclone" = 1 ] && [ "$f_rcact"   = 1 ] && ask
-  [ "$is_git"   = 1 ] && [ "$f_clean"   = 1 ] && ask   # git clean, unlike git rm
-  [ "$is_git"   = 1 ] && [ "$f_wt"      = 1 ] && [ "$f_rmv" = 1 ] && ask
+  [ "$has_git"  = 1 ] && [ "$f_clean"   = 1 ] && [ "$reloc" = 1 ] && ask
   return 0
 }
+# is_git is git in COMMAND position, and exempts the segment's rm as git rm.
+# has_git is git anywhere in it, which is all the relocation rule needs: head
+# detection stops at `GIT_DIR=/x` (its basename is `x`) and at a wrapper's own
+# option, and those are exactly the relocated spellings.
 reset_seg() { n_rm=0 n_find=0 n_fd=0 n_rsync=0 n_rclone=0
               f_rec=0 f_finddel=0 f_fdexec=0 f_rsdel=0 f_rcact=0 f_clean=0
-              f_wt=0 f_rmv=0 is_git=0 head=1; }
+              is_git=0 has_git=0 head=1; }
+# Line-wide, like rm_guard.py's: an export in one segment relocates the next.
+# Matched case-insensitively (git's config keys are) and after stripping quotes
+# and backslashes (the shell does, so `--work-tr""ee` reaches git whole). Crude
+# in the usual direction: a commit message mentioning --git-dir counts.
+RELOC='--work-tree|--git-dir|GIT_WORK_TREE|GIT_DIR|core\.worktree|gitdir:|(^|[^A-Za-z0-9_-])init([^A-Za-z0-9_-]|$)'
 
 if [ -n "$cmd" ]; then
+  reloc=0
+  printf '%s' "${cmd//[\"\'\\]/}" | grep -Eiq -- "$RELOC" && reloc=1
   cmd=${cmd//$'\n'/ }                      # flatten multi-line commands
   # read -ra splits on whitespace WITHOUT glob-expanding, so a literal /* in the
   # command is never expanded by this guard.
@@ -92,13 +105,12 @@ if [ -n "$cmd" ]; then
       fd|fdfind)  n_fd=1 ;;
       rsync)      n_rsync=1 ;;
       rclone)     n_rclone=1 ;;
+      git)        has_git=1 ;;
     esac
     case "$t" in
       -delete|-exec|-execdir|-ok|-okdir)            f_finddel=1 ;;
       -x|-X|--exec|--exec-batch)                    f_fdexec=1 ;;
       --delete|--delete-*|--del|--remove-source-files) f_rsdel=1 ;;
-      worktree)                                     f_wt=1 ;;
-      remove)                                       f_rmv=1 ;;
       sync|purge|delete|deletefile|rmdir|rmdirs|move|cleanup) f_rcact=1 ;;
       clean)                                        f_clean=1 ;;
       --recursive|--recursive=*|--no-preserve-root) f_rec=1 ;;
@@ -111,8 +123,17 @@ else
   # jq missing / no command field: coarse scan of the raw payload. `git rm` is
   # rewritten to `git-rm` first; the left-hand boundary class excludes `-`, so
   # the rewritten form no longer matches.
-  printf '%s' "$input" \
+  #
+  # JSON spells a newline or tab as a backslash and a letter, so `git init`
+  # then a newline arrives as `init\n` -- and with the backslash stripped below,
+  # as the word `initn`. Back to whitespace first, so word boundaries hold.
+  raw=${input//\\n/ }
+  raw=${raw//\\t/ }
+  printf '%s' "$raw" \
     | sed -E 's/(^|[^A-Za-z0-9_-])git[[:space:]]+rm([^A-Za-z0-9_-]|$)/\1git-rm\2/g' \
-    | grep -Eq '(^|[^A-Za-z0-9_-])rm[[:space:]]+(-[[:alnum:]]*[rR]|--recursive|--no-preserve-root)|(^|[^A-Za-z0-9_-])(-delete|-execdir|-exec|--delete|--del|--exec-batch|--remove-source-files)([^A-Za-z0-9_-]|$)|rclone[[:space:]]+(sync|purge|delete|move|cleanup)|clean[[:space:]]+-[[:alnum:]]*f|worktree[[:space:]]+remove' && ask
+    | grep -Eq '(^|[^A-Za-z0-9_-])rm[[:space:]]+(-[[:alnum:]]*[rR]|--recursive|--no-preserve-root)|(^|[^A-Za-z0-9_-])(-delete|-execdir|-exec|--delete|--del|--exec-batch|--remove-source-files)([^A-Za-z0-9_-]|$)|rclone[[:space:]]+(sync|purge|delete|move|cleanup)' && ask
+  # git clean only when something on the line relocates its work tree.
+  printf '%s' "$raw" | grep -Eq '(^|[^A-Za-z0-9_-])clean([^A-Za-z0-9_-]|$)' \
+    && printf '%s' "${raw//[\"\'\\]/}" | grep -Eiq -- "$RELOC" && ask
 fi
 exit 0

@@ -38,9 +38,10 @@ def payload(cmd, cwd=CWD):
     return json.dumps({"tool_input": {"command": cmd}, "cwd": cwd})
 
 
-def run(argv, cmd, cwd=CWD):
+def run(argv, cmd, cwd=CWD, env=None):
     """-> (decision, reason). 'pass' means silence, 'crash' means it died."""
-    p = subprocess.run(argv, input=payload(cmd, cwd), capture_output=True, text=True)
+    p = subprocess.run(argv, input=payload(cmd, cwd), capture_output=True,
+                       text=True, env=env)
     if p.returncode != 0:
         return "crash", p.stderr.strip()
     if not p.stdout.strip():
@@ -164,7 +165,8 @@ CASES = [
 
     # --- a message argument must not shield a real command -------------------
     ("commit then a real rm", 'git commit -m "chore: clean up" && rm -rf /', "deny"),
-    ("commit then a real git clean", 'git commit -m "wip" && git clean -fdx', "ask"),
+    ("commit then a real relocated git clean",
+     'git commit -m "wip" && git --work-tree=/ clean -fdx', "ask"),
     ("commit then an rm of $HOME", 'git commit -m "clean" ; rm -rf "$HOME"', "deny"),
 
     # --- unreadable text asks only when something destructive is in play -----
@@ -184,7 +186,7 @@ CASES = [
     ("fd -X rm", "fd -e log -X rm -rf /etc", "ask"),
     ("rsync --delete prunes the destination", "rsync -a --delete /src/ /etc/dst/", "ask"),
     ("rclone sync", "rclone sync /src remote:bucket", "ask"),
-    ("git clean -fdx", "git clean -fdx", "ask"),
+    ("git clean is git's business", "git clean -fdx", "pass"),
     ("ssh runs it on the far end", "ssh box 'rm -rf /var/data'", "ask"),
     ("eval hides its arguments", 'eval "rm -rf $X/*"', "ask"),
     ("--no-preserve-root", "rm -rf --no-preserve-root /", "deny"),
@@ -321,7 +323,8 @@ CASES = [
     ("ionice with option arguments", "ionice -c3 -n7 find / -delete", "deny"),
     ("...and the same for the other guarded commands",
      "timeout 5 rsync -a --delete /src/ /etc/dst/", "ask"),
-    ("...including git", "sudo -u root git clean -fdx", "ask"),
+    ("...including git", "nice -n 5 git --work-tree=/ clean -fdx", "ask"),
+    ("...and through sudo", "sudo -u root git --work-tree=/ clean -fdx", "ask"),
 
     # --- fd's search roots ---------------------------------------------------
     # --search-path was in the value-option set, so its value was discarded and
@@ -343,41 +346,97 @@ CASES = [
      "rsync -a --remove-source-files /home/u/ /backup/", "ask"),
     ("rsync --delete still prunes the destination",
      "rsync -a --delete /src/ /etc/dst/", "ask"),
-    # git worktree remove is bounded by git's own refusals, not by the path.
-    # Verified against git 2.55: plain `remove` refuses on ANY untracked or
-    # modified file ("contains modified or untracked files, use --force"), and
-    # refuses outright on a path that is not a registered worktree -- so unlike
-    # rm -r it cannot descend into a directory it was merely pointed at. That
-    # makes the force flag, not the operand, the thing worth judging.
-    ("an unforced worktree remove cannot destroy anything unrecoverable",
-     "git worktree remove /home/u/wt", "allow"),
-    ("...so the operand does not need clearing: git refuses a non-worktree",
-     "git worktree remove /", "allow"),
-    ("...and an unset variable degrades to a usage error, not a delete",
-     'git worktree remove "$W"', "allow"),
-    ("--force deletes untracked files, so the path is judged after all",
-     "git worktree remove --force /home/u/wt", "ask"),
-    ("...short flag too", "git worktree remove -f /home/u/wt", "ask"),
-    ("...and trailing, which is how git accepts it as well",
-     "git worktree remove /home/u/wt --force", "ask"),
-    ("a forced remove under a safe root still clears",
-     "git worktree remove --force /tmp/wt", "allow"),
-    ("...reached through git -C too",
-     "git -C /home/u/proj worktree remove -f /tmp/wt", "allow"),
-    ("a redirection is not a worktree to remove",
-     "git worktree remove --force /tmp/wt 2>/dev/null", "allow"),
-    # A forced remove keeps bare_var_ok=False, so an unguarded expansion asks
-    # even though git would only print its usage. See the comment at the call.
-    ("a forced remove still asks about an unguarded expansion",
-     'git worktree remove --force "$WT"', "ask"),
-    ("...and a ${VAR:?}-guarded one clears",
-     'git worktree remove --force "${WT:?}"', "allow"),
-    ("git clean asks about one too", 'git clean -fdx "$W"', "ask"),
-    ("git worktree add is not a delete", "git worktree add /tmp/wt HEAD", "pass"),
-    # git clean is the opposite case and keeps its downgrade: it runs in the
-    # tree you are standing in, and nothing bounds what it finds there.
-    ("git clean keeps its downgrade on a safe path",
-     "git clean -fdx /tmp/build", "ask"),
+    # git is left alone, because git bounds its own deletes and the path does
+    # not. Verified against git 2.56: `worktree remove` refuses a path that is
+    # not a registered worktree, --force or not, and `clean` refuses one outside
+    # its repository. So no operand is judged -- not `/`, not an unguarded
+    # expansion -- and none of these asks.
+    ("worktree remove is git's business", "git worktree remove /home/u/wt", "pass"),
+    ("...forced", "git worktree remove --force /home/u/wt", "pass"),
+    ("...at a path git refuses as not a worktree",
+     "git worktree remove --force /", "pass"),
+    ("...with a redirection", "git worktree remove --force /home/u/wt 2>/dev/null",
+     "pass"),
+    ("...through an unguarded expansion",
+     'git worktree remove --force "$WT"', "pass"),
+    ("git clean at a path git refuses as outside its repository",
+     "git clean -fdx /etc", "pass"),
+    ("...through git -C and an unguarded expansion",
+     'git -C "$S/replay2" clean -fdq', "pass"),
+    # Left alone, and NOT allowed: an allow approves the whole call, and these
+    # all came back allow when git was approved outright. Silence leaves the
+    # neighbours to normal permissions, where they were before.
+    ("git does not approve its neighbours",
+     "man git clean && curl -X DELETE http://prod/api/db", "pass"),
+    ("...nor a dry run", "git clean -n; truncate -s 0 /home/u/db.sqlite", "pass"),
+    ("...nor an eval", 'eval "$SETUP" && git worktree remove --force /home/u/wt',
+     "pass"),
+    # ...and with no git finding on the line, a recursive rm git cannot account
+    # for is still noticed.
+    ("git does not hide an alias's rm",
+     "git -c alias.n='!rm -rf ~' n; git clean -fdx", "ask"),
+    # The bound moves with the work tree, and then git clean is rm -rf of
+    # whatever is untracked there -- which, outside a repository, is all of it.
+    ("a relocated work tree asks", "git --work-tree=/ clean -fdx", "ask"),
+    ("...in its two-token form", "git --work-tree / clean -fdx", "ask"),
+    ("...through --git-dir alone", "git --git-dir=/tmp/r.git clean -fdx", "ask"),
+    ("...through GIT_DIR", "GIT_DIR=/tmp/r.git git clean -fdx", "ask"),
+    ("...through an export, from the segment before",
+     'export GIT_WORK_TREE="$W"/; git clean -fdx', "ask"),
+    ("...through core.worktree", "git -c core.worktree=/ clean -fdx", "ask"),
+    ("...persisted, in any case", "git config Core.WorkTree / && git clean -fdx",
+     "ask"),
+    ("...through git init, which makes the cwd the repository",
+     "cd /home/u && git init -q && git clean -fdxq", "ask"),
+    # command_word stops at a wrapper's own option, so the init is found by
+    # looking at every git token rather than only the command word.
+    ("...behind a wrapper's option", "sudo -u root git init && git clean -fdx",
+     "ask"),
+    ("...and behind timeout", "timeout 5 git init -q && git clean -fdx", "ask"),
+    ("...through a .git file pointing elsewhere",
+     "echo 'gitdir: /tmp/r.git' > .git && git clean -fdx", "ask"),
+    # A substitution's body is masked from the tokens, so only the raw text
+    # shows the clean -- in an argument, an assignment, or as the subcommand.
+    ("...inside a substitution", "echo $(git --work-tree=/ clean -fdx)", "ask"),
+    ("...inside backticks", "echo `git --work-tree=/ clean -fdx`", "ask"),
+    ("...inside an assignment", "X=$(git --work-tree=/ clean -fdx)", "ask"),
+    ("...with the subcommand substituted",
+     "git --work-tree=/ $(echo clean) -fdx", "ask"),
+    ("...over ssh too", "ssh box 'git --work-tree=/ clean -fdx'", "ask"),
+    # The shell strips quoting before git reads the option, so the guard has to
+    # read it after the same stripping -- the raw text never says --work-tree.
+    ("...through quoting", 'git --work-tr""ee=/ clean -fdx', "ask"),
+    ("...through a backslash", "git --wor\\k-tree=/ clean -fdx", "ask"),
+    ("...through quoting in a variable name", 'GIT_DI""R=/tmp/r.git git clean -fdx',
+     "ask"),
+    ("...through an option held in a variable",
+     "OPT=--work-tree=/; git $OPT clean -fdx", "ask"),
+    # Relocating is only a hazard for clean. A remove deletes the registered
+    # worktree it names wherever the work tree is.
+    ("a relocated worktree remove is still left alone",
+     "git --git-dir=/tmp/r.git worktree remove --force /home/u/wt", "pass"),
+    # ...and a commit message that merely mentions one is prose.
+    ("a message mentioning --work-tree is not a relocation",
+     'git commit -m "use --work-tree" && git clean -fdx', "pass"),
+    # `clean` is danger only as git's subcommand. As any word on a git line it
+    # turned 53 real `git diff --quiet && echo clean` and `make clean` lines
+    # into asks once a `source` or `bash -c` stood beside them.
+    ("echo clean is not git clean",
+     'source env.sh && git diff --quiet && echo clean', "pass"),
+    ("...nor is make clean", "git status; bash -c 'make clean'", "pass"),
+    # ...while a real one beside an opaque construct still asks: what env.sh
+    # sets could be GIT_DIR, which is the one thing that unbounds it.
+    ("a git clean beside source asks", 'source env.sh && git -C "$P" clean -fdx',
+     "ask"),
+    # git left alone does not soften what shares the line.
+    ("git does not soften an rm beside it",
+     "git worktree remove --force /home/u/wt && rm -rf /etc/x", "ask"),
+    # The one way a git segment rides an allow now: an rm proven safe beside it
+    # approves the whole call, as it always has. A relocation still outranks it.
+    ("a safe rm's allow covers the git beside it",
+     "rm -rf /tmp/x && git clean -fdx", "allow"),
+    ("...but not a relocated clean",
+     "rm -rf /tmp/x && git init -q && git clean -fdx", "ask"),
 
     # --- an allow reaches the whole tool call --------------------------------
     # There is no per-segment scoping: proving one delete safe approved whatever
@@ -794,6 +853,35 @@ def check_bindings():
     return fails
 
 
+# The degraded path's git rules, which mirror rm_guard.py's: git is left alone
+# unless the line relocates a clean's work tree.
+DEGRADED_GIT = (
+    ("git clean", "git clean -fdx", "pass"),
+    ("a forced worktree remove", "git worktree remove --force /home/u/wt", "pass"),
+    ("a relocated git clean", "git --work-tree=/ clean -fdx", "ask"),
+    ("an rm beside git", "git clean -fdx && rm -rf /etc/x", "ask"),
+    # The spellings a command-position-only notion of "git" lost: an env
+    # prefix, an export glued to its `;`, a wrapper's option argument.
+    ("GIT_DIR as a prefix", "GIT_DIR=/tmp/r.git git clean -fdx", "ask"),
+    ("an export", "export GIT_DIR=/tmp/r.git; git clean -fdx", "ask"),
+    ("a wrapper option", "nice -n 5 git --work-tree=/ clean -fdx", "ask"),
+    ("quoting", 'git --work-tr""ee=/ clean -fdx', "ask"),
+    ("a config key in another case", "git config Core.WorkTree / && git clean -fdx",
+     "ask"),
+    ("git init", "git init -q && git clean -fdx", "ask"),
+    # JSON spells these as a backslash and a letter, which the raw path has to
+    # turn back into whitespace before `init` ends at a word boundary.
+    ("git init then a newline", "git init\ngit clean -fdx", "ask"),
+    ("tab-separated", "git\t--work-tree=/\tclean\t-fdx", "ask"),
+    ("a .git file", "echo 'gitdir: /tmp/r.git' > .git && git clean -fdx", "ask"),
+    # ...and git anywhere must not lend an rm the git-rm exemption.
+    ("an rm of a path named git", "rm -rf /etc/git", "ask"),
+)
+# Each runs twice: through jq's per-segment scan, and with jq hidden, through
+# the grep over the raw payload.
+WRAPPER_CHECKS = 5 + 2 * len(DEGRADED_GIT)
+
+
 def check_wrapper():
     """rm-guard.sh must relay the guard's verdict, and must never fail silent.
 
@@ -829,6 +917,28 @@ def check_wrapper():
         if "could not run" not in reason or "\x1b" in reason:
             fails.append(("wrapper: degraded path names the failure", "", "could not run",
                           d, reason[:120]))
+
+        # A PATH holding only what the raw scan needs: no jq, and no python3
+        # either, so the guard cannot run.
+        tools = {t: shutil.which(t) for t in ("bash", "cat", "sed", "grep")}
+        missing = sorted(t for t, path in tools.items() if not path)
+        if missing:
+            fails.append(("wrapper: degraded git checks need their tools", "",
+                          "bash, cat, sed, grep on PATH",
+                          "missing " + ", ".join(missing), ""))
+            return fails
+        bin_dir = os.path.join(tmp, "bin")
+        os.mkdir(bin_dir)
+        for tool in ("cat", "sed", "grep"):
+            os.symlink(tools[tool], os.path.join(bin_dir, tool))
+        no_jq = dict(os.environ, PATH=bin_dir)
+        for what, cmd, expected in DEGRADED_GIT:
+            d, _ = run([tools["bash"], os.path.join(tmp, os.path.basename(WRAPPER))],
+                       cmd)
+            want(f"wrapper: degraded path, {what}", d, expected)
+            d, _ = run([tools["bash"], os.path.join(tmp, os.path.basename(WRAPPER))],
+                       cmd, env=no_jq)
+            want(f"wrapper: degraded path without jq, {what}", d, expected)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return fails
@@ -844,7 +954,7 @@ PLAIN_CASES = (
     "ls | xargs rm -rf /etc",
     'awk \'{print "rm -rf /"}\'',
     "rm -rf /tmp/build",
-    "git clean -fd",
+    "git --work-tree=/ clean -fd",
 )
 
 STRUCTURE_CHECKS = 15
@@ -928,19 +1038,19 @@ def check_render():
                           "absent" if want not in reason else "markers left in",
                           reason.replace("\x1b", "\\e")))
 
-    # shlex splits a redirection into tokens, and the git subcommands read every
-    # non-flag token as a path -- so this prompt used to name `/dev/null`, `2`
-    # and `>` as the things at risk while the operand git actually cleans, the
-    # whole tree at cwd, went unmentioned. The verdict was right for the wrong
-    # reason, which is the kind of prompt you learn to click through.
-    cmd = "git clean -fd >/dev/null 2>&1"
+    # shlex splits a redirection into tokens, and the git subcommands used to
+    # read every non-flag token as a path -- so this prompt named `/dev/null`,
+    # `2` and `>` as the things at risk. The verdict was right for the wrong
+    # reason, which is the kind of prompt you learn to click through. git reads
+    # no paths now; the one git prompt left has to name what it is about.
+    cmd = "git --work-tree=/ clean -fd >/dev/null 2>&1"
     _, reason = verdict(cmd)
     for what, want, present in (
             # The echoed segment still shows the redirection, because that is
             # what was typed. It is the operand ROWS that must not claim it.
             ("a redirection is not a path to clean",
              "/dev/null  absolute path outside safe roots", False),
-            ("...and the real operand is named", CWD, True),
+            ("...and the relocation is named", "the work tree is relocated", True),
     ):
         if (want in reason) != present:
             fails.append((f"render: {what}", cmd,
@@ -970,7 +1080,7 @@ def main():
             print(f"  why:  {first}")
         print()
 
-    total = len(CASES) + 5 + RENDER_CHECKS + len(BINDING_CASES)
+    total = len(CASES) + WRAPPER_CHECKS + RENDER_CHECKS + len(BINDING_CASES)
     print(f"{total - len(fails)}/{total} passed")
     return 1 if fails else 0
 
