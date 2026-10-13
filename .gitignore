@@ -72,6 +72,11 @@ config/openclaw/*
 !config/openclaw/skills/
 !config/openclaw/tmux-status/
 
+# OpenClaw's systemd user units are machine-local: the node's names this
+# machine's Gateway. They still live here so install.sh stows them; the README
+# has templates for both.
+os/arch/config/systemd/user/openclaw-*
+
 # Antigravity/Gemini: track ONLY hand-picked user-wide config.
 config/.gemini/*
 !config/.gemini/settings.json

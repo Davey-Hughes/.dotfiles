@@ -103,6 +103,8 @@ must_ignore=(
   "config/openclaw/openclaw.json"
   "config/openclaw/openclaw.json.bak.1"
   "config/openclaw/.env"
+  "os/arch/config/systemd/user/openclaw-node.service"
+  "os/arch/config/systemd/user/openclaw-tmux-status.service"
   "config/.claude/.claude.json"
   "config/.claude/history.jsonl"
   "config/.claude/projects/-Users-x/session.jsonl"
