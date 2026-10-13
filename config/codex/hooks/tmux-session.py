@@ -74,7 +74,9 @@ def tmux(*args):
     return subprocess.run(['tmux', *args], check=True, capture_output=True, text=True, timeout=2).stdout.strip()
 
 def main():
-    if not os.environ.get('TMUX') or not Path('/proc/self/stat').is_file():
+    # Hooks run in Codex's app-server daemon, which need not have started
+    # inside tmux. The adapter passes the pane it found as TMUX_PANE.
+    if not (os.environ.get('TMUX') or os.environ.get('TMUX_PANE')) or not Path('/proc/self/stat').is_file():
         return
     socket = tmux('display-message', '-p', '#{socket_path}')
     # Separate registries for separate tmux servers, including isolated tests.

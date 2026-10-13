@@ -94,6 +94,16 @@ session. Its terminal title shows the chat name, which tmux uses for automatic
 window names; manually renamed windows keep their names. Activity icons and
 prefix-`u` cover both Claude and Codex panes.
 
+Codex runs lifecycle hooks in its shared app-server daemon, with the
+environment that daemon started in, so `TMUX_PANE` in a hook names the pane
+Codex was first launched from, not the one showing the conversation. The title
+therefore ends in the thread id (`tui.terminal_title = ["thread", "thread-id"]`
+in the template), the adapter `config/codex/hooks/tmux-status.sh` finds the pane
+by it, and tmux drops it from the window name. A `config.toml` seeded before
+this keeps its old title: add `thread-id` after `thread` there, or with
+`/title`, and restart Codex. A session without it gets no activity icon and is
+not registered for resurrect.
+
 The shared resurrect save hook also handles Codex sessions. Lifecycle hooks
 record the current conversation and live process identity under
 `$XDG_STATE_HOME/codex/tmux-sessions`. On Linux, each manual or continuum save

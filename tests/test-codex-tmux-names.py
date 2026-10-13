@@ -37,10 +37,15 @@ class NamingTests(unittest.TestCase):
                             return
                         time.sleep(0.1)
                     self.assertEqual(actual, name)
-                tmux('select-pane', '-t', 'test:0.0', '-T', 'Port Codex config')
+                # The title ends in the thread id, for the status hooks to find
+                # the pane by. It is no part of the name.
+                thread = ' | 01a12f98-2517-7910-a451-6c0f8...'
+                tmux('select-pane', '-t', 'test:0.0', '-T', 'Port Codex config' + thread)
                 expect('Port Codex config')
-                tmux('select-pane', '-t', 'test:0.0', '-T', 'Renamed chat')
+                tmux('select-pane', '-t', 'test:0.0', '-T', 'Renamed chat' + thread)
                 expect('Renamed chat')
+                tmux('select-pane', '-t', 'test:0.0', '-T', 'docs | drafts')
+                expect('docs | drafts')
                 tmux('rename-window', '-t', 'test:0', 'My manual name')
                 tmux('select-pane', '-t', 'test:0.0', '-T', 'Another chat')
                 time.sleep(0.3)

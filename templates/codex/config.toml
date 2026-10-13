@@ -8,5 +8,8 @@ approvals_reviewer = "auto_review"
 
 [tui]
 vim_mode_default = true
-terminal_title = ["thread"]
+# The chat name names the tmux window. The thread id is how the status hooks
+# find this pane -- Codex runs them in a shared daemon, not here -- and tmux
+# drops it from the window name. Keep it after the name.
+terminal_title = ["thread", "thread-id"]
 theme = "tokyonight-moon"
