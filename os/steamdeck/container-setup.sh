@@ -111,17 +111,25 @@ install_packages() {
 }
 
 export_binaries() {
-  local pkg bins bin path exported=0 missing=0
+  local pkg bins bin path lookup_path exported=0 missing=0
 
   echo "==> Exporting binaries to ~/.local/bin"
   mkdir -p "$HOME/.local/bin"
+
+  # The container inherits the host PATH, and with $HOME shared that puts
+  # ~/.local/bin -- holding the previous run's wrappers -- ahead of /usr/bin. A
+  # lookup there finds the wrapper, and exporting it writes a wrapper that execs
+  # itself: every exported command then spins forever instead of running. The
+  # first run never shows it because ~/.local/bin is still empty.
+  lookup_path=$(printf '%s' "$PATH" | tr ':' '\n' |
+    grep -vxF -e "$HOME/.local/bin" -e "$HOME/.local/bin/" | paste -sd:)
 
   while read -r pkg bins; do
     [ -n "${bins:-}" ] || continue
     # Commas to spaces rather than juggling IFS: the loop below already runs
     # inside a `while read`, and reassigning IFS there breaks the outer split.
     for bin in ${bins//,/ }; do
-      path=$(command -v "$bin" 2>/dev/null)
+      path=$(PATH=$lookup_path command -v "$bin" 2>/dev/null)
       if [ -z "$path" ]; then
         echo "    WARNING: $pkg installed but '$bin' not on PATH; not exported" >&2
         missing=$((missing + 1))
