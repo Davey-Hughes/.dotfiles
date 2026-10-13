@@ -70,9 +70,7 @@ config/codex/themes/*
 config/openclaw/*
 !config/openclaw/skills.json5
 !config/openclaw/skills/
-!config/openclaw/plugins/
-config/openclaw/plugins/*
-!config/openclaw/plugins/tmux-status/
+!config/openclaw/tmux-status/
 
 # Antigravity/Gemini: track ONLY hand-picked user-wide config.
 config/.gemini/*

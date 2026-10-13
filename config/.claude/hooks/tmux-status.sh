@@ -27,9 +27,9 @@
 # keeps the name but not the title change, so SessionStart reads it back.
 #
 # Codex and OpenClaw drive the same states through adapters. Codex's is
-# ~/.config/codex/hooks/tmux-status.sh. OpenClaw's is a gateway plugin,
-# ~/.config/openclaw/plugins/tmux-status, which runs this script once per pane
-# showing the session, with TMUX_PANE set for it. That plugin also owns @cc_name
+# ~/.config/codex/hooks/tmux-status.sh. OpenClaw's is a Gateway client,
+# ~/.config/openclaw/tmux-status/bridge.js, which runs this script once per pane
+# showing the session, with TMUX_PANE set for it. That bridge also owns @cc_name
 # for OpenClaw panes (`label`), from the session label in the TUI footer.
 #
 # Never exits non-zero: a PreToolUse hook returning 2 would block the tool call.

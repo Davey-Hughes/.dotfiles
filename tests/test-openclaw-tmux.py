@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """OpenClaw tmux status and restore, against a fake tmux; never the user's server.
 
-The gateway plugin (config/openclaw/plugins/tmux-status/index.js) is driven
-through node with the real renderer and the real footer parser, so this covers
-the whole path from an OpenClaw hook to the pane options powerkit reads.
+The bridge (config/openclaw/tmux-status/bridge.js) is driven through node with
+Gateway events shaped like the ones a live Gateway sends, the real renderer and
+the real footer parser, so this covers the whole path from a Gateway event to
+the pane options powerkit reads. The connection itself is not exercised here.
 """
 import json
 import os
@@ -14,8 +15,9 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / 'config/openclaw/plugins/tmux-status'
-SESSIONS = PLUGIN / 'tmux-session.sh'
+BRIDGE_DIR = ROOT / 'config/openclaw/tmux-status'
+BRIDGE = BRIDGE_DIR / 'bridge.js'
+SESSIONS = BRIDGE_DIR / 'tmux-session.sh'
 RENDERER = ROOT / 'config/.claude/hooks/tmux-status.sh'
 
 KEY_A = 'agent:main:tui-5b4f9fd2-ed98-4cfb-b6e4-ba394d7945d7'
@@ -64,21 +66,32 @@ p.write_text(json.dumps(s))
 
 DRIVER = r'''
 // node -e puts the first argument after `--` at argv[1].
-const [plugin, renderer, sessions, stepsJson] = process.argv.slice(1);
-const { createTmuxStatus } = await import(plugin);
+const [bridge, renderer, sessions, stepsJson] = process.argv.slice(1);
+const { createTmuxStatus } = await import(bridge);
 const status = createTmuxStatus({ renderer, sessions, resolveTtlMs: 0, repeatWorkingMs: 0, startRetryMs: 10 });
 const { readFileSync, writeFileSync } = await import("node:fs");
+const state = () => JSON.parse(readFileSync(process.env.TEST_STATE, "utf8"));
+const snaps = [];
 for (const step of JSON.parse(stepsJson)) {
   if (step.screen) {
     // The TUI in a pane redraws its footer, e.g. after /session.
-    const state = JSON.parse(readFileSync(process.env.TEST_STATE, "utf8"));
-    state.panes[step.screen.pane].screen = step.screen.text;
-    writeFileSync(process.env.TEST_STATE, JSON.stringify(state));
+    const s = state();
+    s.panes[step.screen.pane].screen = step.screen.text;
+    writeFileSync(process.env.TEST_STATE, JSON.stringify(s));
     continue;
   }
-  status.handlers[step.hook](step.event ?? {}, step.ctx ?? {});
+  if (step.snap) {
+    const s = state();
+    snaps.push(Object.fromEntries(Object.entries(s.panes).map(([p, v]) => [p, v.opts ?? {}])));
+    continue;
+  }
+  if (step.refresh) status.refresh(true);
+  else if (step.seed) status.seed(step.seed);
+  else status.handle(step.event, step.payload);
   await status.idle();
 }
+await status.idle();
+process.stdout.write(JSON.stringify({ snaps, shown: [...status.shownKeys()] }));
 '''
 
 
@@ -177,7 +190,44 @@ class SaveTests(Base):
         self.assertEqual(list(self.dir.glob('save.txt.openclaw.*')), [])
 
 
-class PluginTests(Base):
+def changed(key=KEY_A, running=None, **row):
+    """A sessions.changed delta. running=None leaves the run state out."""
+    payload = {'sessionKey': key, **row}
+    if running is not None:
+        payload['hasActiveRun'] = running
+        payload.setdefault('status', 'running' if running else 'done')
+    return {'event': 'sessions.changed', 'payload': payload}
+
+
+def start(key=KEY_A, **row):
+    return changed(key, True, phase='start', **row)
+
+
+def settle(key=KEY_A, status='done', **row):
+    return changed(key, False, reason='agent.input.settled', status=status, **row)
+
+
+def reply(text, key=KEY_A):
+    return {'event': 'session.message', 'payload': {'sessionKey': key, 'message': {
+        'role': 'assistant', 'content': [{'type': 'thinking', 'thinking': 'hm'},
+                                         {'type': 'text', 'text': text}]}}}
+
+
+def tool(name, phase='start', key=KEY_A, args=None):
+    data = {'phase': phase, 'name': name, 'toolCallId': 'call-' + name}
+    if args is not None:
+        data['args'] = args
+    return {'event': 'session.tool', 'payload': {'sessionKey': key, 'stream': 'tool', 'data': data}}
+
+
+def end(text, key=KEY_A):
+    return [reply(text, key), settle(key)]
+
+
+SNAP = {'snap': True}
+
+
+class BridgeTests(Base):
     def setUp(self):
         super().setUp()
         self.node = shutil.which('node')
@@ -188,105 +238,150 @@ class PluginTests(Base):
                     '%3': {'cmd': 'claude', 'screen': footer(KEY_A)}})
 
     def drive(self, *steps):
+        flat = []
+        for step in steps:
+            flat.extend(step if isinstance(step, list) else [step])
         result = subprocess.run([self.node, '--input-type=module', '-e', DRIVER, '--',
-                                 str(PLUGIN / 'index.js'), str(RENDERER), str(SESSIONS),
-                                 json.dumps(list(steps))],
+                                 str(BRIDGE), str(RENDERER), str(SESSIONS), json.dumps(flat)],
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-
-    @staticmethod
-    def hook(name, key=KEY_A, event=None, **ctx):
-        return {'hook': name, 'event': event or {}, 'ctx': {'sessionKey': key, **ctx}}
-
-    def end(self, text, key=KEY_A):
-        return self.hook('agent_end', key, {'success': True, 'messages': [
-            {'role': 'user', 'content': 'hi'},
-            {'role': 'assistant', 'content': [{'type': 'text', 'text': text}]},
-            {'role': 'custom', 'content': 'yield marker'}]})
+        return json.loads(result.stdout)
 
     def test_turn_paints_only_panes_showing_the_session(self):
-        self.drive(self.hook('model_call_started'))
-        self.assertEqual(self.opts('%1')['@cc_state'], 'working')
-        self.assertNotIn('@cc_state', self.opts('%2'))
-        self.assertNotIn('@cc_state', self.opts('%3'))
-        self.drive(self.end('Done.'))
+        snaps = self.drive(start(), SNAP, end('Done.'))['snaps']
+        self.assertEqual(snaps[0]['%1']['@cc_state'], 'working')
+        self.assertNotIn('@cc_state', snaps[0]['%2'])
+        self.assertNotIn('@cc_state', snaps[0].get('%3', {}))
         self.assertEqual(self.opts('%1')['@cc_state'], 'idle')
 
     def test_dialogs_block_until_answered(self):
-        ask = {'toolName': 'ask_user', 'params': {}}
-        self.drive(self.hook('model_call_started'), self.hook('before_tool_call', event=ask))
+        snaps = self.drive(start(), tool('exec'), tool('ask_user'), SNAP,
+                           tool('ask_user', 'result'), SNAP,
+                           tool('secrets', args={'action': 'request'}), SNAP,
+                           tool('secrets', args={'action': 'list'}), SNAP)['snaps']
+        self.assertEqual([s['%1']['@cc_state'] for s in snaps],
+                         ['blocked', 'working', 'blocked', 'working'])
+
+    def test_direct_dialog_call_blocks_from_the_transcript(self):
+        ask = {'event': 'session.message', 'payload': {'sessionKey': KEY_A, 'message': {
+            'role': 'assistant', 'content': [{'type': 'toolCall', 'name': 'ask_user', 'arguments': {}}]}}}
+        answered = {'event': 'session.message', 'payload': {'sessionKey': KEY_A, 'message': {
+            'role': 'toolResult', 'toolName': 'ask_user', 'content': []}}}
+        snaps = self.drive(start(), ask, SNAP, answered, SNAP)['snaps']
+        self.assertEqual([s['%1']['@cc_state'] for s in snaps], ['blocked', 'working'])
+
+    def test_session_updates_mid_dialog_keep_it_blocked(self):
+        # Activity summaries and model calls arrive while the dialog is up.
+        self.drive(start(), tool('ask_user'), changed(running=True, reason='activity-summary'),
+                   changed(running=True, phase='model'))
         self.assertEqual(self.opts('%1')['@cc_state'], 'blocked')
-        self.drive(self.hook('after_tool_call', event=ask))
-        self.assertEqual(self.opts('%1')['@cc_state'], 'working')
-        self.drive(self.hook('before_tool_call',
-                             event={'toolName': 'secrets', 'params': {'action': 'request'}}))
-        self.assertEqual(self.opts('%1')['@cc_state'], 'blocked')
-        self.drive(self.hook('before_tool_call', event={'toolName': 'exec', 'params': {}}))
-        self.assertEqual(self.opts('%1')['@cc_state'], 'working')
 
     def test_question_failure_and_abort(self):
-        self.drive(self.hook('model_call_started'), self.end('**Which one?**'))
-        self.assertEqual(self.opts('%1')['@cc_state'], 'asked')
-        self.drive(self.hook('model_call_started'),
-                   self.hook('agent_end', event={'success': False, 'error': 'rate_limit', 'messages': []}))
-        self.assertEqual(self.opts('%1')['@cc_state'], 'blocked')
-        self.drive(self.hook('model_call_started'),
-                   self.hook('agent_end', event={'success': False, 'error': 'Run aborted', 'messages': []}))
+        snaps = self.drive(start(), end('**Which one?**'), SNAP,
+                           start(), settle(status='failed'), SNAP,
+                           start(), settle(status='killed', abortedLastRun=True), SNAP,
+                           start(), settle(status='failed', abortedLastRun=True), SNAP)['snaps']
+        self.assertEqual([s['%1']['@cc_state'] for s in snaps], ['asked', 'blocked', 'idle', 'idle'])
+
+    def test_settle_without_a_seen_start_still_ends_the_turn(self):
+        # The bridge connected mid-turn: the first thing it hears is the end.
+        self.drive(reply('Done.'), settle())
         self.assertEqual(self.opts('%1')['@cc_state'], 'idle')
 
     def test_background_subagents_keep_the_tab_busy(self):
         child = 'agent:main:subagent:1'
-        link = {'requesterSessionKey': KEY_A, 'childSessionKey': child}
-        spawned = {'hook': 'subagent_spawned', 'event': {'childSessionKey': child}, 'ctx': link}
-        ended = {'hook': 'subagent_ended', 'event': {'targetSessionKey': child}, 'ctx': link}
-        # Spawned twice on purpose: the count is of distinct children.
-        self.drive(self.hook('model_call_started'), spawned, spawned, self.end('Started it.'))
-        self.assertEqual(self.opts('%1')['@cc_subs'], '1')
-        self.assertEqual(self.opts('%1')['@cc_state'], 'working')
-        self.drive(spawned, ended)
-        self.assertEqual(self.opts('%1')['@cc_subs'], '0')
-        self.assertEqual(self.opts('%1')['@cc_state'], 'idle')
+        live = changed(child, True, spawnedBy=KEY_A, spawnDepth=1)
+        done = changed(child, False, spawnedBy=KEY_A, spawnDepth=1, reason='agent.input.settled')
+        # Live twice on purpose: the count is of distinct children.
+        snaps = self.drive(start(), live, live, end('Started it.'), SNAP, done, SNAP)['snaps']
+        self.assertEqual(snaps[0]['%1']['@cc_subs'], '1')
+        self.assertEqual(snaps[0]['%1']['@cc_state'], 'working')
+        self.assertEqual(snaps[1]['%1']['@cc_subs'], '0')
+        self.assertEqual(snaps[1]['%1']['@cc_state'], 'idle')
 
     def test_label_names_the_window(self):
-        self.drive(self.hook('model_call_started'))
-        self.assertEqual(self.opts('%1')['@cc_name'], 'openxr')
-        self.assertNotIn('@cc_name', self.opts('%2'))
+        snaps = self.drive(start(), SNAP, changed(reason='reset'))['snaps']
+        self.assertEqual(snaps[0]['%1']['@cc_name'], 'openxr')
+        self.assertNotIn('@cc_name', snaps[0]['%2'])
         self.assertGreater(self.read().get('renames', 0), 0)
-        self.drive(self.hook('session_start'))
         self.assertEqual(self.opts('%1')['@cc_name'], 'openxr')
+
+    def test_new_transcript_resets_the_tab(self):
+        # /new keeps the key and replaces the sessionId.
+        self.drive(start(sessionId='s1'), end('**Which one?**'), changed(running=False, sessionId='s2'))
+        self.assertNotIn('@cc_asked', self.opts('%1'))
+        self.assertNotEqual(self.opts('%1').get('@cc_state'), 'asked')
 
     def test_switching_session_resets_the_tab(self):
         child = 'agent:main:subagent:2'
-        link = {'requesterSessionKey': KEY_B, 'childSessionKey': child}
         # %1 is mid-turn on KEY_A when its TUI switches to KEY_B, which has a
-        # background child running. Any later event, for any session, notices.
-        self.drive(self.hook('model_call_started'), self.end('**Which one?**'),
-                   {'hook': 'subagent_spawned', 'event': {}, 'ctx': link},
+        # background child running. The next look at the panes notices.
+        self.drive(start(), end('**Which one?**'),
+                   changed(child, True, spawnedBy=KEY_B, spawnDepth=1),
                    {'screen': {'pane': '%1', 'text': footer(KEY_B, 'other')}},
-                   self.hook('model_call_started', 'agent:main:elsewhere'))
+                   {'refresh': True})
         self.assertEqual(self.opts('%1')['@cc_name'], 'other')
         self.assertEqual(self.opts('%1')['@cc_subs'], '1')
         self.assertNotIn('@cc_asked', self.opts('%1'))
         self.assertEqual(self.opts('%1')['@cc_state'], 'working')
         self.assertEqual(self.opts('%1')['@cc_colour'], '#bb9af7')
 
-    def test_session_end_clears(self):
-        self.drive(self.hook('model_call_started'), self.end('Done.'),
-                   {'hook': 'session_end', 'event': {'sessionKey': KEY_A, 'reason': 'reset'}})
+    def test_switching_to_a_running_session_shows_it_working(self):
+        self.drive(start(KEY_B), {'screen': {'pane': '%1', 'text': footer(KEY_B)}}, {'refresh': True})
+        self.assertEqual(self.opts('%1')['@cc_state'], 'working')
+
+    def test_deleted_session_clears(self):
+        self.drive(start(), end('Done.'), changed(reason='deleted'))
         self.assertNotIn('@cc_state', self.opts('%1'))
         self.assertNotIn('@cc_name', self.opts('%1'))
 
-    def test_compaction_keeps_state(self):
-        self.drive(self.hook('model_call_started'),
-                   {'hook': 'session_end', 'event': {'sessionKey': KEY_A, 'reason': 'compaction'}})
-        self.assertEqual(self.opts('%1')['@cc_state'], 'working')
+    def test_reconnect_snapshot_catches_up(self):
+        # Seeded rows are sessions.subscribe snapshot rows: key, not sessionKey.
+        row = {'key': KEY_A, 'hasActiveRun': True, 'status': 'running'}
+        snaps = self.drive({'seed': [row]}, SNAP,
+                           {'seed': [{**row, 'hasActiveRun': False, 'status': 'done'}]}, SNAP)['snaps']
+        self.assertEqual([s['%1']['@cc_state'] for s in snaps], ['working', 'idle'])
+
+    def test_reports_the_sessions_panes_show(self):
+        self.assertEqual(sorted(self.drive({'refresh': True})['shown']), sorted([KEY_A, KEY_B]))
 
     def test_no_tmux_is_harmless(self):
         bin_dir = self.dir / 'no-tmux'
         bin_dir.mkdir()
         (bin_dir / 'bash').symlink_to(shutil.which('bash'))
         self.env['PATH'] = str(bin_dir)
-        self.drive(self.hook('model_call_started'), self.end('Done.'))
+        self.drive(start(), end('Done.'))
+
+
+class TargetTests(unittest.TestCase):
+    """Which Gateway the bridge connects to, from openclaw.json."""
+
+    def target(self, config, env=None):
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not installed')
+        script = ('const { gatewayTarget } = await import(process.argv[1]);'
+                  'process.stdout.write(JSON.stringify(gatewayTarget(JSON.parse(process.argv[2]),'
+                  ' JSON.parse(process.argv[3]))));')
+        out = subprocess.run([node, '--input-type=module', '-e', script, '--', str(BRIDGE),
+                              json.dumps(config), json.dumps(env or {})],
+                             capture_output=True, text=True, check=True).stdout
+        return json.loads(out)
+
+    def test_local_gateway(self):
+        got = self.target({'gateway': {'port': 19999, 'auth': {'token': 'local'}}})
+        self.assertEqual((got['url'], got['token']), ('ws://127.0.0.1:19999', 'local'))
+
+    def test_remote_gateway(self):
+        got = self.target({'gateway': {'mode': 'remote', 'auth': {'token': 'local'},
+                                       'remote': {'url': 'wss://claw.example', 'token': 'remote'}}})
+        self.assertEqual((got['url'], got['token']), ('wss://claw.example', 'remote'))
+
+    def test_secret_refs_and_env_override(self):
+        got = self.target({'gateway': {'auth': {'token': {'source': 'env', 'id': 'X'}}}},
+                          {'OPENCLAW_GATEWAY_TOKEN': 'from-env', 'OPENCLAW_TMUX_STATUS_URL': 'ws://h:1'})
+        self.assertEqual((got['url'], got['token']), ('ws://h:1', 'from-env'))
+        self.assertNotIn('token', self.target({'gateway': {'auth': {'token': {'source': 'env'}}}}))
 
 
 if __name__ == '__main__':

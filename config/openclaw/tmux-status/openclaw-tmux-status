@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# openclaw-tmux-status -- start the tmux-status bridge (bridge.js).
+#
+# The bridge needs @openclaw/gateway-client, pinned in package-lock.json beside
+# this script. node_modules stays out of the dotfiles checkout: it is installed
+# into $XDG_DATA_HOME/openclaw-tmux-status, and reinstalled whenever the
+# lockfile changes. Run by the openclaw-tmux-status user unit.
+set -euo pipefail
+
+here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+data="${XDG_DATA_HOME:-$HOME/.local/share}/openclaw-tmux-status"
+lock="$here/package-lock.json"
+want=$(sha256sum "$lock" | cut -d' ' -f1)
+
+if [[ ! -d "$data/node_modules" || "$(cat "$data/.lock-sha256" 2>/dev/null)" != "$want" ]]; then
+    mkdir -p "$data"
+    cp "$here/package.json" "$lock" "$data/"
+    npm ci --prefix "$data" --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error
+    printf '%s\n' "$want" > "$data/.lock-sha256"
+fi
+
+export OPENCLAW_TMUX_STATUS_MODULES="$data/node_modules"
+exec node "$here/bridge.js" run "$@"

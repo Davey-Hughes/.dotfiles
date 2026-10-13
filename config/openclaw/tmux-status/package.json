@@ -1,0 +1,11 @@
+{
+  "name": "openclaw-tmux-status",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Paint OpenClaw session activity into the tmux tab of each pane showing it, from a Gateway client.",
+  "dependencies": {
+    "@openclaw/gateway-client": "2026.10.3",
+    "@openclaw/gateway-protocol": "2026.10.3"
+  }
+}

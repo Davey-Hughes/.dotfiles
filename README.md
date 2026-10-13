@@ -163,34 +163,46 @@ XDG paths), then the script to add the `$include`.
 
 OpenClaw TUI panes get the same tmux treatment as Claude and Codex: the
 activity glyph in the tab, prefix-`u`, window names, and resurrect. The agent
-runs in the gateway, not in the pane, so a gateway plugin does this instead of
-a CLI hook: `config/openclaw/plugins/tmux-status/`. On each turn, tool call,
-`ask_user` or `secrets` prompt, and subagent start or end, it finds the panes
-whose TUI footer shows that session (`tmux-session.sh`, the one footer parser)
-and runs the shared `config/.claude/hooks/tmux-status.sh` for each, with
-`TMUX_PANE` set. The session label in the footer names the window, the way a
-Claude `/rename` does. A pane that switches session (`/session`, `/new`,
-Ctrl+P) is reset on the next event from any session.
+runs in the Gateway, which need not be this machine, so nothing in the pane
+sees a turn start or end. A small Gateway client beside tmux does it instead:
+`config/openclaw/tmux-status/bridge.js`, run by the `openclaw-tmux-status` user
+unit. It subscribes read-only to the Gateway's session events. On each turn,
+tool call, `ask_user` or `secrets` prompt, and subagent start or end, it finds
+the panes whose TUI footer shows that session (`tmux-session.sh`, the one
+footer parser) and runs the shared `config/.claude/hooks/tmux-status.sh` for
+each, with `TMUX_PANE` set. The session label in the footer names the window,
+the way a Claude `/rename` does. A pane that switches session (`/session`,
+`/new`, Ctrl+P) is reset within a few seconds.
 
-Enable it once per machine, from a normal terminal. Stow links the plugin into
-`$XDG_CONFIG_HOME/openclaw/plugins`, and both settings go into the machine-local
-`openclaw.json`. `allowConversationAccess` is for `agent_end`. That hook passes
-the final reply, so a turn that ends on a question paints red:
+It connects where the CLI would: `gateway.remote.url` and its token when
+`gateway.mode` is `remote` in `openclaw.json`, else the local Gateway.
+`OPENCLAW_TMUX_STATUS_URL`, `OPENCLAW_GATEWAY_TOKEN` and
+`OPENCLAW_GATEWAY_PASSWORD` override. Its client package is pinned in
+`package-lock.json`; the launcher installs it into
+`$XDG_DATA_HOME/openclaw-tmux-status`, not this checkout, and again whenever
+the lockfile changes. Bump the pin with the Gateway. The bridge has its own
+device identity under `$XDG_STATE_HOME/openclaw-tmux-status`.
+
+Enable it once per machine:
 
 ```bash
-openclaw plugins install --link ~/.config/openclaw/plugins/tmux-status --force
-openclaw config set plugins.entries.tmux-status.hooks.allowConversationAccess true
+systemctl --user enable --now openclaw-tmux-status
+journalctl --user -u openclaw-tmux-status
 ```
 
-Reload tmux (prefix-`R`) to pick up the icon, window-name, and resurrect changes
-in `.tmux.conf`. After editing the plugin, run `openclaw plugins reload
-tmux-status`. Run `python3 tests/test-openclaw-tmux.py` to check it against a
-fake tmux.
+A remote Gateway pairs it like any other device: the log prints the request,
+approve it on the Gateway host with `openclaw devices approve <requestId>`, and
+the unit retries every 30 seconds.
 
-Limits: an exec approval is not a hook, so it shows as the turn ending rather
-than as a prompt. Subagents spawned before the plugin loaded are not counted.
-The footer format is the contract with OpenClaw. If a release changes it,
-parsing fails closed: panes show no state and restore as shells.
+Reload tmux (prefix-`R`) to pick up the icon, window-name, and resurrect changes
+in `.tmux.conf`. After editing the bridge, `systemctl --user restart
+openclaw-tmux-status`. Run `python3 tests/test-openclaw-tmux.py` to check it
+against a fake tmux.
+
+Limits: an exec approval shows as the turn still working rather than as a
+prompt. The footer format is the contract with the TUI and the session-event
+shapes are the contract with the Gateway. If a release changes either, painting
+fails closed: panes show no state and restore as shells.
 
 Restore saves each placeable pane as `openclaw tui --session <key>`. A bare
 `openclaw` would reopen the TUI's last selected session, so
