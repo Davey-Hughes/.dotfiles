@@ -180,5 +180,7 @@
   "agentPushNotifEnabled": true,
   "autoMode": {
     "environment": []
-  }
+  },
+  "inputNeededNotifEnabled": true,
+  "awaySummaryEnabled": false
 }
