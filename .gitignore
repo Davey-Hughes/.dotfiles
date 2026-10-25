@@ -72,6 +72,20 @@ config/openclaw/*
 !config/openclaw/skills/
 !config/openclaw/tmux-status/
 
+# OpenCode: service.json holds the background service's local password, and
+# cli.json is rewritten by the settings screen; both are machine-local (the
+# cli.json defaults are templates/opencode/cli.json). Only hand-written
+# settings and plugins are tracked.
+config/opencode/*
+!config/opencode/opencode.json
+!config/opencode/opencode.jsonc
+!config/opencode/agents/
+!config/opencode/commands/
+!config/opencode/skills/
+!config/opencode/plugins/
+config/opencode/plugins/*
+!config/opencode/plugins/tmux-status/
+
 # OpenClaw's systemd user units are machine-local: the node's names this
 # machine's Gateway. They still live here so install.sh stows them; the README
 # has templates for both.

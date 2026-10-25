@@ -31,6 +31,8 @@
 # ~/.config/openclaw/tmux-status/bridge.js, which runs this script once per pane
 # showing the session, with TMUX_PANE set for it. That bridge also owns @cc_name
 # for OpenClaw panes (`label`), from the session label in the TUI footer.
+# OpenCode's is a CLI plugin, ~/.config/opencode/plugins/tmux-status, which runs
+# in the TUI and calls this whenever the state of the session on screen changes.
 #
 # Never exits non-zero: a PreToolUse hook returning 2 would block the tool call.
 #
@@ -38,7 +40,8 @@
 #   tmux-status.sh blocked                    PermissionRequest / Notification (dialogs)
 #   tmux-status.sh failed                     StopFailure
 #   tmux-status.sh subagent +1|-1|=N          SubagentStart / SubagentStop; =N
-#                                             sets the count (OpenClaw keeps one)
+#                                             sets the count (OpenClaw and
+#                                             OpenCode keep one)
 #   tmux-status.sh label [name]               OpenClaw: session label, or clear it
 #   tmux-status.sh shell-status <exit-code>   fish_postexec
 #   tmux-status.sh next                       jump to a session wanting you
@@ -103,7 +106,7 @@ unset_opt() { tmux set-option -p -u -t "$1" "$2" 2>/dev/null; }
 
 clear_pane() {
     local pane="$1" opt
-    for opt in @cc_state @cc_icon @cc_colour @cc_main @cc_subs @cc_asked @cc_name; do
+    for opt in @cc_state @cc_icon @cc_colour @cc_main @cc_subs @cc_asked @cc_name @oc_session; do
         unset_opt "$pane" "$opt"
     done
 }
@@ -240,7 +243,7 @@ run_ticker() {
             # without SessionEnd, or the pane was reused. Drop the stale state
             # rather than animate a tab nobody is working in.
             case "$cmd" in
-                claude|codex|openclaw) ;;
+                claude|codex|openclaw|opencode) ;;
                 *) clear_pane "$pane"; continue ;;
             esac
             working=1
@@ -262,7 +265,7 @@ run_ticker() {
     return 0
 }
 
-# Jump to the next Claude, Codex or OpenClaw session that wants you: blocked first (a prompt is
+# Jump to the next Claude, Codex, OpenClaw or OpenCode session that wants you: blocked first (a prompt is
 # actually up, and a turn is stalled behind it), then asked (its turn ended on
 # a question), then idle (its turn finished). Cycles from wherever you are, so
 # repeated presses walk the whole set. Panes with no state are skipped -- those
@@ -274,7 +277,7 @@ run_next() {
     mapfile -t targets < <(
         for state in blocked asked idle; do
             tmux list-panes -a -F '#{pane_id} #{@cc_state} #{pane_current_command}' 2>/dev/null |
-            awk -v s="$state" '($3=="claude" || $3=="codex" || $3=="openclaw") && $2==s {print $1}'
+            awk -v s="$state" '($3=="claude" || $3=="codex" || $3=="openclaw" || $3=="opencode") && $2==s {print $1}'
         done
     )
 
@@ -461,7 +464,8 @@ case "${1:-}" in
         set_opt "$PANE" @cc_main 'done'
         set_opt "$PANE" @cc_subs 0
         unset_opt "$PANE" @cc_asked
-        if [[ "${TMUX_STATUS_CODEX:-}" == 1 ]]; then
+        if [[ "${TMUX_STATUS_CODEX:-}" == 1 || "${TMUX_STATUS_OPENCODE:-}" == 1 ]]; then
+            # Both name their windows from the pane title, not @cc_name.
             unset_opt "$PANE" @cc_name
         elif [[ "${TMUX_STATUS_OPENCLAW:-}" == 1 ]]; then
             :   # the plugin keeps @cc_name current through `label`

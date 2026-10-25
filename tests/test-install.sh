@@ -148,6 +148,16 @@ if [ "$(cat "$FAKE/.config/codex/config.pre-xdg.toml")" = '# machine-local Codex
 else
   fail "Codex machine settings or existing skills changed"
 fi
+opencode_cli="$FAKE/.config/opencode/cli.json"
+if [ -f "$opencode_cli" ] && [ ! -L "$opencode_cli" ] &&
+   cmp -s "$opencode_cli" "$FAKE/.dotfiles/templates/opencode/cli.json"; then
+  ok "OpenCode CLI settings are a real file seeded from the template"
+else
+  fail "OpenCode CLI settings were not copied from the template into a real file"
+fi
+resolves_into_repo "$FAKE/.config/opencode/opencode.jsonc" "config/opencode/opencode.jsonc"
+resolves_into_repo "$FAKE/.config/opencode/plugins/tmux-status/tui.ts" "config/opencode/plugins/tmux-status/tui.ts"
+resolves_into_repo "$FAKE/.tmux/resurrect-opencode.sh" "home/.tmux/resurrect-opencode.sh"
 resolves_into_repo "$FAKE/.tmux.conf"              "home/.tmux.conf"
 resolves_into_repo "$FAKE/.config/starship.toml"   "config/starship.toml"
 resolves_into_repo "$FAKE/.config/fish/config.fish" "config/fish/config.fish"
@@ -175,7 +185,7 @@ section "stow folded nothing that other software writes into"
 # behaviour, this decides what the repo will accept, and only this can fail a
 # build. Adding a directory means adding it in both places.
 expect_home=(.local/bin .local/share/applications .tmux/plugins)
-expect_config=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw)
+expect_config=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw opencode/plugins)
 before=$FAILURES
 unfold_targets=()
 for d in "${expect_home[@]}";   do unfold_targets+=("$FAKE/$d"); done
@@ -248,6 +258,8 @@ section "second run: idempotent"
 # must not send those writes back into the checkout.
 printf '\n[projects."/fixture/project"]\ntrust_level = "trusted"\n' >> "$codex_config"
 cp "$codex_config" "$FAKE/codex-local.toml"
+# The same for OpenCode's settings screen, which rewrites cli.json in place.
+printf '{"tabs":{"mode":"off"}}\n' > "$opencode_cli"
 backups_before=$(find "$FAKE/.dotfiles-backup" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
 if run_install 2; then
   ok "install.sh exited 0 again"
@@ -267,6 +279,11 @@ if cmp -s "$codex_config" "$FAKE/codex-local.toml" &&
   ok "repeat install preserved Codex's local settings and trust state"
 else
   fail "repeat install replaced or relinked Codex's local config"
+fi
+if [ "$(cat "$opencode_cli")" = '{"tabs":{"mode":"off"}}' ] && [ ! -L "$opencode_cli" ]; then
+  ok "repeat install preserved OpenCode's local CLI settings"
+else
+  fail "repeat install replaced or relinked OpenCode's local CLI settings"
 fi
 if [ "$(git -C "$FAKE/.dotfiles" status --porcelain)" = "$fixture_status" ]; then
   ok "Codex's local writes stayed outside the checkout"

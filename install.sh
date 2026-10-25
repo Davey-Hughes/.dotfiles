@@ -34,6 +34,11 @@ STOW_FAILED=0
 # and refuses a symlinked parent directory; the tracked $include fragments and
 # skills link in per-entry beside the real, untracked openclaw.json.
 #
+# `opencode/plugins` is here because OpenCode writes service.json (the
+# background service's local password) and cli.json into
+# $XDG_CONFIG_HOME/opencode, and loads every directory under plugins/, so
+# plugins installed by hand land beside the tracked ones, not in this repo.
+#
 # `systemd/user` is here because `systemctl --user enable` writes its symlinks
 # into $XDG_CONFIG_HOME/systemd/user/*.wants/; folded, every unit anyone ever
 # enables would be created inside this repo.
@@ -41,7 +46,7 @@ STOW_FAILED=0
 # tests/test-install.sh asserts every entry below comes out a real directory on
 # a fresh machine, so this list is the single source of truth for the invariant.
 UNFOLD_HOME=(.local/bin .local/share/applications .tmux/plugins)
-UNFOLD_CONFIG=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw)
+UNFOLD_CONFIG=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw opencode/plugins)
 
 # Reads one field from /etc/os-release. Parsed, not sourced: os-release is shell
 # syntax, so sourcing it executes whatever the distro put there and drags ~20
@@ -171,6 +176,25 @@ codex_settings() {
   fi
 }
 
+# Seed OpenCode's CLI settings once. Its settings screen saves by renaming a
+# new file over cli.json, which replaces a Stow link with a real file, so it is
+# a machine-local copy of the template from the start. Repeat installs leave
+# it alone. A dangling link is replaced.
+opencode_settings() {
+  local target="$XDG_CONFIG_HOME/opencode/cli.json"
+  local source="$DOTFDIR/templates/opencode/cli.json"
+  local tmp
+  [ -e "$target" ] && return 0
+  mkdir -p "${target%/*}" || return 1
+  tmp=$(mktemp "${target%/*}/.cli.json.XXXXXX") || return 1
+  if cp "$source" "$tmp" && mv -f "$tmp" "$target"; then
+    echo "  initialized machine-local OpenCode CLI settings at $target"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
 # KDE writes runtime state into its configs. Seed missing files and detach old
 # Stow links, but leave existing desktop preferences alone on repeat installs.
 kde_settings() {
@@ -244,6 +268,11 @@ symlinks() {
 
   if ! codex_settings; then
     echo "ERROR: could not initialize the machine-local Codex config" >&2
+    STOW_FAILED=1
+  fi
+
+  if ! opencode_settings; then
+    echo "ERROR: could not initialize the machine-local OpenCode CLI settings" >&2
     STOW_FAILED=1
   fi
 

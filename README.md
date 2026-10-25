@@ -191,6 +191,46 @@ WantedBy=default.target
 Enable them with `systemctl --user enable --now <unit>`. Each pairs with the
 Gateway like any other device, and retries until it is approved there.
 
+## OpenCode
+
+`templates/opencode/cli.json` holds the terminal settings (theme, input,
+sessions, tabs). On first setup, `install.sh` copies it to
+`$XDG_CONFIG_HOME/opencode/cli.json` as a real, machine-local file: the settings
+screen (`Ctrl+P`, **Open settings**) saves by writing a new file over the old
+one, which would replace a Stow link. Repeat installs keep the local copy, so
+copy changes worth keeping back into the template by hand. That directory
+stays real (listed in `UNFOLD_CONFIG`) because the background service also
+writes `service.json`, its local password, there. `.gitignore` admits
+`opencode.json(c)` and the agents, commands, skills and plugins directories for
+global server settings; add them under `config/opencode/` and rerun
+`./install.sh`.
+
+`config/opencode/opencode.jsonc` is the global server config, linked in by
+Stow. It loads the [Superpowers](https://github.com/obra/superpowers) skills as
+a git-backed plugin, the same set Claude Code gets from its marketplace.
+OpenCode installs the package into its cache on the next config reload. If a
+newer Superpowers commit does not appear, clear the cache under
+`$XDG_CACHE_HOME/opencode` or pin a tag (`...superpowers.git#v7.0.1`).
+
+Sessions, logs and caches live under `$XDG_DATA_HOME`,
+`$XDG_STATE_HOME` and `$XDG_CACHE_HOME`, outside this repo.
+
+### tmux
+
+OpenCode panes get the same tmux treatment as Claude and Codex: the activity
+glyph in the tab, prefix-`u`, window names, and resurrect. The agent runs in
+the shared background service, which does not know the pane, so the CLI plugin
+`config/opencode/plugins/tmux-status/tui.ts` does the work inside the TUI. It
+follows the session on screen and its subagents, and calls the shared renderer
+whenever their state changes: working, a permission or question dialog up, a
+turn that ended on a question, failed, or done. With session tabs on, only the
+focused tab counts. The window takes the session title from the pane title.
+The plugin records the session in `@oc_session`, and
+`home/.tmux/resurrect-opencode.sh` restores the pane as
+`opencode --session <id>`. A pane on the home screen comes back as a shell.
+`python3 tests/test-opencode-tmux.py` checks the plugin's state handling, the
+renderer and the save hook against a fake tmux.
+
 ## KDE Plasma (desktop only)
 
 KDE Plasma settings (theme, shortcuts, panels, Dolphin/Konsole/Kate) are curated
