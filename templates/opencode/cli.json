@@ -5,6 +5,10 @@
     "mode": "system"
   },
   "animations": true,
+  "cursor": {
+    "style": "block",
+    "blinking": false
+  },
   "session": {
     "thinking": "show",
     "markdown": "rendered",
