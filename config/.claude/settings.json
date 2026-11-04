@@ -172,15 +172,16 @@
       "effortLevel": "xhigh"
     }
   },
+  "awaySummaryEnabled": false,
   "tui": "fullscreen",
   "skipWorkflowUsageWarning": true,
   "theme": "custom:tokyonight",
   "editorMode": "vim",
   "showMessageTimestamps": true,
+  "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
+  "remoteControlAtStartup": true,
   "autoMode": {
     "environment": []
-  },
-  "inputNeededNotifEnabled": true,
-  "awaySummaryEnabled": false
+  }
 }
