@@ -76,6 +76,10 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from rm_guard import (  # noqa: E402
+    HEREDOC_RE, _heredoc_opener_rest, _masked_heredocs, danger_hint,
+    risky_neighbour)
 GUARD = os.path.join(HERE, "rm_guard.py")
 FIXTURE = os.path.join(HERE, "rm_guard_corpus.jsonl")
 TRANSCRIPTS = os.path.expanduser("~/.config/.claude/projects")
@@ -87,11 +91,9 @@ TRANSCRIPTS = os.path.expanduser("~/.config/.claude/projects")
 FAKE_HOME = "/home/u"
 CWDS = [f"{FAKE_HOME}/proj", FAKE_HOME, "/tmp"]
 
-# Regions of a command the shell treats as DATA. rm_guard masks both before it
-# reasons about anything, so filler here cannot move a verdict -- and it is the
-# only part of a command that can contain arbitrary prose.
-HEREDOC_RE = re.compile(
-    r"<<(-)?[ \t]*(['\"])([A-Za-z_][A-Za-z0-9_]*)\2.*?^(?(1)\t*)\3$", re.S | re.M)
+# Regions of a command the shell treats as DATA (a heredoc body, a message
+# flag's value). rm_guard masks both before it reasons about anything, so filler
+# there cannot move a verdict. A heredoc's OPENING line is code and is kept.
 MSG_FLAG_RE = re.compile(
     r"(?<![\w-])(?:-m|--message|--body|--title|--description|--notes|--subject)"
     r"(?:[ \t]+|=)(?:\$'(?:\\.|[^'\\])*'|'[^']*'|\"(?:\\.|[^\"\\])*\")")
@@ -195,13 +197,35 @@ def private_names(texts, home):
     return names
 
 
+def _keep_opener(m, masked):
+    """Fill a heredoc's body, but keep what follows its delimiter on the opening
+    line -- rm_guard reads that as code, so dropping it would move a verdict
+    and the regenerate gate would refuse, correctly, to write. A heredoc
+    rm_guard does not mask (`masked` holds the spans it does) is left whole."""
+    rest = _heredoc_opener_rest(m)
+    if m.span() not in masked:
+        return m.group(0)
+    g = m.group(0)
+    # The filler must keep every property of the body the guard reads:
+    # destructive-ness (danger_hint) and risky neighbours (risky_neighbour).
+    body = g[g.index("\n") + 1:g.rindex("\n")]
+    filler = ""
+    if danger_hint(body):
+        filler += "rm -rf FILLER\n"
+    if risky_neighbour(body):
+        filler += "sudo FILLER\n"
+    filler = filler or "FILLER\n"
+    return "<<'EOF'" + rest + filler + "EOF"
+
+
 def make_rewriter(texts, home):
     """-> a function rewriting one command, and the name map it uses."""
     mapping = {n: "n%d" % i
                for i, n in enumerate(sorted(private_names(texts, home)))}
 
     def rewrite(text):
-        text = HEREDOC_RE.sub("<<'EOF'\nFILLER\nEOF", text)
+        masked = {m.span() for _, m in _masked_heredocs(text)}
+        text = HEREDOC_RE.sub(lambda m: _keep_opener(m, masked), text)
         text = MSG_FLAG_RE.sub(lambda m: m.group(0).split(None, 1)[0] + " 'MSG'",
                                text)
         text = UUID_RE.sub("11111111-2222-3333-4444-555555555555", text)

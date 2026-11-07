@@ -738,6 +738,67 @@ CASES = [
      "ssh h 'for d in /tmp/a; do find \"$d\" -delete; done'", "ask"),
     ("ssh: ...nor an rsync destination",
      "ssh h 'for d in /tmp/a; do rsync -a --delete src/ \"$d\"; done'", "ask"),
+    # --- a quoted heredoc's opening line is code -----------------------------
+    # HEREDOC_RE matches from `<<` through the terminator, so masking the whole
+    # match erased whatever followed the delimiter on its opening line.
+    ("heredoc: an rm after the delimiter on its opening line",
+     "cat <<'EOF' >/dev/null; rm -rf /\nhi\nEOF", "deny"),
+    ("heredoc: ...joined by &&",
+     "cat > /tmp/x.py <<'EOF' && rm -rf \"$OUT\"/*\nprint(1)\nEOF", "ask"),
+    ("heredoc: ...and a safe one clears",
+     "cat > /tmp/x.py <<'EOF' && rm -rf ./build\nprint(1)\nEOF", "allow"),
+    ("heredoc: the body is still prose",
+     "cat <<'EOF' | head -1\nrm -rf / is what the body says\nEOF", "pass"),
+    # The opening line is a LOGICAL line. Left open -- a quote, a paren, a
+    # trailing backslash -- it continues onto the lines below, which are then
+    # code and not body, so the heredoc must not be masked at all.
+    # The heredoc cannot be placed, so the guard asks rather than guess.
+    ("heredoc: an opening line that leaves a quote open",
+     "cat <<'EOF'; ssh h \"\nrm -rf /\nEOF\n\"; rm -rf ./build", "ask"),
+    # The heredoc cannot be placed, so the guard asks rather than guess.
+    ("heredoc: an opening line continued by a backslash",
+     "cat <<'EOF' && \\\nrm -rf /\nEOF\nrm -rf ./build", "ask"),
+    ("heredoc: an apostrophe in a comment opens nothing",
+     "cat <<'EOF' # it's a note\nhi\nEOF\nrm -rf /", "deny"),
+    ("heredoc: <<- with a tab-indented terminator",
+     "cat <<-'EOF' >/dev/null; rm -rf /\n\thi\n\tEOF", "deny"),
+    ("heredoc: a double-quoted delimiter",
+     "cat <<\"EOF\" >/dev/null; rm -rf /\nhi\nEOF", "deny"),
+    ("heredoc: inside a commit message's substitution",
+     "git commit -m \"$(cat <<'EOF'\nfix: rm -rf / is prose\nEOF\n)\" && rm -rf ./build", "allow"),
+    # An allow approves the whole call, including a heredoc body some command
+    # on the line runs. When the body reads as destructive and nothing here
+    # read it as a script, the allow is withdrawn -- silence, never a prompt.
+    ("heredoc: a destructive body fed to ssh withdraws the allow",
+     "ssh h <<'EOF' && rm -rf ./build\nrm -rf /\nEOF", "pass"),
+    ("heredoc: ...and fed to docker exec",
+     "docker exec -i c sh <<'EOF' && rm -rf ./build\nrm -rf /\nEOF", "pass"),
+    ("heredoc: the withdrawal never touches an ask",
+     "ssh h <<'EOF' && rm -rf \"$OUT\"/*\nrm -rf /\nEOF", "ask"),
+    # A heredoc inside an ssh remote string is only masked one level down --
+    # its terminator is followed by the closing quote at the top -- so the
+    # withdrawal has to be carried up from there.
+    ("heredoc: a destructive body inside a remote string withdraws",
+     "rm -rf ./dist && ssh host \"ssh h2 <<'EOF'\nrm -rf /\nEOF\"", "pass"),
+    ("heredoc: ...and through an ssh inside one",
+     "ssh h \"ssh h2 <<\\\"EOF\\\" && rm -rf /tmp/a\nrm -rf /\nEOF\" && rm -rf ./build", "pass"),
+    # Inside a remote string the heredoc body may be the only place the rm
+    # appears, so strip_data's mask leaves nothing guarded and the analysis
+    # returns early -- the withdrawal must be recorded there too.
+    ("heredoc: bash reading a destructive body inside a remote string",
+     "rm -rf ./dist && ssh host \"bash <<'EOF'\nrm -rf /\nEOF\"", "pass"),
+    ("heredoc: ...and sh", "rm -rf ./dist && ssh host \"sh <<'EOF'\nrm -rf /\nEOF\"", "pass"),
+    ("heredoc: ...and docker exec",
+     "rm -rf ./dist && ssh host \"docker exec -i c sh <<'EOF'\nrm -rf /\nEOF\"", "pass"),
+    # The parse-failure return must record the withdrawal too: shlex rejects
+    # $'...', so this inner string never tokenizes.
+    ("heredoc: a remote string that fails to parse still withdraws",
+     "rm -rf ./dist && ssh host \"rm x; echo \\$'a\\\\'b'; bash <<'EOF'\nrm -rf /\nEOF\"", "pass"),
+    ("heredoc: a # straight after the delimiter is not a comment",
+     "cat <<'EOF'# it's\n'; rm -rf /\nEOF\n' && rm -rf ./build", "ask"),
+    # The heredoc cannot be placed, so the guard asks rather than guess.
+    ("heredoc: ...nor one after an escaped space",
+     "cat <<'EOF' x\\ #'\n'; rm -rf /\nEOF", "ask"),
 ]
 
 

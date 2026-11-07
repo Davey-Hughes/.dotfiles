@@ -609,6 +609,147 @@ def danger_hint(text):
                for name, flag in DANGER_PAIRS)
 
 
+def _heredoc_opener_rest(m):
+    """What follows a quoted heredoc's delimiter on its OPENING line, plus the
+    newline that ends that line.
+
+    HEREDOC_RE matches from `<<` through the terminator, so replacing the whole
+    match also erased the code after the delimiter: `cat <<'EOF' >/dev/null;
+    rm -rf /` followed by a body was masked to `cat` and nothing else, and the
+    guard went silent on it. That rest of the line runs before the body is
+    read, and it goes back as code. HEREDOC_RE's `^` anchor guarantees a
+    newline between the delimiter and the terminator.
+    """
+    start = m.end(3) + 1                  # past the delimiter's closing quote
+    nl = m.string.index("\n", start)
+    return m.string[start:nl] + "\n"
+
+
+def _opener_continues(rest):
+    """Does a heredoc's opening line, `rest`, leave the LOGICAL line unfinished?
+
+    Bash reads the body from the line after the opening LOGICAL line ends. If
+    the remainder leaves a quote, a backtick or a paren open, or ends in an
+    unescaped backslash, the physical lines below are still code -- the body
+    starts later than HEREDOC_RE assumes. Masking them hides code:
+
+        cat <<'EOF'; ssh h "        the masked span re-balances the quote into
+        rm -rf /                    an empty string, and bash runs `rm -rf /`
+        EOF                         on the far end
+        "; rm -rf ./build
+
+        cat <<'EOF' && \\           bash runs `cat <<'EOF' && rm -rf /`
+        rm -rf /
+        EOF
+
+    `rest` is without its trailing newline. An unquoted `#` at the start of a
+    word ends the scan: an apostrophe in a comment opens nothing. An escaped
+    character is never a boundary: in `x\\ #'` the `#` is mid-word.
+    """
+    quote, depth, i, n = None, 0, 0, len(rest)
+    escaped_to = -1                       # index just past the last escape
+    while i < n:
+        c = rest[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+            i += 1
+            continue
+        if c == "\\":
+            if i + 1 >= n:
+                return True
+            escaped_to = i = i + 2
+            continue
+        if quote is None:
+            if (c == "#" and i and i != escaped_to
+                    and rest[i - 1] in COMMENT_BOUNDARY):
+                break
+            if c in "'\"`":
+                quote = c
+            elif c == "(":
+                depth += 1
+            elif c == ")" and depth:
+                depth -= 1
+        elif quote == '"':
+            if c == '"':
+                quote = None
+            elif c == "$" and rest[i + 1:i + 2] == "(":
+                depth += 1
+                i += 1
+            elif c == ")" and depth:
+                depth -= 1
+        elif quote == "`" and c == "`":
+            quote = None
+        i += 1
+    return quote is not None or depth > 0
+
+
+def _masked_heredocs(text):
+    """Yield (placeholder, match) for each heredoc safe to mask.
+
+    One whose opening line continues is left out: it stays in the raw text, so
+    the tokenizer sees the real structure, or fails to parse, which asks.
+    """
+    k = 0
+    for m in HEREDOC_RE.finditer(text):
+        if _opener_continues(_heredoc_opener_rest(m)[:-1]):
+            continue
+        yield "%sHD%d%s" % (SENTINEL, k, SENTINEL), m
+        k += 1
+
+
+def _heredoc_skipped(cmd):
+    """Did _masked_heredocs skip any heredoc on this line?
+
+    Leaving a skipped heredoc in the raw text is not conservative. Its body is
+    prose to bash, so it can hold an odd number of quotes that pair with a quote
+    later on the line and hide code from the tokenizer: the tokenizer then
+    reads real code as quoted data. What is body and what is code cannot be
+    told apart, so the caller asks instead.
+    """
+    cmd = cmd.replace(SENTINEL, "").replace(MARK, "")
+    found = sum(1 for _ in HEREDOC_RE.finditer(cmd))
+    return found != sum(1 for _ in _masked_heredocs(cmd))
+
+
+def _heredoc_body(m):
+    """A HEREDOC_RE match's body: everything between its opening line and its
+    terminator line."""
+    s = m.group(0)
+    return s[s.index("\n") + 1:s.rindex("\n")]
+
+
+def heredoc_bodies(cmd):
+    """-> {placeholder: body} for each heredoc mask_opaque masks.
+
+    Built from _masked_heredocs over the same cleaned text, so the placeholders
+    are mask_opaque's own -- one reading, not a second one.
+    """
+    cmd = cmd.replace(SENTINEL, "").replace(MARK, "")
+    return {ph: _heredoc_body(m) for ph, m in _masked_heredocs(cmd)}
+
+
+def unread_destructive_heredoc(cmd, read=()):
+    """Does a masked heredoc body read as a destructive command that nothing
+    here read as a script?
+
+    A masked body is data to every rule in this file, but something on the
+    line may still run it: `ssh h <<'EOF'`, `docker exec -i c sh <<'EOF'`.
+    An allow approves the whole call, and with it that body. A body inside a
+    message-flag value is a commit or PR message, which strip_data already
+    treats as data, and is skipped. `read` names placeholders a rule DID
+    read as a script.
+    """
+    cmd = cmd.replace(SENTINEL, "").replace(MARK, "")
+    msgs = [m.span() for m in MSG_FLAG_RE.finditer(cmd)]
+    for ph, m in _masked_heredocs(cmd):
+        if ph in read or any(s <= m.start() < e for s, e in msgs):
+            continue
+        if danger_hint(_heredoc_body(m)):
+            return True
+    return False
+
+
 def strip_data(text):
     """Blank the regions of a command line the shell treats as data, not code.
 
@@ -617,7 +758,10 @@ def strip_data(text):
     value -- mask_opaque covers the one region that has to be hidden from the
     tokenizer too, because prose in a heredoc body breaks shlex outright.
     """
-    text = HEREDOC_RE.sub(" HEREDOC ", text)
+    masked = {m.span(): m for _, m in _masked_heredocs(text)}
+    text = HEREDOC_RE.sub(
+        lambda m: " HEREDOC " + _heredoc_opener_rest(m)
+        if m.span() in masked else m.group(0), text)
     return MSG_FLAG_RE.sub(" MESSAGE ", text)
 
 
@@ -1121,9 +1265,10 @@ def mask_opaque(cmd):
     """
     cmd = cmd.replace(SENTINEL, "").replace(MARK, "")
     parts, last = [], 0
-    for hd, m in enumerate(HEREDOC_RE.finditer(cmd)):
+    for ph, m in _masked_heredocs(cmd):
         parts.append(cmd[last:m.start()])
-        parts.append("%sHD%d%s" % (SENTINEL, hd, SENTINEL))
+        parts.append(ph)
+        parts.append(_heredoc_opener_rest(m))
         last = m.end()
     parts.append(cmd[last:])
     cmd = "".join(parts)
@@ -2114,6 +2259,21 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
     return out
 
 
+# Analysis at any depth sets this flag when it sees an unread destructive
+# heredoc; depth 0 decides. A heredoc whose terminator is followed by the
+# closing quote of an ssh remote string only matches HEREDOC_RE inside that
+# string, one level down, where a `return []` would read to the caller as
+# "nothing found". Only "was anything recorded" is visible, not what.
+_WITHDRAWN = [False]
+
+
+def _note_unread_heredocs(cmd, read=()):
+    """Record that cmd holds a destructive heredoc body nothing read as a
+    script. Called before every return that could otherwise lose it."""
+    if unread_destructive_heredoc(cmd, read):
+        _WITHDRAWN[0] = True
+
+
 def analyse(cmd, cwd, depth=0, trusted=True):
     """-> [Finding]. Empty means the guard has no opinion.
 
@@ -2122,8 +2282,23 @@ def analyse(cmd, cwd, depth=0, trusted=True):
     here, so a `$X` in it may have been expanded by the OUTER shell, and
     nothing bound inside it may clear. Bindings and loops still condemn.
     """
+    # The allow is withdrawn, as RISKY_NEIGHBOURS does in main(): an allow
+    # would also approve a destructive heredoc body that something on the line
+    # may run. Silence leaves the line to normal permissions. Never touches an
+    # ask or a deny. Decided here, once, over what every depth recorded.
+    if depth == 0:
+        _WITHDRAWN[0] = False
+    findings = _analyse(cmd, cwd, depth, trusted)
+    if (depth == 0 and _WITHDRAWN[0] and findings
+            and all(f.decision == "allow" for f in findings)):
+        return []
+    return findings
+
+
+def _analyse(cmd, cwd, depth, trusted):
     # Raw scan first: no guarded command name anywhere means nothing to judge.
     if not GUARDED_CMD_RE.search(cmd):
+        _note_unread_heredocs(cmd)
         return []
 
     # Blank out `git rm`, then look again. If nothing guarded survives, the
@@ -2134,6 +2309,7 @@ def analyse(cmd, cwd, depth=0, trusted=True):
     # commit message quoting `git clean -fdx` is not read as running it.
     text = strip_data(text)
     if not GUARDED_CMD_RE.search(text):
+        _note_unread_heredocs(cmd)
         return []
 
     # The bail-outs below exist to stop a *destructive* command hiding inside
@@ -2141,6 +2317,11 @@ def analyse(cmd, cwd, depth=0, trusted=True):
     # flag next to an rm, no -delete next to a find -- there is nothing to hide,
     # so `ls | xargs rm` goes straight to the token scan instead of prompting.
     danger = danger_hint(text)
+    if danger and _heredoc_skipped(cmd):
+        _note_unread_heredocs(cmd)
+        return [bare("ask", "a heredoc here could not be placed -- its opening line "
+                            "continues, or a comment comes before it -- so what is "
+                            "its body and what is code cannot be told apart")]
 
     # Mask substitutions first: punctuation_chars=True splits on ( and ), which
     # takes an unquoted $(...) apart into literals that each look harmless. The
@@ -2155,6 +2336,7 @@ def analyse(cmd, cwd, depth=0, trusted=True):
         # heredoc body that bash takes literally -- so ungated this fires on
         # commands that would have run perfectly well.
         if not danger:
+            _note_unread_heredocs(cmd)
             return []
         return [bare("ask", f"command could not be parsed ({e})")]
 
@@ -2304,6 +2486,8 @@ def analyse(cmd, cwd, depth=0, trusted=True):
             and not any(f.reason == GIT_RELOCATED for f in findings)):
         findings.append(bare("ask", f"{mark('git clean')} on a line that "
                                     f"relocates its work tree -- {GIT_RELOCATED}"))
+
+    _note_unread_heredocs(cmd)
 
     if not found_rm and not findings:
         # Nothing survived parsing. Every construct that could execute a string
