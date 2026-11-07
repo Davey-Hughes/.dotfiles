@@ -506,7 +506,11 @@ CASES = [
     # Position, not presence. A builtin downstream of the delete cannot have run
     # before it -- which is every hit in this machine's corpus.
     ("a rebinding after the delete does not withdraw clearing",
-     'W=/tmp/build; rm -rf "$W"/*; declare -g "$(printf X)=/"', "allow"),
+     'W=/tmp/build; rm -rf "$W"/*; declare -g X=/', "allow"),
+    # ...but a COMPUTED name asks wherever it sits, as eval does: a trap or a
+    # function can run the delete after it. Was allow.
+    ("...a computed name after the delete still asks",
+     'W=/tmp/build; rm -rf "$W"/*; declare -g "$(printf X)=/"', "ask"),
     # ...except in a loop body, which runs again. Here `g` follows the rm in the
     # text and precedes it in time on the second iteration.
     ("a loop body voids the ordering",
@@ -711,11 +715,19 @@ CASES = [
     # rows the closer rule lacked entirely: it could be deleted outright with
     # the suite green.
     ("a matched `done` closes its loop",
-     'W=/tmp/b; for f in a b; do echo "$f"; done; rm -rf "$W"/*; declare -g "$(printf X)=/"',
+     'W=/tmp/b; for f in a b; do echo "$f"; done; rm -rf "$W"/*; declare -g X=/',
      "allow"),
     ("a matched `end` closes its foreach",
-     'W=/tmp/b\nforeach f (a b)\necho $f\nend\nrm -rf "$W"/*\ndeclare -g "$(printf X)=/"',
+     'W=/tmp/b\nforeach f (a b)\necho $f\nend\nrm -rf "$W"/*\ndeclare -g X=/',
      "allow"),
+    # The computed-name forms of the two rows above, which ask wherever the
+    # builtin sits. Were allow.
+    ("...a computed name after a closed loop asks",
+     'W=/tmp/b; for f in a b; do echo "$f"; done; rm -rf "$W"/*; declare -g "$(printf X)=/"',
+     "ask"),
+    ("...and after a closed foreach",
+     'W=/tmp/b\nforeach f (a b)\necho $f\nend\nrm -rf "$W"/*\ndeclare -g "$(printf X)=/"',
+     "ask"),
     # --- a re-read string may already have been expanded --------------------
     # The local shell expands $X inside double quotes BEFORE ssh sends the
     # string, so a binding inside it proves nothing about what runs remotely.
@@ -1029,6 +1041,106 @@ CASES = [
     ("heredoc: ...fish there still asks", "cat <<'EOF' | ssh h fish\nrm -rf /\nEOF", "ask"),
     ("heredoc: ...and so does a script operand",
      "cat <<'EOF' | ssh h bash run.sh\nrm -rf /\nEOF", "ask"),
+    # --- cd and pushd options ---------------------------------------------------
+    # zsh's -q and -s move the shell like a bare cd; the word after is the
+    # target. An option the guard does not know leaves the shell unplaceable.
+    ("cd: zsh's -q still moves the shell", "cd -q / && rm -rf usr", "deny"),
+    ("cd: ...and -s", "cd -s / && rm -rf usr", "deny"),
+    ("cd: ...bundled", "cd -qs / && rm -rf usr", "deny"),
+    ("pushd: ...and -q", "pushd -q / && rm -rf usr", "deny"),
+    ("cd: -- ends the options", "cd -- / && rm -rf usr", "deny"),
+    ("cd: an unknown option leaves the shell unplaceable", "cd -x / && rm -rf usr", "ask"),
+    # bash's pushd -n does not move, and zsh rejects it; unknown either way.
+    ("pushd: -n is an option the guard does not place", "pushd -n / && rm -rf usr", "ask"),
+    ("pushd: a stack index stays unplaceable", "pushd +1 && rm -rf usr", "ask"),
+    # --- names a line sets without an assignment the guard reads ----------------
+    ("printf -v sets a name", "printf -v W /; rm -rf \"$W\"", "ask"),
+    ("...fused to its flag", "printf -vW /; rm -rf \"$W\"", "ask"),
+    ("mapfile sets a name", "mapfile -t W < f; rm -rf \"$W\"", "ask"),
+    ("...and readarray", "readarray W < f; rm -rf \"$W\"", "ask"),
+    ("...and with no name, MAPFILE", "mapfile < f; rm -rf \"$MAPFILE\"", "ask"),
+    ("getopts sets its name", "getopts d: W; rm -rf \"$W\"", "ask"),
+    ("...and OPTARG", "getopts d: o; rm -rf \"$OPTARG\"", "ask"),
+    ("read -a sets a name", "read -r -a W < f; rm -rf \"$W\"", "ask"),
+    ("read with no name sets REPLY", "read -r < f; rm -rf \"$REPLY\"", "ask"),
+    ("an append assigns", "set -e; W=/tmp/x; W+=/../../usr; rm -rf \"$W\"", "ask"),
+    ("...and so does an element", "set -e; W=/tmp/x; W[0]=/usr; rm -rf \"$W\"", "ask"),
+    ("...and an array", "W=(/usr); rm -rf \"$W\"", "ask"),
+    ("declare -n makes a name a reference", "X=/usr; declare -n W=X; rm -rf \"$W\"", "ask"),
+    # printf -v overwrites the empty literal before the rm runs, so the shell
+    # runs `rm -rf x/*`, not `rm -rf /*`. A literal an unconditional unread
+    # set replaces no longer condemns; the name is still opaque, so it asks.
+    # Was deny.
+    ("an empty literal printf -v overwrites does not condemn",
+     "W=; printf -v W x; rm -rf \"$W\"/*", "ask"),
+    # ...but a literal still live at the rm does, wherever the set sits.
+    ("...a literal assigned after the set still denies", "printf -v W x; W=; rm -rf \"$W\"/*",
+     "deny"),
+    ("...and one the set may not reach", "W=; false && printf -v W x; rm -rf \"$W\"/*", "deny"),
+    ("...or that a pipeline's subshell sets", "W=; printf -v W x | cat; rm -rf \"$W\"/*", "deny"),
+    # --- ${W:=x}, ${W=x} and zsh's ${W::=x} set W -------------------------------
+    ("${W:=x} sets W", "W=; : ${W:=/usr}; rm -rf \"$W\"", "ask"),
+    ("...and zsh's ${W::=x}", "W=/tmp/x; echo ${W::=/usr}; rm -rf \"$W\"", "ask"),
+    ("...and ${W=x}", ": ${W=/usr}; rm -rf \"$W\"", "ask"),
+    # ${W=x} assigns only an UNSET W, so the empty literal stays live: /*.
+    ("${W=x} leaves a set-empty W empty", "W=; : ${W=/usr}; rm -rf \"$W\"/*", "deny"),
+    # ${W:=x} keeps a non-empty W, so W is still / at the rm.
+    ("${W:=x} keeps a non-empty literal live", "W=/; : ${W:=/tmp/x}; rm -rf \"$W\"", "deny"),
+    # --- zsh's read: every plain name after read is one it may set -----------
+    # zsh's -t, -p and -k take no value, so `read -t W` reads into W.
+    ("read: zsh's -t takes no value", "W=/tmp/x; read -t W < f; rm -rf \"$W\"", "ask"),
+    ("read: ...nor -p", "W=/tmp/x; read -p W < f; rm -rf \"$W\"", "ask"),
+    ("read: ...bundled", "W=/tmp/x; read -rp W < f; rm -rf \"$W\"", "ask"),
+    ("read: zsh's name?prompt", "W=/tmp/x; read 'W?go: ' < f; rm -rf \"$W\"", "ask"),
+    # --- a rebinding builtin with a computed name ------------------------------
+    ("computed name: declare", "N=W; declare \"$N\"=/usr; rm -rf \"$W\"", "ask"),
+    ("computed name: export", "N=W; export \"$N\"=/usr; rm -rf \"$W\"", "ask"),
+    ("computed name: local", "N=W; local \"$N\"=/usr; rm -rf \"$W\"", "ask"),
+    ("computed name: typeset", "N=W; typeset \"$N\"=/usr; rm -rf \"$W\"", "ask"),
+    ("computed name: readonly", "N=W; readonly \"$N\"=/usr; rm -rf \"$W\"", "ask"),
+    ("computed name: let", "N=W; let \"$N=1\"; rm -rf \"$W\"", "ask"),
+    ("computed name: read", "N=W; read \"$N\"; rm -rf \"$W\"", "ask"),
+    ("computed name: mapfile", "N=W; mapfile \"$N\"; rm -rf \"$W\"", "ask"),
+    ("computed name: printf -v", "N=W; printf -v \"$N\" /usr; rm -rf \"$W\"", "ask"),
+    ("computed name: declare -n", "N=W; declare -n \"$N\"=X; rm -rf \"$W\"", "ask"),
+    ("computed name: unset", "N=W; unset \"$N\"; rm -rf \"$W\"", "ask"),
+    # A computed VALUE is not a computed name.
+    ("computed name: an expansion in the value only", "export PATH=\"$HOME/bin:$PATH\"; rm -rf ./build",
+     "allow"),
+    # --- quote-boundary glue -----------------------------------------------------
+    # shlex drops the quotes, so "$W"usr reads as the bare name $Wusr. The
+    # shell expands W and glues usr on: with W=/ that is /usr.
+    ("quote glue: \"$W\"usr", "W=/; rm -rf \"$W\"usr", "ask"),
+    ("quote glue: ...after set -e", "set -e; W=/; rm -rf \"$W\"usr", "ask"),
+    ("quote glue: ...with nothing bound", "rm -rf \"$W\"usr", "ask"),
+    ("quote glue: ...an opening quote", "W=/; rm -rf $W\"usr\"", "ask"),
+    ("quote glue: ...${W:?} too", "rm -rf \"${W:?}\"x", "ask"),
+    ("quote glue: a slash is not glue", "rm -rf \"${W:?}\"/*", "allow"),
+    # --- zsh expansion flags before a non-letter -------------------------------
+    ("zsh's $~1", "rm -rf $~1", "ask"),
+    ("zsh's $~@", "rm -rf $~@", "ask"),
+    ("zsh's $=1", "rm -rf $=1", "ask"),
+    ("zsh's $~{W}", "rm -rf $~{W}", "ask"),
+    # --- a nameref writes the name it refers to -----------------------------
+    ("nameref: a target written through its reference",
+     'declare -n R=W; R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...typeset -n", 'typeset -n R=W; R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...in a function", 'f() { local -n R=W; R=/; }; f; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...ksh's nameref", 'nameref R=W; R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...a bare use", 'declare -n R=W; R=/; rm -rf "$W"', "ask"),
+    ("nameref: ...a target given later", 'declare -n R; R=W; R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...through a proven declare", 'B=declare; $B -n R=W; R=/; rm -rf "${W:?}"/x',
+     "ask"),
+    ("nameref: a plain declare is none", 'declare R=W; rm -rf "${W:?}"/x', "allow"),
+    # A target the guard cannot read may be any name: none keeps a free pass.
+    ("nameref: a computed target", 'N=W; declare -n R=$N; R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...braced", 'N=W; declare -n R=${N}; R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...typeset -n", 'N=W; typeset -n R=$N; R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...a substitution", 'declare -n R=$(echo W); R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...through a proven declare",
+     'N=W; B=declare; $B -n R=$N; R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...given later", 'declare -n R; R=$N; R=/; rm -rf "${W:?}"/x', "ask"),
+    ("nameref: ...and a bare use", 'N=W; declare -n R=$N; R=/; rm -rf "$W"', "ask"),
 ]
 
 

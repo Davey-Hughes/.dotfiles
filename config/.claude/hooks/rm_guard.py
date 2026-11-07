@@ -281,15 +281,28 @@ GUARDED_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}$")
 # The zsh form -- `$~W` globs W's value, `$=W` splits it into words, `$^W`,
 # `$+W` and `$#W` -- sits before the special parameters, so `$#W` is one
 # expansion rather than `$#` and a literal W. Missing it, `$~W` read as a
-# relative path and `W='/*'; rm -rf $~W` cleared.
+# relative path and `W='/*'; rm -rf $~W` cleared. The flags apply to a
+# positional, a special parameter or a braced name as well: `$~1`, `$~@`,
+# `$=1` and `$~{W}` read as literals until they were listed too.
 EXPANSION_RE = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*"
-                          r"|\$[~=^+#]+[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]")
+                          r"|\$[~=^+#]+(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+"
+                          r"|[@*#?$!-]|\{[^}]*\})"
+                          r"|\$[0-9@*#?$!-]")
 # The zsh form alone, for naming it in a verdict.
-ZSH_FLAG_EXPANSION_RE = re.compile(r"^\$[~=^+#]+[A-Za-z_]")
+ZSH_FLAG_EXPANSION_RE = re.compile(r"^\$[~=^+#]+[A-Za-z_0-9@*#?$!{-]")
 # A word that is nothing but expansions -- `$X`, `${=X}`, `$1`, `$@` -- and so
 # names no command at all until the shell runs. `$S/bin/x` is not one.
 EXPANSION_WORD_RE = re.compile(r"^(?:%s)+$" % EXPANSION_RE.pattern)
 BARE_VAR_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
+# An expansion glued through a quote or a backslash to a word character:
+# `"$W"usr`, `"${W}"x`, `$W"usr"`, `"${W:?}"x`. shlex removes the quotes and
+# hands back `$Wusr` -- a bare variable, Wusr, which nothing set -- while the
+# shell expands W and glues usr on, so `W=/; rm -rf "$W"usr` is rm -rf /usr.
+# A hit anywhere on the line turns off both free passes for it.
+QUOTE_GLUE_RE = re.compile(r"(?:%s)[\"'\\]+\w" % EXPANSION_RE.pattern)
+GLUED_REASON = ("an expansion on this line is glued through a quote to the word "
+                "after it, as in \"$W\"usr, so the name read here is not the "
+                "one the shell expands")
 # The variable name inside any expansion form: $W, ${W}, ${W:-default}.
 EXP_NAME_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 GLOB_CHARS = "*?["
@@ -1036,7 +1049,7 @@ def worst_of(results):
 
 def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                      may_clear=False, loops_may_clear=True, opaque_names=frozenset(),
-                     line_literals=None, reread=False):
+                     line_literals=None, reread=False, glued=False):
     """-> (decision, reason), over every path this operand can actually become.
 
     Two things multiply a single written operand into several real ones, and
@@ -1055,8 +1068,8 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     candidate cwd can change.
 
     loops_may_clear is False inside a string another shell re-reads; see
-    analyse's `trusted`. opaque_names, line_literals and reread are carried
-    through to classify_one.
+    analyse's `trusted`. opaque_names, line_literals, reread and glued are
+    carried through to classify_one.
     """
     cwds = [cwd] if isinstance(cwd, str) else list(cwd) or [""]
     products = expand_braces(op)
@@ -1067,7 +1080,8 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
         for c in cwds:
             d, r = classify_one(p, c, bare_var_ok, assigned, loops, may_clear,
                                 loops_may_clear, opaque_names=opaque_names,
-                                line_literals=line_literals, reread=reread)
+                                line_literals=line_literals, reread=reread,
+                                glued=glued)
             if p != op:
                 r = f"brace expansion produces {p}; {r}"
             results.append((d, r))
@@ -1076,7 +1090,7 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
 
 def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                  may_clear=False, loops_may_clear=True, opaque_names=frozenset(),
-                 line_literals=None, reread=False):
+                 line_literals=None, reread=False, glued=False):
     """-> (decision, reason). Anything not provably safe returns ask/deny.
 
     bare_var_ok encodes an rm-specific fact: `rm -rf $X` with X unset or empty
@@ -1108,6 +1122,11 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     sees the line's own variables and exports. So neither free pass holds,
     and `D=/; echo $(rm -rf $D)` asks: an operand with an expansion in it
     asks unless something resolves it to a deny.
+
+    glued is True for a line where an expansion meets a quote and then a word
+    character -- see QUOTE_GLUE_RE. The tokens have lost the quotes, so the
+    name read here may not be the one the shell expands, and neither free
+    pass holds either.
     """
     if "`" in op or "$(" in op:
         return "ask", "command substitution cannot be statically resolved"
@@ -1186,7 +1205,8 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                 # a loop variable and a bound one can clear.
                 d, r = classify_one(sub, cwd, bare_var_ok, assigned,
                                     may_clear=may_clear, opaque_names=opaque_names,
-                                    line_literals=line_literals, reread=reread)
+                                    line_literals=line_literals, reread=reread,
+                                    glued=glued)
                 out.append((d, f"the loop sets ${name} to {val}; {r}"))
             d, r = worst_of(out)
             # Inside a string another shell re-reads, the outer shell may have
@@ -1238,7 +1258,7 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                     continue
                 d, r = classify_one(sub, cwd, bare_var_ok, assigned,
                                     may_clear=may_clear, opaque_names=opaque_names,
-                                    line_literals=rest, reread=reread)
+                                    line_literals=rest, reread=reread, glued=glued)
                 out.append((d, f"{n}={val} on this line, so this may read as "
                                f"{sub}; {r}"))
             d, r = worst_of(out) if out else ("allow", "")
@@ -1253,13 +1273,15 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
             name = m.group(1)
             if name in DANGEROUS_VARS:
                 return "deny", f"${name} expands to a critical directory"
+            # A literal still live here condemns before an unread set of the
+            # same name asks: `W=/; : ${W:=/tmp/x}; rm -rf "$W"` is rm -rf /.
+            worse = condemned_by_line([name])
+            if worse:
+                return worse
             if name in opaque_names:
                 return "ask", (f"${name} is assigned on this line to a value the "
                                "guard cannot read, so an empty one is not the "
                                "only way it goes wrong")
-            worse = condemned_by_line([name])
-            if worse:
-                return worse
             if not bare_var_ok:
                 return "ask", (
                     f"bare ${name} -- if it is unset this command falls back to "
@@ -1270,23 +1292,27 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                     f"${name} in text another reader runs may take its value "
                     "from outside it -- the outer shell or an export -- so an "
                     "empty one is not the only way it goes wrong")
+            if glued:
+                return "ask", GLUED_REASON
             # Bare expansion, no suffix: empty -> `rm -rf ""` (errors),
             # unset+unquoted -> no operands (errors). Nothing to promote to /.
             return "allow", f"bare ${name} with no suffix"
         if all(GUARDED_RE.match(e) for e in exps):
             guarded = list(dict.fromkeys(EXP_NAME_RE.match(e).group(1) for e in exps))
-            held = [n for n in guarded if n in opaque_names]
+            worse = condemned_by_line(guarded)
+            if worse:
+                return worse
+            held = [n for n in guarded if n in opaque_names or ANY_NAME in opaque_names]
             if held:
                 return "ask", (f"${held[0]} is assigned on this line to a value "
                                f"the guard cannot read, and ${{{held[0]}:?}} "
                                "proves only that it is not empty")
-            worse = condemned_by_line(guarded)
-            if worse:
-                return worse
             if reread:
                 return "ask", (f"${{{guarded[0]}:?}} proves only that it is not "
                                "empty, and in text another reader runs its value "
                                "may come from outside it")
+            if glued:
+                return "ask", GLUED_REASON
             return "allow", "all expansions are ${VAR:?}-guarded"
         flagged = next((e for e in exps if ZSH_FLAG_EXPANSION_RE.match(e)), None)
         if flagged:
@@ -2052,7 +2078,15 @@ def _rebinding_possible(toks, text=""):
 # --- names a loop binds, and where a relative operand lands -------------------
 
 READ_VALUE_OPTS = {"-d", "-n", "-N", "-p", "-t", "-u", "-a", "-i"}
-CD_OPTS = {"-L", "-P", "-e", "-@"}
+# ...the same, as the letters of a bundle: `read -rp PROMPT`, `read -ra NAME`.
+READ_VALUE_CHARS = {o[1] for o in READ_VALUE_OPTS}
+# A word read may set: a plain name, or zsh's `name?prompt`.
+READ_NAME_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\?.*)?$", re.S)
+# cd's and pushd's flags, none of which takes a value: bash's -L -P -e -@ and
+# zsh's -q (no chpwd hooks) and -s (refuse symlinks). The word after them is
+# still the target. Any other option leaves the shell unplaceable.
+CD_OPTS = {"-L", "-P", "-e", "-@", "-q", "-s"}
+CD_FLAGS_RE = re.compile(r"^-[%s]+$" % "".join(o[1] for o in sorted(CD_OPTS)))
 # `pushd +1`, `cd -2`: an entry on the directory stack, not a path.
 DIR_STACK_INDEX_RE = re.compile(r"^[+-]\d+$")
 GROUPING = {"(", ")", "{", "}"}
@@ -2098,14 +2132,232 @@ def loop_bindings(toks):
             else:
                 bind(name, None)       # `for f; do` iterates "$@"
         elif os.path.basename(t) == "read":
+            # Every plain name after read, past option words only, may be one
+            # it sets. zsh's -t, -p and -k take no value, so `read -t W` reads
+            # into W where bash's getopt reading below takes W as -t's value;
+            # zsh's `name?prompt` names one too. Over-binding costs a prompt.
             j = i + 1
-            while j < len(toks) and toks[j].startswith("-"):
-                j += 2 if toks[j] in READ_VALUE_OPTS else 1
+            while j < len(toks) and toks[j] not in SEPARATORS:
+                w = toks[j]
+                if w in REDIRECTS or REDIRECT_TOKEN_RE.match(w):
+                    j += 2
+                    continue
+                m = READ_NAME_RE.match(w)
+                if m and not w.startswith("-"):
+                    bind(m.group(1), None)
+                j += 1
+            # Options as getopt reads them: in a bundle, the first letter that
+            # takes a value takes the rest of the bundle, or the next word.
+            # -a's value is an array the read fills, and a read that names
+            # nothing at all fills REPLY.
+            j, named = i + 1, False
+            while j < len(toks) and toks[j].startswith("-") and toks[j] != "-":
+                opt = toks[j]
+                j += 1
+                if opt == "--":
+                    break
+                for n, c in enumerate(opt[1:], 2):
+                    if c in READ_VALUE_CHARS:
+                        value = opt[n:]
+                        if not value and j < len(toks) and toks[j] not in SEPARATORS:
+                            value = toks[j]
+                            j += 1
+                        if c == "a" and BARE_NAME_RE.match(value):
+                            bind(value, None)
+                            named = True
+                        break
             while (j < len(toks) and toks[j] not in SEPARATORS
                    and BARE_NAME_RE.match(toks[j])):
                 bind(toks[j], None)
+                named = True
                 j += 1
+            if not named:
+                bind("REPLY", None)
     return out
+
+
+# mapfile's and readarray's options that take a value, so the value is not
+# read as the array's name.
+MAPFILE_VALUE_OPTS = {"-d", "-n", "-O", "-s", "-u", "-C", "-c"}
+# An assignment ENV_ASSIGN_RE does not match: `W+=x` appends, `W[0]=x` sets an
+# element -- and $W is element 0.
+UNREAD_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\]\+?|\+)=")
+NAME_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*")
+# declare/typeset/local -n: the value is the NAME of another variable, which
+# $W then reads through.
+NAMEREF_FLAG_RE = re.compile(r"^-[A-Za-z]*n[A-Za-z]*$")
+# The name an unread set may write when the guard cannot tell which: a
+# nameref whose target is computed. It stands for every name.
+ANY_NAME = "*"
+# A parameter expansion that assigns: ${W:=x} sets an empty or unset W, ${W=x}
+# only an unset one, and zsh's ${W::=x} always.
+ASSIGN_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:::=|:=|=)")
+
+
+def unread_sets(toks):
+    """-> [(index, name, by_builtin)] for each name this line sets in a way
+    the assignment scan cannot read.
+
+    A builtin that writes a name given as an argument: printf -v (and zsh's
+    print -v), mapfile and readarray (MAPFILE when none is named), getopts
+    (and OPTARG), and a declare -n reference, whose literal value is another
+    variable's name. Those are by_builtin, and index is their segment's
+    start. Then, at their own token: an assignment of a shape ENV_ASSIGN_RE
+    does not match -- an append, an element, an array `W=(...)` -- and an
+    assigning parameter expansion, `${W:=x}`, `${W=x}` or `${W::=x}`. Those
+    are told by the token's shape, and shlex has already removed the quotes
+    that would make `'W+=x'` a command name and `'${W:=x}'` plain text, so
+    nothing may rest on their having run. read is loop_bindings'.
+
+    A reference's target is set too, at the token that names it: what the
+    line assigns the reference (`declare -n R=W`, or `R=W` after `declare -n
+    R`) is the name every later `R=...` writes. Not by_builtin, so a
+    literal the target held before still condemns.
+    """
+    out, refs = [], set()
+    for s, e in segment_bounds(toks):
+        whole = strip_redirections(toks[s:e])
+        # Every command that starts in the segment: its command word, and one
+        # after a `{`, `(`, `()` or keyword inside it -- `f() { local -n R=W`.
+        firsts = [0] + [i for i in range(1, len(whole))
+                        if whole[i - 1] in KEYWORDS or whole[i - 1] == "()"]
+        seen = set()
+        for st in firsts:
+            argv = whole[st:]
+            j, base = command_word(argv)
+            if st + j in seen:
+                continue
+            seen.add(st + j)
+            args = argv[j + 1:]
+            if base in ("printf", "print"):
+                for k, a in enumerate(args):
+                    if not (a.startswith("-") and "v" in a[1:]):
+                        continue
+                    name = a[a.index("v", 1) + 1:] or (args[k + 1] if k + 1 < len(args) else "")
+                    m = NAME_PREFIX_RE.match(name)
+                    if m:
+                        out.append((s, m.group(0), True))
+                    break
+            elif base in ("mapfile", "readarray"):
+                names, k = [], 0
+                while k < len(args):
+                    if args[k] in MAPFILE_VALUE_OPTS:
+                        k += 2
+                        continue
+                    if BARE_NAME_RE.match(args[k]):
+                        names.append(args[k])
+                    k += 1
+                out.append((s, names[-1] if names else "MAPFILE", True))
+            elif base == "getopts":
+                out.append((s, "OPTARG", True))
+                if len(args) >= 2 and BARE_NAME_RE.match(args[1]):
+                    out.append((s, args[1], True))
+            elif base == "nameref" or (base in ("declare", "typeset", "local") and
+                                       any(NAMEREF_FLAG_RE.match(a) for a in args)):
+                names = [m.group(0) for m in (NAME_PREFIX_RE.match(a) for a in args)
+                         if m]
+                out.extend((s, n, True) for n in names)
+                refs.update(names)
+    # ...and the name each reference refers to, which an assignment through
+    # the reference writes without naming: `declare -n R=W; R=/` sets W. Its
+    # target is whatever the line assigns the reference, on the declaration
+    # or after it: `declare -n R; R=W`.
+    for k, t in enumerate(toks):
+        if ENV_ASSIGN_RE.match(t) and t.split("=", 1)[0] in refs:
+            value = t.split("=", 1)[1]
+            m = NAME_PREFIX_RE.match(value)
+            # A target the guard cannot read may be any name: ANY_NAME.
+            if EXPANSION_RE.search(value) or has_subst(value) or SENTINEL in value:
+                out.append((k, ANY_NAME, False))
+            elif m:
+                out.append((k, m.group(0), False))
+    for k, t in enumerate(toks):
+        m = UNREAD_ASSIGN_RE.match(t)
+        if m:
+            out.append((k, m.group(1), False))
+        elif ENV_ASSIGN_RE.match(t) and t.endswith("=") and toks[k + 1:k + 2] == ["("]:
+            out.append((k, t[:-1], False))
+        out.extend((k, m.group(1), False) for m in ASSIGN_DEFAULT_RE.finditer(t))
+    return out
+
+
+def names_set_unread(toks):
+    """-> the names unread_sets finds.
+
+    Each name is opaque to classify_one: its value came from this line, so
+    the free passes that assume nothing chose it do not hold.
+    """
+    return {name for _, name, _ in unread_sets(toks)}
+
+
+def _overwrites_before(toks, bounds, k):
+    """Does the unread set at token k run, in this shell, before every later
+    segment does?
+
+    Its segment must start the line or follow a `;`, and end it or lead into
+    a `;` or `&&`: after `&&` or `||` it may not run, and a pipeline or `&`
+    runs it in a subshell. Nothing on the line may group, loop or branch,
+    and a set written inside a substitution runs in one. Used only to stop a
+    literal condemning, so a miss here keeps the literal: the strict side.
+    """
+    if any(t in GROUPING_WORDS for t in toks) or has_subst(toks[k]):
+        return False
+    for s, e in bounds:
+        if s <= k < e:
+            before = toks[s - 1] if s else ";"
+            after = toks[e] if e < len(toks) else ";"
+            return before == ";" and after in (";", "&&")
+    return False
+
+
+def computed_target(argv, j):
+    """-> the argument through which the builtin at argv[j] assigns a name it
+    computes, or None.
+
+    `declare "$N"=/usr`, `printf -v "$N" x`, `read "$N"`: the name W arrives
+    as data, so no scan of this line can say W was set. let evaluates its
+    arguments as arithmetic, which assigns through whatever an expansion in
+    them holds, so any expansion there counts.
+    """
+    base = command_name(argv[j])
+    args = strip_redirections(argv[j + 1:])
+
+    def computed(w):
+        return "$" in w or "`" in w or SENTINEL in w
+
+    # A nameref's value is the name every later write through it lands on:
+    # `declare -n R=$N` computes it too.
+    if base == "nameref" or (base in ("declare", "typeset", "local")
+                             and any(NAMEREF_FLAG_RE.match(a) for a in args)):
+        hit = next((a for a in args if "=" in a and computed(a.split("=", 1)[1])), None)
+        if hit is not None:
+            return hit
+    if base in ("declare", "typeset", "local", "export", "readonly", "unset"):
+        return next((a for a in args if not a.startswith(("-", "+"))
+                     and computed(a.split("=", 1)[0])), None)
+    if base == "let":
+        return next((a for a in args if computed(a)), None)
+    if base == "read":
+        return next((a for a in args if not a.startswith("-") and computed(a)), None)
+    if base in ("mapfile", "readarray"):
+        k = 0
+        while k < len(args):
+            if args[k] in MAPFILE_VALUE_OPTS:
+                k += 2
+                continue
+            if not args[k].startswith("-") and computed(args[k]):
+                return args[k]
+            k += 1
+        return None
+    if base in ("printf", "print"):
+        for k, a in enumerate(args):
+            if a.startswith("-") and "v" in a[1:]:
+                name = a[a.index("v", 1) + 1:] or (args[k + 1] if k + 1 < len(args) else "")
+                return name if computed(name) else None
+        return None
+    if base == "getopts" and len(args) >= 2 and computed(args[1]):
+        return args[1]
+    return None
 
 
 def candidate_cwds(toks, cwd):
@@ -2129,7 +2381,23 @@ def candidate_cwds(toks, cwd):
         idx, base = command_word(argv)
         if base not in ("cd", "pushd", "popd"):
             continue
-        args = [a for a in argv[idx + 1:] if a not in CD_OPTS]
+        # Options first. One the guard does not know -- `pushd -n`, a typo --
+        # may change what the next word means, so the shell is unplaceable.
+        # `-` and a stack index (`-2`) are targets, not options.
+        args, k, unknown = argv[idx + 1:], 0, False
+        while (k < len(args) and args[k].startswith("-") and args[k] != "-"
+               and not DIR_STACK_INDEX_RE.match(args[k])):
+            if args[k] == "--":
+                k += 1
+                break
+            if not CD_FLAGS_RE.match(args[k]):
+                unknown = True
+                break
+            k += 1
+        if unknown:
+            out.append(UNKNOWN_CWD)
+            continue
+        args = args[k:]
         # pushd DIR moves the shell exactly as cd DIR does. popd, a bare
         # pushd and a stack index (+1, -2) go to a directory pushed earlier,
         # perhaps by another tool call, which nothing here can name.
@@ -2514,15 +2782,15 @@ HANDLED = {"find", "fd", "fdfind", "rsync", "rclone", "ssh"} | GIT_NAMES
 def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                     may_clear=False, git_relocated=False, trusted=True,
                     opaque_names=frozenset(), line_literals=None,
-                    reread=False, outer_danger=False):
+                    reread=False, outer_danger=False, glued=False):
     """-> [Finding] for the non-rm commands in one segment.
 
     may_clear is decided per SEGMENT by analyse, because that is the unit a
     rebinding can sit before or after; every target found in here shares it.
     git_relocated is decided per LINE, for the reason GIT_RELOCATE_RE gives.
     trusted is analyse's: False inside a string another shell re-reads, and
-    passed on to every target this judges. opaque_names, line_literals and
-    reread are analyse's too; see classify_one. outer_danger is the line's
+    passed on to every target this judges. opaque_names, line_literals,
+    reread and glued are analyse's too; see classify_one. outer_danger is the line's
     danger, which an ssh remote string is read with, as reread_findings
     reads a script.
     """
@@ -2557,7 +2825,8 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                                     may_clear=may_clear,
                                     loops_may_clear=trusted,
                                     opaque_names=opaque_names,
-                                    line_literals=line_literals, reread=reread)
+                                    line_literals=line_literals, reread=reread,
+                                    glued=glued)
             out.append(Finding(d, segment, label, t, r))
 
     if base == "find":
@@ -2966,6 +3235,14 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
                 unreadable.extend(bail(
                     "ask", i, f"{mark(word)} runs in command position, so "
                               "which command runs is unknowable"))
+            elif computed_target(toks[start:end], j) is not None:
+                # `N=W; declare "$N"=/usr` sets W with no W in the text, so
+                # nothing below can say W was set.
+                target = computed_target(toks[start:end], j)
+                unreadable.extend(bail(
+                    "ask", i, f"{mark(base)} assigns to a name it computes "
+                              f"({mark(target)}), so which variable it sets "
+                              "is not in the command"))
     # A script handed to a shell is code the guard can read. Each one found
     # here is analysed after the line's own findings, below. "here" is whether
     # the shell IS its segment's command: then the script runs in this shell's
@@ -3007,15 +3284,39 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     # expansion -- is opaque. One assigned only literals, after a `set -e` or a
     # `cd` that ends the leading run, has each literal judged; see classify_one.
     line_values = {}
-    for t in toks:
+    for k, t in enumerate(toks):
         if ENV_ASSIGN_RE.match(t):
             name, value = t.split("=", 1)
             if name not in assigned:
-                line_values.setdefault(name, []).append(value)
+                line_values.setdefault(name, []).append((k, value))
     opaque_names = frozenset(n for n, vs in line_values.items()
-                             if not all(LITERAL_VALUE_RE.match(v) for v in vs))
-    line_literals = {n: list(dict.fromkeys(vs)) for n, vs in line_values.items()
-                     if n not in opaque_names}
+                             if not all(LITERAL_VALUE_RE.match(v) for _, v in vs))
+    # ...and the names it sets with no assignment token to read: `printf -v W
+    # /` is W=/ to the shell. Their literals stay, and may still condemn --
+    # except one such a builtin has certainly replaced by the time a segment
+    # runs: `W=; printf -v W x; rm -rf "$W"/*` runs as rm -rf x/*, and the
+    # empty literal no longer says anything. A literal assigned after the
+    # set, or one the set may not reach, still condemns.
+    unread = unread_sets(toks)
+    opaque_names |= {n for _, n, _ in unread}
+    overwrites = [(k, n) for k, n, by_builtin in unread
+                  if by_builtin and _overwrites_before(toks, bounds, k)]
+
+    def literals_at(pos):
+        """{name: values} the line assigns only literals, as they stand for
+        the segment starting at pos. A name with any other value is opaque."""
+        out = {}
+        for n, vs in line_values.items():
+            if not all(LITERAL_VALUE_RE.match(v) for _, v in vs):
+                continue
+            out[n] = list(dict.fromkeys(
+                v for k, v in vs
+                if not any(n == on and k < ok < pos for ok, on in overwrites)))
+        return out
+
+    # The free passes read a name off a token shlex has unquoted, which is
+    # not the name the shell expands once a quote glues a word on.
+    glued = bool(QUOTE_GLUE_RE.search(cmd))
     # Where the map stops being provable. Computed once over the whole token
     # stream rather than per segment, because the answer is a property of the
     # LINE -- the first construct that could rebind a name without writing it --
@@ -3045,6 +3346,7 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
         found_rm = True
         segment = segment_at(i)
         may_clear = segment_start(i) < rebind_at
+        lits = literals_at(segment_start(i))
         i += 1
         recursive, operands = False, []
         while i < len(toks) and toks[i] not in SEPARATORS:
@@ -3074,7 +3376,8 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
             d, r = classify_operand(op, cwds, assigned=assigned, loops=loops,
                                     may_clear=may_clear, loops_may_clear=trusted,
                                     opaque_names=opaque_names,
-                                    line_literals=line_literals, reread=reread)
+                                    line_literals=lits, reread=reread,
+                                    glued=glued)
             # No label: for rm every operand is a target, which the echoed
             # command already makes obvious.
             findings.append(Finding(d, segment, None, op, r))
@@ -3086,8 +3389,8 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
             analyse_segment(toks[start:end], cwds, depth, assigned, loops,
                             start < rebind_at, git_relocated, trusted,
                             opaque_names=opaque_names,
-                            line_literals=line_literals, reread=reread,
-                            outer_danger=danger))
+                            line_literals=literals_at(start), reread=reread,
+                            outer_danger=danger, glued=glued))
 
     # Scripts collected above, and quoted heredocs a shell reads from stdin.
     # A -c script is untrusted: its double quotes may have let the OUTER shell
