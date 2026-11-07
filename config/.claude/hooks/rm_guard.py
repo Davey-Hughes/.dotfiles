@@ -602,6 +602,22 @@ DANGER_PAIRS = (
     (GIT_WORD_RE, GIT_CLEAN_RE),
 )
 
+# Fix 1: commands whose arguments are only ever printed or matched, never run.
+# sed and awk are absent on purpose -- GNU sed's `e` and awk's system() both
+# execute text.
+INERT_READERS = {"grep", "egrep", "fgrep", "rg", "echo", "printf"}
+# ...and what a line of them may pipe into or be mixed with. sort, uniq and
+# less are absent on purpose: each can write a file or run a program.
+SAFE_SINKS = {"head", "tail", "wc", "cut", "tr", "grep", "egrep", "fgrep", "rg",
+              "cat", "column", "nl"}
+INERT_COMMANDS = INERT_READERS | SAFE_SINKS | {"cd", "ls", "pwd", "true"}
+# Words that open or close a group, loop, function or coprocess. A pipe or
+# redirect on one sits outside every segment, so none may appear at all.
+GROUPING_WORDS = {"(", ")", "{", "}", "do", "done", "then", "fi", "else", "elif",
+                  "esac", "case", "if", "while", "until", "for", "select",
+                  "function", "coproc", "foreach", "end", "repeat", "alias"}
+PUNCT_ONLY_RE = re.compile(r"^[^A-Za-z0-9_]+$")
+
 
 def danger_hint(text):
     """Does the raw text plausibly contain a destructive invocation?"""
@@ -2294,6 +2310,100 @@ def _note_unread_heredocs(cmd, read=()):
         _WITHDRAWN[0] = True
 
 
+def _quiet_redirects(seg):
+    """Does every redirection in seg leave its text unrunnable?
+
+    Input redirections only read, a duplication onto 0, 1, 2 or - only moves a
+    stream the line already has, and /dev/null swallows one. Anything else
+    writes the text somewhere a later command could run it from -- `>&60`
+    reaches a coprocess. `|&` is a pipe to the shell but not a separator to
+    segment_bounds, so it is refused here outright.
+    """
+    j = 0
+    while j < len(seg):
+        t = seg[j]
+        if t == "|&":
+            return False
+        if REDIRECT_TOKEN_RE.match(t):
+            target = seg[j + 1] if j + 1 < len(seg) else ""
+            op = t.lstrip("0123456789")
+            if op.startswith("<") and ">" not in op:
+                j += 2
+                continue
+            if op.endswith("&") and target in ("0", "1", "2", "-"):
+                j += 2
+                continue
+            if target == "/dev/null":
+                j += 2
+                continue
+            return False
+        j += 1
+    return True
+
+
+def _inert_line(toks, bounds, text):
+    """Is this whole line a plain read-and-print command list?
+
+    The backstop asks "did a real recursive rm fail to parse?". It may answer
+    no only for a line that is an allowlist end to end: every command on it is
+    a reader, a safe sink, cd/ls/pwd/true or a bare assignment, and every
+    `rm -rf` the pattern finds sits in an argument of a reader. It is judged
+    on the line, not on the hit's segment, because a pipe or redirect on a
+    group (`{ echo '...'; } | sh`) sits outside any one segment. Each clause
+    shuts a shape that ran the text although the per-token rule passed it:
+
+    1. Every match is a hit -- `grep -n 'rm -rf' f; =rm -rf d` has a match
+       (zsh's =rm is /usr/bin/rm) that no hit token holds.
+    2. Each hit is an argument of a bare-named reader, with no substitution --
+       `./grep` is a path to some other binary and `grep() { eval ..; }` a
+       function, so the command word must be exactly the name.
+    3. Every segment is an allowed command or pure assignments -- a wrapper,
+       env prefix (`LESSOPEN='|-sh %s' less`), shell or path makes it False.
+       sort (`-o`, `--compress-program`), uniq (`- file`) and less are absent.
+    4. No grouping, compound or function word, and no `<(`, `>(`, `>>(` or
+       `()` token -- zsh's `echo '...' >>(sh)` pipes into a shell.
+    5. Every redirection is quiet: input, /dev/null, or a duplication onto
+       0, 1, 2 or - (not `>&60`, a coprocess).
+    6. No executing option: `rg --pre=sh` and `--hostname-bin` run a program,
+       `printf -v c '...'; $c` stores the text for the shell to run.
+    """
+    hits = [i for i, t in enumerate(toks) if RM_RECURSIVE_RE.search(t)]
+    if not hits:
+        return False
+    if (len(RM_RECURSIVE_RE.findall(text))
+            > sum(len(RM_RECURSIVE_RE.findall(toks[i])) for i in hits)):
+        return False
+    for t in toks:
+        if t in GROUPING_WORDS:
+            return False
+        if PUNCT_ONLY_RE.match(t) and ("(" in t or ")" in t):
+            return False
+    for s, e in bounds:
+        seg = toks[s:e]
+        first = seg[0]
+        if all(ENV_ASSIGN_RE.match(t) and not has_subst(t) for t in seg):
+            continue
+        if "/" in first or first not in INERT_COMMANDS:
+            return False
+        if not _quiet_redirects(seg):
+            return False
+        if first == "rg" and any(
+                t in ("--pre", "--hostname-bin")
+                or t.startswith(("--pre=", "--hostname-bin=")) for t in seg):
+            return False
+        if first == "printf" and any(t.startswith("-v") for t in seg):
+            return False
+    for i in hits:
+        k = next((n for n, (s, e) in enumerate(bounds) if s <= i < e), None)
+        if k is None:
+            return False
+        s = bounds[k][0]
+        if (toks[s] not in INERT_READERS or "/" in toks[s] or i == s
+                or has_subst(toks[i])):
+            return False
+    return True
+
+
 def analyse(cmd, cwd, depth=0, trusted=True):
     """-> [Finding]. Empty means the guard has no opinion.
 
@@ -2518,6 +2628,10 @@ def _analyse(cmd, cwd, depth, trusted):
         # `git -C /path rm -r` does not read as unparsed.
         m = RM_RECURSIVE_RE.search(text)
         if m:
+            # The whole line is plain readers and every match is their text:
+            # there is no rm here to have failed to parse.
+            if _inert_line(toks, bounds, text):
+                return []
             frag = " ".join(m.group(0).split())  # the match may span a newline
             reason = (f"{mark(frag)} reads as a recursive rm, but no rm command "
                       "survived parsing")

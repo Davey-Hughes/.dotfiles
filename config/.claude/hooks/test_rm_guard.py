@@ -809,6 +809,43 @@ CASES = [
     # The heredoc cannot be placed, so the guard asks rather than guess.
     ("a heredoc operator inside a comment is not a heredoc",
      "rm -rf ./build # see <<'EOF'\nrm -rf /\nEOF", "ask"),
+    # --- a mention of rm -rf is not a delete ---------------------------------
+    ("mention: grep pattern", "grep -n 'rm -rf' plan.md | head", "pass"),
+    ("mention: grep -E alternation",
+     "grep -nE 'rm -rf|find .*-delete' \"$P\" | head", "pass"),
+    ("mention: rg", 'rg -n "rm -rf" src', "pass"),
+    ("mention: echo", 'echo "never run rm -rf here"', "pass"),
+    ("mention: printf to /dev/null", "printf '%s\\n' 'rm -rf x' >/dev/null", "pass"),
+    ("mention: grep with stderr silenced", "grep -c 'rm -r' f 2>/dev/null", "pass"),
+    # ...and every way the text could still be run, or a real rm hide in it.
+    ("mention: piped into a shell", 'echo "rm -rf /" | bash', "ask"),
+    ("mention: written to a file", "grep 'rm -rf' f > run.sh", "ask"),
+    ("mention: through tee", "grep 'rm -rf' f | tee run.sh", "ask"),
+    ("mention: |& into a shell", "grep 'rm -rf' f |& sh", "ask"),
+    ("mention: a real rm in a substitution", 'grep x "$(rm -rf /)"', "ask"),
+    ("mention: a real rm in backticks", "echo `rm -rf /`", "ask"),
+    ("mention: sed can execute", "sed -n '/rm -rf/p' f", "ask"),
+    ("mention: awk can execute", "awk '/rm -rf/' f", "ask"),
+    # The silence is for a whole line of plain readers -- a pipe or redirect on
+    # a group sits outside any one segment, and every way below runs the text.
+    ("mention: a group piped into a shell", "{ echo 'rm -rf /home/u/x'; } | sh", "ask"),
+    ("mention: a subshell piped into a shell", "( echo 'rm -rf /home/u/x' ) | bash", "ask"),
+    ("mention: a loop piped into a shell", "for i in 1; do echo 'rm -rf /home/u/x'; done | sh", "ask"),
+    ("mention: a group written to a file", "{ echo 'rm -rf /home/u/x'; } > run.sh; sh run.sh", "ask"),
+    ("mention: zsh process substitution", "echo 'rm -rf /home/u/x' >>(sh)", "ask"),
+    ("mention: rg --pre runs a program", "rg --pre=sh . <(echo 'rm -rf /home/u/x')", "ask"),
+    ("mention: an rm the tokens do not hold", "grep -n 'rm -rf' f; =rm -rf /home/u/project", "ask"),
+    ("mention: a path to a binary named grep", "./grep -S 'rm -rf /home/u/x'", "ask"),
+    ("mention: a function named grep", "grep() { eval \"$1\"; }; grep 'rm -rf /home/u/x'", "ask"),
+    ("mention: printf -v into a variable", "printf -v c '%s' 'rm -rf /home/u/x'; $c", "ask"),
+    ("mention: sort can run a program", "grep 'rm -rf' f | sort -S 1K --compress-program=sh", "ask"),
+    ("mention: sort can write a file", "grep 'rm -rf' f | sort -o run.sh; sh run.sh", "ask"),
+    ("mention: a duplication onto another fd", "coproc sh; echo 'rm -rf /home/u/x' >&60", "ask"),
+    ("mention: an env prefix", "LESSOPEN='|-sh %s' less - <<< 'rm -rf /home/u/x'", "ask"),
+    # ...and the real shapes still clear: assignments, cd and ls around readers.
+    ("mention: a plan check with assignments around it",
+     "P=docs/plan.md; grep -n 'rm -rf' \"$P\" | head; wc -l \"$P\"", "pass"),
+    ("mention: after a cd", "cd /home/u/project && grep -rn 'rm -r' src | head -40", "pass"),
 ]
 
 
