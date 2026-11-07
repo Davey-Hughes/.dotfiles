@@ -237,7 +237,10 @@ run_ticker() {
         [[ "$(stat -c %Y "$SELF" 2>/dev/null)" == "$born" ]] || break
         working=0
         # A dead tmux server makes this yield nothing, which retires the ticker.
-        while read -r pane state colour cmd; do
+        # Split on '|', not spaces: @cc_colour is empty for a moment on every
+        # idle -> working, and whitespace splitting would shift "claude" into
+        # $colour and clear the pane below -- @cc_name and all.
+        while IFS='|' read -r pane state colour cmd; do
             [[ "$state" == working ]] || continue
             # No assistant is the pane's process: it exited or crashed
             # without SessionEnd, or the pane was reused. Drop the stale state
@@ -250,7 +253,7 @@ run_ticker() {
             set_opt "$pane" @cc_icon \
                 "$(styled "${colour:-$COL_WORK}" "${SPIN[frame % ${#SPIN[@]}]}")"
         done < <(tmux list-panes -a -F \
-            '#{pane_id} #{@cc_state} #{@cc_colour} #{pane_current_command}' 2>/dev/null)
+            '#{pane_id}|#{@cc_state}|#{@cc_colour}|#{pane_current_command}' 2>/dev/null)
 
         if (( working )); then
             quiet=0
