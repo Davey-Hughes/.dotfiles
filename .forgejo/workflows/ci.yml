@@ -34,16 +34,22 @@ jobs:
   # confirmation prompt. Its own job, and first, because it is the one thing
   # here whose regression is measured in deleted files -- see the header of
   # config/.claude/hooks/rm-guard.sh for the three days it silently did nothing.
+  #
+  # Arch, not Debian: these tests drive tmux formats and hooks, which change
+  # between releases, and every machine here runs a current tmux (Arch, the
+  # Deck, Homebrew). bookworm's 3.3a was a version nothing runs. Rolling on
+  # purpose -- an Arch update that breaks the config should fail here too.
   rm-guard:
     runs-on: docker
     container:
-      image: node:24-bookworm        # node + git, which the checkout action needs
+      image: archlinux:latest
     steps:
+      # Before checkout: the image has neither the node the checkout action
+      # runs on nor the git it fetches with.
+      - name: Install node, git, python, tmux, and jq
+        run: pacman -Syu --noconfirm --needed nodejs git python tmux jq
       - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - name: Install python3, tmux, and jq
-        run: apt-get update && apt-get install -y --no-install-recommends python3 tmux jq
-      # The suite shells out to bash for the wrapper's degraded path, so bash
-      # must be the real one, not the image's dash-as-sh.
+      # The suite shells out to bash for the wrapper's degraded path.
       - name: Verdicts the guard must produce
         run: python3 config/.claude/hooks/test_rm_guard.py
       - name: Codex adapter decisions and failure handling
@@ -54,7 +60,7 @@ jobs:
         run: python3 tests/test-resurrect-codex.py
       - name: Codex tmux chat names
         run: python3 tests/test-codex-tmux-names.py
-      # Drives the gateway plugin through node, which this image already has.
+      # Drives the gateway plugin through node, from the first step.
       - name: OpenClaw tmux activity and restore
         run: python3 tests/test-openclaw-tmux.py
       - name: Claude tmux spinner ticker
