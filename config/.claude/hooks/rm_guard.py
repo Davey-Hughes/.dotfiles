@@ -809,7 +809,7 @@ def worst_of(results):
 
 
 def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
-                     may_clear=False):
+                     may_clear=False, loops_may_clear=True):
     """-> (decision, reason), over every path this operand can actually become.
 
     Two things multiply a single written operand into several real ones, and
@@ -826,6 +826,9 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     may_clear is carried through untouched; it is a fact about where this
     operand's COMMAND sits in the line, which neither brace expansion nor a
     candidate cwd can change.
+
+    loops_may_clear is False inside a string another shell re-reads; see
+    analyse's `trusted`.
     """
     cwds = [cwd] if isinstance(cwd, str) else list(cwd) or [""]
     products = expand_braces(op)
@@ -834,7 +837,8 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     results = []
     for p in products:
         for c in cwds:
-            d, r = classify_one(p, c, bare_var_ok, assigned, loops, may_clear)
+            d, r = classify_one(p, c, bare_var_ok, assigned, loops, may_clear,
+                                loops_may_clear)
             if p != op:
                 r = f"brace expansion produces {p}; {r}"
             results.append((d, r))
@@ -842,7 +846,7 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
 
 
 def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
-                 may_clear=False):
+                 may_clear=False, loops_may_clear=True):
     """-> (decision, reason). Anything not provably safe returns ask/deny.
 
     bare_var_ok encodes an rm-specific fact: `rm -rf $X` with X unset or empty
@@ -853,6 +857,10 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     may_clear is analyse's finding that nothing before this operand's command
     could have rebound a proven binding -- see _rebinding_possible. False is
     the safe default: a caller that does not know gets condemn-only.
+
+    loops_may_clear is False inside a string another shell re-reads, where the
+    outer shell may have expanded a loop variable first: a loop's words may
+    then condemn but not clear. See analyse's `trusted`.
     """
     if "`" in op or "$(" in op:
         return "ask", "command substitution cannot be statically resolved"
@@ -932,7 +940,15 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                 d, r = classify_one(sub, cwd, bare_var_ok, assigned,
                                     may_clear=may_clear)
                 out.append((d, f"the loop sets ${name} to {val}; {r}"))
-            return worst_of(out)
+            d, r = worst_of(out)
+            # Inside a string another shell re-reads, the outer shell may have
+            # expanded $name before the inner one ever ran the loop, so the
+            # words above prove nothing. They may still condemn.
+            if d == "allow" and not loops_may_clear:
+                return "ask", (f"{r} -- but another shell re-reads this text, "
+                               f"and the outer one may already have expanded "
+                               f"${name}")
+            return d, r
 
     # A masked heredoc body. Unreachable from any sensible command -- a heredoc is
     # a redirect, not a path -- but the sentinel word would otherwise read as a
@@ -1997,12 +2013,14 @@ HANDLED = {"find", "fd", "fdfind", "rsync", "rclone", "ssh"} | GIT_NAMES
 
 
 def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
-                    may_clear=False, git_relocated=False):
+                    may_clear=False, git_relocated=False, trusted=True):
     """-> [Finding] for the non-rm commands in one segment.
 
     may_clear is decided per SEGMENT by analyse, because that is the unit a
     rebinding can sit before or after; every target found in here shares it.
     git_relocated is decided per LINE, for the reason GIT_RELOCATE_RE gives.
+    trusted is analyse's: False inside a string another shell re-reads, and
+    passed on to every target this judges.
     """
     out = []
     segment = argv
@@ -2032,7 +2050,8 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
         for t in targets:
             d, r = classify_operand(t, cwd, bare_var_ok=bare_var_ok,
                                     assigned=assigned, loops=loops,
-                                    may_clear=may_clear)
+                                    may_clear=may_clear,
+                                    loops_may_clear=trusted)
             out.append(Finding(d, segment, label, t, r))
 
     if base == "find":
@@ -2073,11 +2092,12 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
             out.append(Finding("ask", segment, GIT_CLEAN_LABEL, None,
                                GIT_RELOCATED))
     elif base == "ssh":
-        # assigned is deliberately NOT passed into the recursion. The local shell
-        # expands a double-quoted remote command before ssh runs, and shlex has
-        # stripped the quotes by now, so `ssh h "rm -rf $W/*"` and
-        # `ssh h 'rm -rf $W/*'` are indistinguishable here. analyse() re-reads
-        # the remote string's own bindings instead.
+        # The local shell expands a double-quoted remote command before ssh
+        # runs, and shlex has stripped the quotes by now, so `ssh h "rm -rf
+        # $W/*"` and `ssh h 'rm -rf $W/*'` are indistinguishable here. So the
+        # remote string is analysed untrusted: its own bindings and loops may
+        # condemn, never clear. `ssh h "X=/tmp/a; rm -rf $X/*"` cleared as
+        # /tmp/a/* until this, and runs as `rm -rf /*` when X is unset here.
         remote = ssh_remote_command(argv)
         if remote and depth < MAX_SSH_DEPTH:
             # No local cwd applies on the far end, so pass cwd="": only /tmp and
@@ -2085,7 +2105,7 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
             # keep the REMOTE segment as their echo -- that is the command that
             # matters -- and carry the hop in their label.
             hop = "over ssh -- no local safe root clears a path on the far end"
-            for f in analyse(remote, "", depth + 1):
+            for f in analyse(remote, "", depth + 1, trusted=False):
                 out.append(f._replace(
                     label=f"{hop}; {f.label}" if f.label else hop))
         elif remote:
@@ -2094,8 +2114,14 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
     return out
 
 
-def analyse(cmd, cwd, depth=0):
-    """-> [Finding]. Empty means the guard has no opinion."""
+def analyse(cmd, cwd, depth=0, trusted=True):
+    """-> [Finding]. Empty means the guard has no opinion.
+
+    trusted is False for a string another shell re-reads -- an ssh remote
+    command, a `sh -c` script. Its double quotes are gone by the time it gets
+    here, so a `$X` in it may have been expanded by the OUTER shell, and
+    nothing bound inside it may clear. Bindings and loops still condemn.
+    """
     # Raw scan first: no guarded command name anywhere means nothing to judge.
     if not GUARDED_CMD_RE.search(cmd):
         return []
@@ -2209,6 +2235,8 @@ def analyse(cmd, cwd, depth=0):
     # times. A segment starting before it ran with the bindings still intact.
     rebind = _rebinding_possible(toks, cmd)
     rebind_at = len(toks) if rebind is None else rebind[0]
+    if not trusted:
+        rebind_at = 0
     # These two do clear as well as condemn, and both earn it the same way: a
     # loop's word list and a literal `cd` target are complete and visible right
     # here, where an assignment map's binding may already have been overwritten.
@@ -2256,7 +2284,7 @@ def analyse(cmd, cwd, depth=0):
             continue
         for op in operands:
             d, r = classify_operand(op, cwds, assigned=assigned, loops=loops,
-                                    may_clear=may_clear)
+                                    may_clear=may_clear, loops_may_clear=trusted)
             # No label: for rm every operand is a target, which the echoed
             # command already makes obvious.
             findings.append(Finding(d, segment, None, op, r))
@@ -2266,7 +2294,7 @@ def analyse(cmd, cwd, depth=0):
     for start, end in bounds:
         findings.extend(
             analyse_segment(toks[start:end], cwds, depth, assigned, loops,
-                            start < rebind_at, git_relocated))
+                            start < rebind_at, git_relocated, trusted))
 
     # A relocated clean the segments never saw: inside a substitution that is
     # not in command position (`echo $(git --work-tree=/ clean -fdx)`), whose

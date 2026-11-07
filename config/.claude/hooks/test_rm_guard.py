@@ -716,6 +716,28 @@ CASES = [
     ("a matched `end` closes its foreach",
      'W=/tmp/b\nforeach f (a b)\necho $f\nend\nrm -rf "$W"/*\ndeclare -g "$(printf X)=/"',
      "allow"),
+    # --- a re-read string may already have been expanded --------------------
+    # The local shell expands $X inside double quotes BEFORE ssh sends the
+    # string, so a binding inside it proves nothing about what runs remotely.
+    # The simple rule refuses inner clearing whenever the string has a `$`,
+    # single-quoted or not -- see the spec's fix 0.
+    ("ssh: a double-quoted binding cannot clear",
+     'ssh h "X=/tmp/a; rm -rf $X/*"', "ask"),
+    ("ssh: nor a single-quoted one, by the simple rule",
+     "ssh h 'X=/tmp/a; rm -rf $X/*'", "ask"),
+    ("ssh: a loop inside cannot clear",
+     "ssh h 'for d in /tmp/a /tmp/b; do rm -rf \"$d\"; done'", "ask"),
+    ("ssh: a binding inside still condemns",
+     "ssh h 'X=/; rm -rf \"$X\"/*'", "deny"),
+    ("ssh: a loop inside still condemns",
+     "ssh h 'for d in / /tmp; do rm -rf \"$d\"; done'", "deny"),
+    ("ssh: a literal still clears", "ssh h 'rm -rf /tmp/build'", "allow"),
+    # The same downgrade has to reach rate(), which judges find/fd/rsync/rclone
+    # targets: without it these came back allow.
+    ("ssh: a loop inside cannot clear a find root",
+     "ssh h 'for d in /tmp/a; do find \"$d\" -delete; done'", "ask"),
+    ("ssh: ...nor an rsync destination",
+     "ssh h 'for d in /tmp/a; do rsync -a --delete src/ \"$d\"; done'", "ask"),
 ]
 
 
