@@ -609,6 +609,25 @@ def danger_hint(text):
                for name, flag in DANGER_PAIRS)
 
 
+def _is_boundary(prev):
+    """Can a `#` straight after the output element `prev` start a comment?
+
+    An escape pair is one 2-character element, `\\ ` for an escaped space; its
+    last character is a space but it is part of a word, never a boundary.
+    """
+    if len(prev) == 2 and prev[0] == "\\":
+        return False
+    return prev[-1:] in COMMENT_BOUNDARY
+
+
+def _line_comment_before(text, pos):
+    """Does a comment open on pos's line before pos? Conservative: a `#` in
+    quotes there counts too."""
+    line = text[text.rfind("\n", 0, pos) + 1:pos]
+    return any(c == "#" and (i == 0 or line[i - 1] in COMMENT_BOUNDARY)
+               for i, c in enumerate(line))
+
+
 def _heredoc_opener_rest(m):
     """What follows a quoted heredoc's delimiter on its OPENING line, plus the
     newline that ends that line.
@@ -692,7 +711,8 @@ def _masked_heredocs(text):
     """
     k = 0
     for m in HEREDOC_RE.finditer(text):
-        if _opener_continues(_heredoc_opener_rest(m)[:-1]):
+        if (_opener_continues(_heredoc_opener_rest(m)[:-1])
+                or _line_comment_before(text, m.start())):
             continue
         yield "%sHD%d%s" % (SENTINEL, k, SENTINEL), m
         k += 1
@@ -1316,7 +1336,7 @@ def mask_opaque(cmd):
         # the next line came back *allow*, with the second rm never tokenized.
         # Bash starts a comment only at the start of a word, which is why the
         # boundary test is here and not left to shlex.
-        if quote is None and c == "#" and (not out or out[-1][-1:] in COMMENT_BOUNDARY):
+        if quote is None and c == "#" and (not out or _is_boundary(out[-1])):
             nl = cmd.find("\n", i)
             i = n if nl < 0 else nl
             continue

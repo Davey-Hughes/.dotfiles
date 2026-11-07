@@ -790,15 +790,25 @@ CASES = [
     ("heredoc: ...and sh", "rm -rf ./dist && ssh host \"sh <<'EOF'\nrm -rf /\nEOF\"", "pass"),
     ("heredoc: ...and docker exec",
      "rm -rf ./dist && ssh host \"docker exec -i c sh <<'EOF'\nrm -rf /\nEOF\"", "pass"),
+    # Left unmasked, a heredoc's body can pair a quote with one later on the
+    # line and hide code from the tokenizer, so a heredoc the guard cannot
+    # place asks instead.
+    ("heredoc: an unplaceable heredoc asks, whatever its body holds",
+     "rm -rf ./build; cat \"a #x\" <<'EOF'\nit's\nEOF\nrm -rf / # it's", "ask"),
     # The parse-failure return must record the withdrawal too: shlex rejects
     # $'...', so this inner string never tokenizes.
     ("heredoc: a remote string that fails to parse still withdraws",
      "rm -rf ./dist && ssh host \"rm x; echo \\$'a\\\\'b'; bash <<'EOF'\nrm -rf /\nEOF\"", "pass"),
     ("heredoc: a # straight after the delimiter is not a comment",
      "cat <<'EOF'# it's\n'; rm -rf /\nEOF\n' && rm -rf ./build", "ask"),
+    # --- comment boundaries ---------------------------------------------------
+    ("an escaped space does not start a comment", "rm -rf ./a\\ #x; rm -rf /", "deny"),
     # The heredoc cannot be placed, so the guard asks rather than guess.
-    ("heredoc: ...nor one after an escaped space",
+    ("...nor after a heredoc's delimiter",
      "cat <<'EOF' x\\ #'\n'; rm -rf /\nEOF", "ask"),
+    # The heredoc cannot be placed, so the guard asks rather than guess.
+    ("a heredoc operator inside a comment is not a heredoc",
+     "rm -rf ./build # see <<'EOF'\nrm -rf /\nEOF", "ask"),
 ]
 
 
