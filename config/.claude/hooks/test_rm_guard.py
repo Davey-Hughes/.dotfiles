@@ -923,6 +923,12 @@ CASES = [
     ("heredoc: bash - with a script file does not read stdin as its script",
      "bash - x <<'EOF'\nrm -rf /\nEOF", "ask"),
     ("heredoc: -euo pipefail before a stdin script", "bash -euo pipefail <<'EOF'\nrm -rf /\nEOF", "deny"),
+    # --- zsh spellings ----------------------------------------------------------
+    ("zsh's =rm is rm", "rm -rf ./build; =rm -rf /", "deny"),
+    ("pushd moves the shell like cd", "pushd / && rm -rf usr", "deny"),
+    ("popd leaves the shell unplaceable", "pushd /tmp/x; popd; rm -rf ./build", "ask"),
+    ("zsh's $~W is an expansion", "W='/*'; rm -rf ./build; rm -rf $~W", "ask"),
+    ("...and so is $=W", "rm -rf $=W", "ask"),
     # --- re-read text: a variable may take its value from outside it ----------
     # The outer shell expands a double-quoted script first, and a substitution
     # or a heredoc-fed shell sees the line's variables and exports. Neither

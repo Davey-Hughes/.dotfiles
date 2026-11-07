@@ -278,7 +278,14 @@ DANGEROUS_VARS = {"HOME", "PWD", "OLDPWD", "ROOT", "USER", "TMPDIR"}
 # ${VAR:?...} aborts on unset OR empty. ${VAR?...} (no colon) does NOT catch
 # empty and is deliberately excluded.
 GUARDED_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}$")
-EXPANSION_RE = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]")
+# The zsh form -- `$~W` globs W's value, `$=W` splits it into words, `$^W`,
+# `$+W` and `$#W` -- sits before the special parameters, so `$#W` is one
+# expansion rather than `$#` and a literal W. Missing it, `$~W` read as a
+# relative path and `W='/*'; rm -rf $~W` cleared.
+EXPANSION_RE = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*"
+                          r"|\$[~=^+#]+[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]")
+# The zsh form alone, for naming it in a verdict.
+ZSH_FLAG_EXPANSION_RE = re.compile(r"^\$[~=^+#]+[A-Za-z_]")
 # A word that is nothing but expansions -- `$X`, `${=X}`, `$1`, `$@` -- and so
 # names no command at all until the shell runs. `$S/bin/x` is not one.
 EXPANSION_WORD_RE = re.compile(r"^(?:%s)+$" % EXPANSION_RE.pattern)
@@ -976,8 +983,9 @@ def classify_path(p, cwd):
         if ".." in p.split("/"):
             return "ask", "relative path escapes upward via '..'"
         if cwd == UNKNOWN_CWD:
-            return "ask", ("an earlier `cd` in this command goes somewhere the "
-                           "guard cannot resolve, so where this lands is unknown")
+            return "ask", ("an earlier `cd`, `pushd` or `popd` in this command "
+                           "goes somewhere the guard cannot resolve, so where "
+                           "this lands is unknown")
         # A named subdirectory is bounded wherever cwd happens to be. An operand
         # that IS cwd -- `.`, `./`, or the `.` a `./*` glob strips down to --
         # takes the whole tree you are standing in, which is a different thing
@@ -1280,6 +1288,11 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                                "empty, and in text another reader runs its value "
                                "may come from outside it")
             return "allow", "all expansions are ${VAR:?}-guarded"
+        flagged = next((e for e in exps if ZSH_FLAG_EXPANSION_RE.match(e)), None)
+        if flagged:
+            return "ask", (f"zsh expands {flagged} as a glob, a word list or a "
+                           "count rather than as one path, so no value of it "
+                           "is safe to assume")
         # A literal the line assigns may condemn here too, and an empty one
         # most of all: `set -e; W=; rm -rf "$W"/*` runs as `rm -rf /*`. Only a
         # deny is taken, so an ask keeps the advice below.
@@ -1562,6 +1575,18 @@ def segment_bounds(toks):
     return bounds
 
 
+def command_name(t):
+    """The command a word names: its basename, or the name in zsh's `=name`.
+
+    zsh's EQUALS expansion replaces a word `=rm` with the full path of rm, in
+    any position, so `=rm -rf /` is rm and `find / -exec =rm -rf {} +` runs it.
+    Read as a basename, `=rm` was a word naming nothing.
+    """
+    if t[:1] == "=" and BARE_NAME_RE.match(t[1:]):
+        return t[1:]
+    return os.path.basename(t)
+
+
 def command_word(argv):
     """-> (index, basename) of the real command, past wrappers and VAR=val.
 
@@ -1579,7 +1604,7 @@ def command_word(argv):
     j = 0
     while j < len(argv):
         t = argv[j]
-        if ENV_ASSIGN_RE.match(t) or t in KEYWORDS or os.path.basename(t) in WRAPPERS:
+        if ENV_ASSIGN_RE.match(t) or t in KEYWORDS or command_name(t) in WRAPPERS:
             j += 1
             continue
         # `2` `>` `/dev/null`, `>` `/dev/null`, a fused `2>` `/dev/null`, or
@@ -1592,7 +1617,7 @@ def command_word(argv):
         break
     if j >= len(argv):
         return j, ""
-    return j, os.path.basename(argv[j])
+    return j, command_name(argv[j])
 
 
 def git_segments(toks):
@@ -2028,6 +2053,8 @@ def _rebinding_possible(toks, text=""):
 
 READ_VALUE_OPTS = {"-d", "-n", "-N", "-p", "-t", "-u", "-a", "-i"}
 CD_OPTS = {"-L", "-P", "-e", "-@"}
+# `pushd +1`, `cd -2`: an entry on the directory stack, not a path.
+DIR_STACK_INDEX_RE = re.compile(r"^[+-]\d+$")
 GROUPING = {"(", ")", "{", "}"}
 
 
@@ -2084,11 +2111,12 @@ def loop_bindings(toks):
 def candidate_cwds(toks, cwd):
     """-> every directory a relative operand in this command can resolve against.
 
-    `cd` is the only thing in a pipeline that moves the shell this rm runs in,
-    and not tracking it is why `cd /; rm -rf build` cleared: `build` was judged
-    against the *hook's* cwd, where it is bounded, instead of against `/`, where
-    it is `/build`. A child process cannot move us, so every `cd` in the command
-    text is a candidate and nothing else is.
+    `cd`, `pushd` and `popd` are the only things in a pipeline that move the
+    shell this rm runs in, and not tracking them is why `cd /; rm -rf build`
+    and `pushd / && rm -rf usr` cleared: the operand was judged against the
+    *hook's* cwd, where it is bounded, instead of against `/`. A child process
+    cannot move us, so every one of them in the command text is a candidate
+    and nothing else is.
 
     Both the before and the after are candidates, not only the after --
     `x && cd /tmp && rm -rf ./y` runs the rm where it started if the cd never
@@ -2099,10 +2127,16 @@ def candidate_cwds(toks, cwd):
     for start, end in segment_bounds(toks):
         argv = [t for t in toks[start:end] if t not in GROUPING]
         idx, base = command_word(argv)
-        if base != "cd":
+        if base not in ("cd", "pushd", "popd"):
             continue
         args = [a for a in argv[idx + 1:] if a not in CD_OPTS]
-        if not args:
+        # pushd DIR moves the shell exactly as cd DIR does. popd, a bare
+        # pushd and a stack index (+1, -2) go to a directory pushed earlier,
+        # perhaps by another tool call, which nothing here can name.
+        if base == "popd" or (base == "pushd" and not args) or (
+                args and DIR_STACK_INDEX_RE.match(args[0])):
+            out.append(UNKNOWN_CWD)
+        elif not args:
             out.append(os.environ.get("HOME", "") or UNKNOWN_CWD)
         elif args[0] == "-" or not _plain_literal(args[0]):
             out.append(UNKNOWN_CWD)
@@ -2132,7 +2166,7 @@ def find_targets(argv):
         if t == "-delete":
             destructive = True
         elif t in FIND_EXEC_ACTIONS and j + 1 < len(rest):
-            if os.path.basename(rest[j + 1]) in DESTRUCTIVE_EXEC:
+            if command_name(rest[j + 1]) in DESTRUCTIVE_EXEC:
                 destructive = True
     return destructive, roots
 
@@ -2144,7 +2178,7 @@ def fd_targets(argv):
     while i < len(argv):
         t = argv[i]
         if t in FD_EXEC_FLAGS:
-            if i + 1 < len(argv) and os.path.basename(argv[i + 1]) in DESTRUCTIVE_EXEC:
+            if i + 1 < len(argv) and command_name(argv[i + 1]) in DESTRUCTIVE_EXEC:
                 destructive = True
             break  # everything after this is the exec'd command, not a path
         head = t.split("=", 1)[0]
@@ -2354,7 +2388,7 @@ def shell_script(argv, i):
     """
     end = next((k for k in range(i + 1, len(argv)) if argv[k] in SEPARATORS),
                len(argv))
-    if os.path.basename(argv[i]) == "fish":
+    if command_name(argv[i]) == "fish":
         return (False if any(FISH_SCRIPT_FLAG_RE.match(t) for t in argv[i + 1:end])
                 else None)
     j, saw_c, unknown = i + 1, False, False
@@ -2396,7 +2430,7 @@ def _reads_stdin(seg, j, bodies):
     (`bash - x` runs x), and only with none is stdin read. fish is never
     read; see shell_script.
     """
-    if os.path.basename(seg[j]) == "fish" or shell_script(seg, j) is not None:
+    if command_name(seg[j]) == "fish" or shell_script(seg, j) is not None:
         return False
     args, opts_done, names = False, False, 0
     for t in seg[j + 1:]:
@@ -2436,7 +2470,7 @@ def shell_stdin_script(toks, bounds, k, bodies):
         here, at = True, j
     else:
         at = next((n for n in range(j + 1, len(seg))
-                   if os.path.basename(seg[n]) in SHELLS
+                   if command_name(seg[n]) in SHELLS
                    and _reads_stdin(seg, n, bodies)), None)
         if at is None:
             return None
@@ -2505,8 +2539,8 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
     # destructive flag sits beside it.
     if base not in HANDLED:
         for j, t in enumerate(argv):
-            if os.path.basename(t) in HANDLED:
-                idx, base = j, os.path.basename(t)
+            if command_name(t) in HANDLED:
+                idx, base = j, command_name(t)
                 break
     argv = argv[idx:]
     if not argv:
@@ -2939,7 +2973,7 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     # it may run in another filesystem, and is judged as the ssh far end is.
     scripts = []
     for i, t in enumerate(toks):
-        base = os.path.basename(t)
+        base = command_name(t)
         if base not in SHELLS:
             continue
         si = shell_script(toks, i)
@@ -3005,7 +3039,7 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     found_rm = False
     i = 0
     while i < len(toks):
-        if os.path.basename(toks[i]) not in RM_NAMES or in_git[i]:
+        if command_name(toks[i]) not in RM_NAMES or in_git[i]:
             i += 1
             continue
         found_rm = True
@@ -3062,7 +3096,7 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     for i, si, here in scripts:
         findings.extend(reread_findings(
             toks[si], here_cwd if here else UNKNOWN_CWD, depth, False,
-            f"{os.path.basename(toks[i])} -c re-reads this", danger))
+            f"{command_name(toks[i])} -c re-reads this", danger))
     bodies = heredoc_bodies(cmd)
     read_bodies = set()
     if bodies:
@@ -3089,8 +3123,8 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
             j, base = command_word([toks[n] for n in words])
             if base not in SHELLS:
                 j = next((n for n in range(j + 1, len(words))
-                          if os.path.basename(toks[words[n]]) in SHELLS), len(words))
-                base = os.path.basename(toks[words[j]]) if j < len(words) else ""
+                          if command_name(toks[words[n]]) in SHELLS), len(words))
+                base = command_name(toks[words[j]]) if j < len(words) else ""
             if base not in SHELLS or j >= len(words):
                 continue
             fed = [t for t in toks[s:e] if t in bodies]
