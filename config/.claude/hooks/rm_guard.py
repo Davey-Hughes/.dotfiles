@@ -279,6 +279,9 @@ DANGEROUS_VARS = {"HOME", "PWD", "OLDPWD", "ROOT", "USER", "TMPDIR"}
 # empty and is deliberately excluded.
 GUARDED_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}$")
 EXPANSION_RE = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]")
+# A word that is nothing but expansions -- `$X`, `${=X}`, `$1`, `$@` -- and so
+# names no command at all until the shell runs. `$S/bin/x` is not one.
+EXPANSION_WORD_RE = re.compile(r"^(?:%s)+$" % EXPANSION_RE.pattern)
 BARE_VAR_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
 # The variable name inside any expansion form: $W, ${W}, ${W:-default}.
 EXP_NAME_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)")
@@ -348,9 +351,11 @@ HEREDOC_RE = re.compile(
 # Flags whose argument is prose written for a human. Matched only when the value
 # is quoted, so the substitution is bounded by the quote the shell itself uses.
 # The residual hole is `--body "$(rm -rf /)"` -- a substitution smuggled into a
-# message argument, which does execute and is no longer read. That is a way to
+# message argument, which does execute and is no longer read, by the raw-text
+# heuristics or by the substitution re-read in _analyse. That is a way to
 # type a deletion, not a way to make one by accident, and the accident is what
-# this guard is for.
+# this guard is for. It is not approved either: a destructive one withdraws
+# the line's allow, so normal permissions decide.
 MSG_FLAG_RE = re.compile(
     r"(?<![\w-])(?:-m|--message|--body|--title|--description|--notes|--subject)"
     r"(?:[ \t]+|=)"
@@ -399,6 +404,19 @@ COMMENT_BOUNDARY = " \t\n;&|("
 # Constructs we cannot statically reason about.
 OPAQUE = {"eval", "exec", "source", "xargs", "."}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
+# A shell's own options, so the script after `-c` can be found. A short bundle
+# containing `c` is how `bash -lc` and `sh -ec` spell it. Each `o` or `O` in a
+# bundle takes the next word as its option name: `-euo pipefail -c SCRIPT`.
+SHELL_FLAG_RE = re.compile(r"^[-+][A-Za-z]+$")
+# The long options known to take no value. --version and --help run nothing.
+SHELL_LONG_FLAGS = {"--login", "--noprofile", "--norc", "--posix",
+                    "--restricted", "--verbose", "--no-rcs", "--version", "--help"}
+# A word that may be the shell's -c, found past a point where its options
+# stopped being readable.
+SHELL_C_FLAG_RE = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")
+# fish's ways to be handed a script: -c/--command, and -C/--init-command, which
+# runs before anything else. fish is not POSIX shell, so none of it is read.
+FISH_SCRIPT_FLAG_RE = re.compile(r"^-[A-Za-z]*[cC][A-Za-z]*$|^--(?:init-)?command(?:=|$)")
 GIT_NAMES = {"git"}
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
                   "--exec-path", "--config-env"}
@@ -466,7 +484,10 @@ SSH_VALUE_OPTS = {
 REMOTE_SPEC_RE = re.compile(r"^[A-Za-z0-9_.+-]*(?:@[A-Za-z0-9_.-]+)?:|^[a-z][a-z0-9+.-]*://")
 
 RANK = {"allow": 0, "ask": 1, "deny": 2}
-MAX_SSH_DEPTH = 3
+# How many times one command may hand text to another reader -- an ssh far
+# end, a `sh -c` script, a heredoc fed to a shell, a sourced file -- before
+# the guard stops following and asks.
+MAX_DEPTH = 3
 
 # --- how far an `allow` is allowed to reach ------------------------------------
 # A PreToolUse `allow` bypasses the permission system for the WHOLE Bash call --
@@ -551,6 +572,18 @@ SUBCOMMANDS = {"git": {"clean"}, "rclone": RCLONE_DESTRUCTIVE}
 # positive here only costs a prompt.
 RECURSIVE_FLAG_RE = re.compile(
     r"(?<![\w-])(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--no-preserve-root)(?![\w-])")
+# A word that starts with an expansion or a substitution, then whitespace and a
+# recursion-shaped flag: `${X:-rm} -rf /`, `"$X" -rf /`, `$(printf rm) -rf /`.
+# It names nothing GUARDED_CMD_RE can match, so the raw-text early exits in
+# _analyse returned before a -c script, a heredoc fed to a shell or a
+# substitution's body holding one was ever read. Matched over the raw line,
+# heredoc bodies and all, and crudely, because a hit only makes the line
+# dangerous: it costs a prompt at most.
+EXPANSION_FLAG_RE = re.compile(
+    r"(?:^|(?<=[\s;&|(){}'\"`!]))"
+    r"(?:%s|\$\([^()]*\)|`[^`]*`)" % EXPANSION_RE.pattern
+    + r"[^\s;&|<>]*(?:\s|\\\n)+"
+    r"(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--no-preserve-root)(?![\w-])")
 FIND_WORD_RE = re.compile(r"(?<![\w-])find(?![\w-])")
 FIND_ACTION_RE = re.compile(r"(?<![\w-])-(?:delete|exec|execdir|ok|okdir)(?![\w-])")
 FD_WORD_RE = re.compile(r"(?<![\w-])fd(?:find)?(?![\w-])")
@@ -794,11 +827,16 @@ def strip_data(text):
     value -- mask_opaque covers the one region that has to be hidden from the
     tokenizer too, because prose in a heredoc body breaks shlex outright.
     """
+    return MSG_FLAG_RE.sub(" MESSAGE ", strip_heredocs(text))
+
+
+def strip_heredocs(text):
+    """strip_data's heredoc half alone: each masked heredoc's body blanked,
+    its opening line kept as code."""
     masked = {m.span(): m for _, m in _masked_heredocs(text)}
-    text = HEREDOC_RE.sub(
+    return HEREDOC_RE.sub(
         lambda m: " HEREDOC " + _heredoc_opener_rest(m)
         if m.span() in masked else m.group(0), text)
-    return MSG_FLAG_RE.sub(" MESSAGE ", text)
 
 
 def safe_roots(cwd):
@@ -989,7 +1027,8 @@ def worst_of(results):
 
 
 def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
-                     may_clear=False, loops_may_clear=True):
+                     may_clear=False, loops_may_clear=True, opaque_names=frozenset(),
+                     line_literals=None, reread=False):
     """-> (decision, reason), over every path this operand can actually become.
 
     Two things multiply a single written operand into several real ones, and
@@ -1008,7 +1047,8 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     candidate cwd can change.
 
     loops_may_clear is False inside a string another shell re-reads; see
-    analyse's `trusted`.
+    analyse's `trusted`. opaque_names, line_literals and reread are carried
+    through to classify_one.
     """
     cwds = [cwd] if isinstance(cwd, str) else list(cwd) or [""]
     products = expand_braces(op)
@@ -1018,7 +1058,8 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     for p in products:
         for c in cwds:
             d, r = classify_one(p, c, bare_var_ok, assigned, loops, may_clear,
-                                loops_may_clear)
+                                loops_may_clear, opaque_names=opaque_names,
+                                line_literals=line_literals, reread=reread)
             if p != op:
                 r = f"brace expansion produces {p}; {r}"
             results.append((d, r))
@@ -1026,13 +1067,23 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
 
 
 def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
-                 may_clear=False, loops_may_clear=True):
+                 may_clear=False, loops_may_clear=True, opaque_names=frozenset(),
+                 line_literals=None, reread=False):
     """-> (decision, reason). Anything not provably safe returns ask/deny.
 
     bare_var_ok encodes an rm-specific fact: `rm -rf $X` with X unset or empty
     is an *error*, not a catastrophe, so a bare expansion is safe there. It is
     not safe for commands that treat "no path" as "use the current directory" --
     `find $X -delete` with X unset becomes `find -delete`, which is `rm -rf .`.
+
+    opaque_names are the names this line assigns to a value the guard cannot
+    read (`d=$(cat f)`, `d=$1`). Both free passes for an unknown variable --
+    "empty only errors" for a bare one and "non-empty" for ${d:?} -- assume
+    nothing on the line chose its value, and for these something did.
+    line_literals ({name: values}) are the names it assigns only literals
+    that proven_bindings could not prove, as in `set -e; W=/; rm -rf "$W"`.
+    Each value is judged, and may condemn; it never clears, because the
+    assignment may not have run -- the free pass is then all that is left.
 
     may_clear is analyse's finding that nothing before this operand's command
     could have rebound a proven binding -- see _rebinding_possible. False is
@@ -1041,6 +1092,14 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     loops_may_clear is False inside a string another shell re-reads, where the
     outer shell may have expanded a loop variable first: a loop's words may
     then condemn but not clear. See analyse's `trusted`.
+
+    reread is True for text another reader runs -- a `-c` script, a heredoc
+    fed to a shell, a substitution's body, an ssh remote string. A variable
+    there may take its value from outside that text: the outer shell expands
+    a double-quoted script first, and a substitution or a heredoc-fed shell
+    sees the line's own variables and exports. So neither free pass holds,
+    and `D=/; echo $(rm -rf $D)` asks: an operand with an expansion in it
+    asks unless something resolves it to a deny.
     """
     if "`" in op or "$(" in op:
         return "ask", "command substitution cannot be statically resolved"
@@ -1118,7 +1177,8 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                 # down, which is the only path by which an operand naming both
                 # a loop variable and a bound one can clear.
                 d, r = classify_one(sub, cwd, bare_var_ok, assigned,
-                                    may_clear=may_clear)
+                                    may_clear=may_clear, opaque_names=opaque_names,
+                                    line_literals=line_literals, reread=reread)
                 out.append((d, f"the loop sets ${name} to {val}; {r}"))
             d, r = worst_of(out)
             # Inside a string another shell re-reads, the outer shell may have
@@ -1146,6 +1206,38 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     if op.startswith("~"):
         return "ask", "tilde expansion not statically resolved"
 
+    def condemned_by_line(names, empty_too=False):
+        """The worst non-allow verdict among op's readings under each literal
+        value the line assigns one of names, or None. An empty value is
+        skipped: "" makes the bare form error out and the ${W:?} form abort.
+        empty_too keeps it, for an operand with a suffix, where "" is what
+        turns "$W"/* into /* -- unless a ${W:?} in it aborts first.
+        One name at a time, the rest left to the recursive call."""
+        for n in names:
+            if n not in (line_literals or {}):
+                continue
+            rest = {k: v for k, v in line_literals.items() if k != n}
+            aborts = any(":?" in mm.group(0) for mm in SUBST_NAME_RE.finditer(op)
+                         if (mm.group(1) or mm.group(2)) == n)
+            out = []
+            for val in line_literals[n]:
+                if not val and (not empty_too or aborts):
+                    continue
+                sub = SUBST_NAME_RE.sub(
+                    lambda mm, v=val: v if (mm.group(1) or mm.group(2)) == n
+                    else mm.group(0), op)
+                if sub == op:
+                    continue
+                d, r = classify_one(sub, cwd, bare_var_ok, assigned,
+                                    may_clear=may_clear, opaque_names=opaque_names,
+                                    line_literals=rest, reread=reread)
+                out.append((d, f"{n}={val} on this line, so this may read as "
+                               f"{sub}; {r}"))
+            d, r = worst_of(out) if out else ("allow", "")
+            if d != "allow":
+                return d, r
+        return None
+
     exps = EXPANSION_RE.findall(op)
     if exps:
         m = BARE_VAR_RE.match(op)
@@ -1153,16 +1245,50 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
             name = m.group(1)
             if name in DANGEROUS_VARS:
                 return "deny", f"${name} expands to a critical directory"
+            if name in opaque_names:
+                return "ask", (f"${name} is assigned on this line to a value the "
+                               "guard cannot read, so an empty one is not the "
+                               "only way it goes wrong")
+            worse = condemned_by_line([name])
+            if worse:
+                return worse
             if not bare_var_ok:
                 return "ask", (
                     f"bare ${name} -- if it is unset this command falls back to "
                     f"the current directory. Use \"${{{name}:?}}\" instead."
                 )
+            if reread:
+                return "ask", (
+                    f"${name} in text another reader runs may take its value "
+                    "from outside it -- the outer shell or an export -- so an "
+                    "empty one is not the only way it goes wrong")
             # Bare expansion, no suffix: empty -> `rm -rf ""` (errors),
             # unset+unquoted -> no operands (errors). Nothing to promote to /.
             return "allow", f"bare ${name} with no suffix"
         if all(GUARDED_RE.match(e) for e in exps):
+            guarded = list(dict.fromkeys(EXP_NAME_RE.match(e).group(1) for e in exps))
+            held = [n for n in guarded if n in opaque_names]
+            if held:
+                return "ask", (f"${held[0]} is assigned on this line to a value "
+                               f"the guard cannot read, and ${{{held[0]}:?}} "
+                               "proves only that it is not empty")
+            worse = condemned_by_line(guarded)
+            if worse:
+                return worse
+            if reread:
+                return "ask", (f"${{{guarded[0]}:?}} proves only that it is not "
+                               "empty, and in text another reader runs its value "
+                               "may come from outside it")
             return "allow", "all expansions are ${VAR:?}-guarded"
+        # A literal the line assigns may condemn here too, and an empty one
+        # most of all: `set -e; W=; rm -rf "$W"/*` runs as `rm -rf /*`. Only a
+        # deny is taken, so an ask keeps the advice below.
+        worse = condemned_by_line(
+            dict.fromkeys(m.group(1) for m in
+                          (EXP_NAME_RE.match(e) for e in exps) if m),
+            empty_too=True)
+        if worse and worse[0] == "deny":
+            return worse
         # Name the actual variables in the fix, not a placeholder -- the advice
         # is only actionable if it can be pasted.
         names = dict.fromkeys(m.group(1) for m in
@@ -1228,8 +1354,15 @@ def _close_paren(s, start):
     return None
 
 
+# Inside backticks bash drops the backslash from `\\`, `` \` `` and `\$` before
+# it reads the body as a command, which is how one backtick span nests in
+# another: the body of `` `echo \`pwd\`` `` runs as `` echo `pwd` ``.
+BACKTICK_ESCAPE_RE = re.compile(r"\\([\\`$])")
+
+
 def _close_backtick(s, start):
-    """Index of the backtick closing the one at s[start]. Backticks do not nest."""
+    """Index of the backtick closing the one at s[start]. Backticks do not nest
+    unescaped; see BACKTICK_ESCAPE_RE."""
     i = start + 1
     while i < len(s):
         if s[i] == "\\" and i + 1 < len(s):
@@ -1523,9 +1656,13 @@ SUBST_NAME_RE = re.compile(
 # every unquoted `:`, so `W=~` and `W=/a:~/b` are not the literals they look
 # like -- they are $HOME and "/a:$HOME/b". A charset that let `~` through would
 # vouch for a value the shell does not actually produce.
+LITERAL_CHAR = r"[^\s'\"\\;&|()<>$`~" + SENTINEL + r"]"
 BINDING_RE = re.compile(
-    r"[ \t]*([A-Za-z_][A-Za-z0-9_]*)=([^\s'\"\\;&|()<>$`~" + SENTINEL + r"]*)"
+    r"[ \t]*([A-Za-z_][A-Za-z0-9_]*)=(" + LITERAL_CHAR + r"*)"
     r"[ \t]*(;|&&|\Z)")
+# ...and the same charset over an assignment TOKEN's value, for the names a line
+# assigns outside the leading run. Those values may condemn and never clear.
+LITERAL_VALUE_RE = re.compile(r"^" + LITERAL_CHAR + r"*$")
 
 
 def _read_only_mentions(name, rest):
@@ -1578,8 +1715,8 @@ def _indirection_present(rest):
 
     Those rebind without ever naming the variable, so _read_only_mentions is
     blind to them by construction. analyse() bails on them too, but only in
-    command position -- `command eval "$C"` hides the word from that check, and
-    `builtin` is not even a recognised wrapper.
+    command position and only on a line with danger -- and a bail is an ask,
+    while clearing is decided here.
 
     Two readings, and either one is enough to refuse. That is deliberately a
     union rather than a reconciliation: this function used to cross-check two
@@ -2186,6 +2323,153 @@ def ssh_remote_command(argv):
     return rest[0] if len(rest) == 1 else " ".join(rest)
 
 
+def _past_redirections(argv, j, end):
+    """The index past any redirections starting at argv[j], stopping at end.
+
+    The outer shell applies and removes them before the command runs, so
+    `bash -c 2>/dev/null SCRIPT` hands bash `-c SCRIPT`. shlex splits
+    `2>/dev/null` into three words, so an fd digit goes with its operator.
+    """
+    while j < end:
+        k = j + 1 if ((argv[j].isdigit() or FD_BRACE_RE.match(argv[j]))
+                      and j + 1 < end and REDIRECT_TOKEN_RE.match(argv[j + 1])) else j
+        if not REDIRECT_TOKEN_RE.match(argv[k]) or k + 1 >= end:
+            break
+        j = k + 2
+    return j
+
+
+def shell_script(argv, i):
+    """`SHELL [opts] -c SCRIPT ...` with the shell at argv[i] -> SCRIPT's index.
+
+    None when this shell has no -c (it runs a file, or reads stdin). False
+    when the script it runs cannot be read, which the caller turns into an
+    ask:
+      - a long option the guard does not know, which may take a value --
+        `bash --rcfile -c x` runs the file x;
+      - a -c found only past the point the scan stopped, as in `bash $OPTS -c`;
+      - a script that is itself an expansion or a substitution -- `-c "$S"`,
+        `-c "$(curl ...)"`, and `$'...'`, which shlex hands back as `$...`;
+      - any fish script, which is not POSIX shell.
+    """
+    end = next((k for k in range(i + 1, len(argv)) if argv[k] in SEPARATORS),
+               len(argv))
+    if os.path.basename(argv[i]) == "fish":
+        return (False if any(FISH_SCRIPT_FLAG_RE.match(t) for t in argv[i + 1:end])
+                else None)
+    j, saw_c, unknown = i + 1, False, False
+    while True:
+        j = _past_redirections(argv, j, end)
+        if j >= end:
+            break
+        t = argv[j]
+        if t == "--":
+            j += 1
+            break
+        if t.startswith("--"):
+            unknown = unknown or t not in SHELL_LONG_FLAGS
+            j += 1
+            continue
+        if SHELL_FLAG_RE.match(t):
+            saw_c = saw_c or (t[0] == "-" and "c" in t[1:])
+            j += 1 + t[1:].count("o") + t[1:].count("O")
+            continue
+        break
+    if not saw_c and not any(SHELL_C_FLAG_RE.match(t) for t in argv[j:end]):
+        return None
+    if unknown or not saw_c:
+        return False
+    j = _past_redirections(argv, j, end)
+    if (j >= end or REDIRECT_TOKEN_RE.match(argv[j])
+            or argv[j].startswith(("$", "`"))):
+        return False
+    return j
+
+
+def _reads_stdin(seg, j, bodies):
+    """Does the shell at seg[j] read its stdin as its script?
+
+    Only with no -c and nothing after it but short flags and heredocs. With a
+    script operand, stdin is that script's data, not code. After `-s` every
+    word is an argument and stdin is still the script. A `-` or `--` ends the
+    options, as bash and zsh treat it: a word after one is the script FILE
+    (`bash - x` runs x), and only with none is stdin read. fish is never
+    read; see shell_script.
+    """
+    if os.path.basename(seg[j]) == "fish" or shell_script(seg, j) is not None:
+        return False
+    args, opts_done, names = False, False, 0
+    for t in seg[j + 1:]:
+        if t in bodies or args:
+            continue
+        if names:                     # an `-o` or `-O` option's name
+            names -= 1
+            continue
+        if not opts_done and t in ("-", "--"):
+            opts_done = True
+            continue
+        if not opts_done and SHELL_FLAG_RE.match(t):
+            args = t[0] == "-" and "s" in t[1:]
+            names = t[1:].count("o") + t[1:].count("O")
+            continue
+        return False
+    return True
+
+
+def shell_stdin_script(toks, bounds, k, bodies):
+    """-> (placeholder, here) for the quoted heredoc segment k's shell reads as
+    its script, or None.
+
+    here is True when the shell is the segment's command word. A shell
+    further along -- `ssh h bash`, `sudo -E bash`, `docker exec -i c bash` --
+    may run on another machine or in another filesystem, so the caller reads
+    the body as the ssh far end reads its string. The body arrives in the
+    segment itself, or from a `cat` that does nothing but print it into a
+    pipe. `cat <<'EOF' | tee x | bash` is not followed past the tee.
+    """
+    s, e = bounds[k]
+    seg = toks[s:e]
+    j, base = command_word(seg)
+    if base in SHELLS:
+        if not _reads_stdin(seg, j, bodies):
+            return None
+        here, at = True, j
+    else:
+        at = next((n for n in range(j + 1, len(seg))
+                   if os.path.basename(seg[n]) in SHELLS
+                   and _reads_stdin(seg, n, bodies)), None)
+        if at is None:
+            return None
+        here = False
+    own = [t for t in seg[at + 1:] if t in bodies]
+    if own:
+        return own[0], here
+    if k > 0 and toks[bounds[k - 1][1]] == "|":
+        ps, pe = bounds[k - 1]
+        prev = toks[ps:pe]
+        if len(prev) == 2 and os.path.basename(prev[0]) == "cat" and prev[1] in bodies:
+            return prev[1], here
+    return None
+
+
+def reread_findings(script, cwd, depth, trusted, how, outer_danger=False):
+    """Findings for text another reader runs, each labelled with how it got there.
+
+    outer_danger is the reading line's own danger, carried in so the script
+    is read with the line's caution: `bash -c 'eval "$X"'` beside an
+    `rm -rf` bails as an `eval` on the line itself would. Past MAX_DEPTH a
+    line with danger asks, and one with none has nothing left to hide.
+    The script is read with reread set, so no variable in it gets a free
+    pass; see classify_one.
+    """
+    if depth + 1 > MAX_DEPTH:
+        return ([bare("ask", f"{how} nested too deeply to analyse")]
+                if outer_danger else [])
+    return [f._replace(label=f"{how}; {f.label}" if f.label else how)
+            for f in analyse(script, cwd, depth + 1, trusted=trusted,
+                             outer_danger=outer_danger, reread=True)]
+
+
 # --- analysis ----------------------------------------------------------------
 
 # The non-rm commands this file knows how to reason about. Used to find one
@@ -2194,14 +2478,19 @@ HANDLED = {"find", "fd", "fdfind", "rsync", "rclone", "ssh"} | GIT_NAMES
 
 
 def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
-                    may_clear=False, git_relocated=False, trusted=True):
+                    may_clear=False, git_relocated=False, trusted=True,
+                    opaque_names=frozenset(), line_literals=None,
+                    reread=False, outer_danger=False):
     """-> [Finding] for the non-rm commands in one segment.
 
     may_clear is decided per SEGMENT by analyse, because that is the unit a
     rebinding can sit before or after; every target found in here shares it.
     git_relocated is decided per LINE, for the reason GIT_RELOCATE_RE gives.
     trusted is analyse's: False inside a string another shell re-reads, and
-    passed on to every target this judges.
+    passed on to every target this judges. opaque_names, line_literals and
+    reread are analyse's too; see classify_one. outer_danger is the line's
+    danger, which an ssh remote string is read with, as reread_findings
+    reads a script.
     """
     out = []
     segment = argv
@@ -2232,7 +2521,9 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
             d, r = classify_operand(t, cwd, bare_var_ok=bare_var_ok,
                                     assigned=assigned, loops=loops,
                                     may_clear=may_clear,
-                                    loops_may_clear=trusted)
+                                    loops_may_clear=trusted,
+                                    opaque_names=opaque_names,
+                                    line_literals=line_literals, reread=reread)
             out.append(Finding(d, segment, label, t, r))
 
     if base == "find":
@@ -2280,13 +2571,23 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
         # condemn, never clear. `ssh h "X=/tmp/a; rm -rf $X/*"` cleared as
         # /tmp/a/* until this, and runs as `rm -rf /*` when X is unset here.
         remote = ssh_remote_command(argv)
-        if remote and depth < MAX_SSH_DEPTH:
+        # A remote command that starts with an expansion or a substitution is
+        # whatever that holds, which the far end reads as code -- `ssh h "$S"`,
+        # `ssh h "${S}x"`. Unreadable, as shell_script calls a `-c "$S"`. It
+        # is still analysed below, so a deny later in the string wins.
+        if outer_danger and remote.lstrip().startswith(("$", "`")):
+            out.append(Finding("ask", segment, "over ssh", None,
+                               "the remote command starts with an expansion, "
+                               "so what runs on the far end cannot be read"))
+        if remote and depth < MAX_DEPTH:
             # No local cwd applies on the far end, so pass cwd="": only /tmp and
             # /var/tmp stay safe and every other absolute path asks. The findings
             # keep the REMOTE segment as their echo -- that is the command that
-            # matters -- and carry the hop in their label.
+            # matters -- and carry the hop in their label. Read as any re-read
+            # text is: with the line's danger, and no variable free pass.
             hop = "over ssh -- no local safe root clears a path on the far end"
-            for f in analyse(remote, "", depth + 1, trusted=False):
+            for f in analyse(remote, "", depth + 1, trusted=False,
+                             outer_danger=outer_danger, reread=True):
                 out.append(f._replace(
                     label=f"{hop}; {f.label}" if f.label else hop))
         elif remote:
@@ -2404,13 +2705,21 @@ def _inert_line(toks, bounds, text):
     return True
 
 
-def analyse(cmd, cwd, depth=0, trusted=True):
+def analyse(cmd, cwd, depth=0, trusted=True, outer_danger=False, reread=False):
     """-> [Finding]. Empty means the guard has no opinion.
 
     trusted is False for a string another shell re-reads -- an ssh remote
     command, a `sh -c` script. Its double quotes are gone by the time it gets
     here, so a `$X` in it may have been expanded by the OUTER shell, and
     nothing bound inside it may clear. Bindings and loops still condemn.
+
+    outer_danger is True for a script re-read from a line that is itself
+    dangerous; see reread_findings. Such a script gets the line's bail-outs
+    even when its own text names nothing destructive.
+
+    reread is True for any text another reader runs, a quoted heredoc fed to
+    a shell included, and switches off the variable free passes; see
+    classify_one. Off by default: a line analysed as itself keeps them.
     """
     # The allow is withdrawn, as RISKY_NEIGHBOURS does in main(): an allow
     # would also approve a destructive heredoc body that something on the line
@@ -2418,16 +2727,93 @@ def analyse(cmd, cwd, depth=0, trusted=True):
     # ask or a deny. Decided here, once, over what every depth recorded.
     if depth == 0:
         _WITHDRAWN[0] = False
-    findings = _analyse(cmd, cwd, depth, trusted)
+    findings = _analyse(cmd, cwd, depth, trusted, outer_danger, reread)
     if (depth == 0 and _WITHDRAWN[0] and findings
             and all(f.decision == "allow" for f in findings)):
         return []
     return findings
 
 
-def _analyse(cmd, cwd, depth, trusted):
+def expansion_runs_recursive(cmd):
+    """Does a segment run a command named only by an expansion, with a
+    recursion-shaped flag beside it?
+
+    danger_hint reads names, and `${X:-rm} -rf /` names none it can match:
+    the rm sits after a `-`, where RM_WORD_RE will not start. Whatever the
+    expansion holds runs with -rf. Tokenized only when the raw text has both
+    a `$` and such a flag, so most lines never pay for it.
+    """
+    if "$" not in cmd or not RECURSIVE_FLAG_RE.search(cmd):
+        return False
+    try:
+        toks = tokenize(cmd)
+    except ValueError:
+        return False
+    for s, e in segment_bounds(toks):
+        j, _ = command_word(toks[s:e])
+        if (s + j < e and EXPANSION_WORD_RE.match(toks[s + j])
+                and any(RECURSIVE_FLAG_RE.search(t) for t in toks[s + j + 1:e])):
+            return True
+    return False
+
+
+# A substitution body that only prints a heredoc, after strip_data: the
+# commit-message idiom `-m "$(cat <<'EOF' ... EOF)"`, whose body is prose.
+CAT_HEREDOC_RE = re.compile(r"^\s*cat\s+HEREDOC\s*$")
+
+
+# What a message substitution's code may not hold, past its heredoc bodies: an
+# expansion as a command word, at the start or after a separator; `.` sourcing
+# a file; or a word that runs text it is handed -- eval, source, xargs, a shell.
+MESSAGE_HIDES_RE = re.compile(
+    r"(?:^|[;&|\n(){}!])\s*[\"']*\$"
+    r"|(?:^|[;&|\n(){}!])\s*\.(?=\s)"
+    r"|(?<![\w.-])(?:eval|source|xargs|%s)(?![\w-])"
+    % "|".join(sorted(SHELLS)))
+
+
+def _message_runs_destructive(body):
+    """Does a substitution skipped as message text still read as destructive?
+
+    The value of `-m "$(...)"` is data to every raw-text rule, but the
+    substitution in it runs. Only its heredoc bodies are prose, and only when
+    it just cats them; a shell or an ssh reading one runs it. Everything else
+    is code, nested message flags included -- `-m "$(echo -m "$(rm -rf /)")"`
+    -- so it withdraws on danger, on an expansion run with a recursive flag,
+    on a nested substitution, and on anything that hides what it runs (see
+    MESSAGE_HIDES_RE, and the command words found by tokenizing). A message
+    whose substitution runs a `$VAR` loses its allow; that is the cost.
+    """
+    code = strip_heredocs(body)
+    if (danger_hint(code) or expansion_runs_recursive(code) or has_subst(code)
+            or MESSAGE_HIDES_RE.search(code)):
+        return True
+    # The same, past a wrapper or an assignment: `A=1 $X`, `exec $X`.
+    try:
+        toks = tokenize(code)
+    except ValueError:
+        return True
+    for s, e in segment_bounds(toks):
+        j, base = command_word(toks[s:e])
+        if s + j < e and ("$" in toks[s + j] or base in OPAQUE or base in SHELLS):
+            return True
+    return (not CAT_HEREDOC_RE.match(strip_data(body))
+            and any(danger_hint(b) for b in heredoc_bodies(body).values()))
+
+
+def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
+    # A command named only by an expansion and handed a recursive flag hides
+    # whatever it runs, and names nothing guarded for the scans below to find.
+    # The token check sees this line's own segments; EXPANSION_FLAG_RE sees one
+    # in text a reader below runs, which must get past the early exits too.
+    runs_hidden = (expansion_runs_recursive(cmd)
+                   or bool(EXPANSION_FLAG_RE.search(cmd)))
+
     # Raw scan first: no guarded command name anywhere means nothing to judge.
-    if not GUARDED_CMD_RE.search(cmd):
+    # Not for a script re-read from a dangerous line: an `eval "$X"` or a `$X`
+    # run as a command names nothing guarded, and is what the bail-outs below
+    # exist to catch. The heredoc record still happens, at the end.
+    if not outer_danger and not runs_hidden and not GUARDED_CMD_RE.search(cmd):
         _note_unread_heredocs(cmd)
         return []
 
@@ -2438,7 +2824,8 @@ def _analyse(cmd, cwd, depth, trusted):
     # ...and blank the parts of the line that are data rather than code, so a
     # commit message quoting `git clean -fdx` is not read as running it.
     text = strip_data(text)
-    if not GUARDED_CMD_RE.search(text):
+    if (not outer_danger and not runs_hidden and not GUARDED_CMD_RE.search(text)
+            and not heredoc_bodies(cmd)):
         _note_unread_heredocs(cmd)
         return []
 
@@ -2446,7 +2833,9 @@ def _analyse(cmd, cwd, depth, trusted):
     # something unreadable. With no destructive pairing anywhere -- no recursion
     # flag next to an rm, no -delete next to a find -- there is nothing to hide,
     # so `ls | xargs rm` goes straight to the token scan instead of prompting.
-    danger = danger_hint(text)
+    # A re-read script inherits its line's danger: `rm -rf ./b; bash -c 'eval
+    # "$X"'` hides as much as the same eval written on the line itself.
+    danger = danger_hint(text) or outer_danger or runs_hidden
     if danger and _heredoc_skipped(cmd):
         _note_unread_heredocs(cmd)
         return [bare("ask", "a heredoc here could not be placed -- its opening line "
@@ -2506,29 +2895,68 @@ def _analyse(cmd, cwd, depth, trusted):
                                 tuple(toks[(i + 1 if hi is None else hi):e]))]
         return [bare(decision, reason)]
 
+    # Asks that do not end the analysis, so a deny elsewhere on the line still
+    # wins: `$X; rm -rf /` must stay a deny. Added to the findings below.
+    unreadable = []
+
     # Opaque constructs bail -- but only in *command position*. `.` is the POSIX
     # source builtin at the start of a segment and a jq filter in `jq -r . f`;
-    # matching it positionally is the difference between the two.
+    # matching it positionally is the difference between the two. Position is
+    # command_word's, so a wrapper, a keyword or a group in front of the word
+    # (`sudo $(x) -rf /`, `( eval "$X" )`) does not hide it. Each one adds an
+    # ask and the analysis goes on, so a deny elsewhere on the line still wins.
     if danger:
-        # A substitution in command position hides which command runs, so nothing
-        # the operand checks below can prove says anything about it. Located via
-        # command_word rather than "first token in the segment", so a substitution
-        # behind a wrapper (`sudo $(x) -rf /`) is caught too.
         for start, end in bounds:
-            j, _ = command_word(toks[start:end])
-            if start + j < end and has_subst(toks[start + j]):
-                return bail("ask", start + j,
-                            f"{mark(toks[start + j])} runs in command position, "
-                            "so which command runs is unknowable")
-        for i, t in enumerate(toks):
-            base = os.path.basename(t)
-            in_cmd_pos = i == 0 or toks[i - 1] in SEPARATORS
-            if in_cmd_pos and base in OPAQUE:
-                return bail("ask", i, f"{mark(base)} hides its arguments -- what "
-                                      "it runs on is not in the command")
-            if base in SHELLS and i + 1 < len(toks) and toks[i + 1] == "-c":
-                return bail("ask", i, f"{mark(base + ' -c')} hides its arguments "
-                                      "-- the script is re-parsed, not run as written")
+            j, base = command_word(toks[start:end])
+            i = start + j
+            if i >= end:
+                continue
+            word = toks[i]
+            if has_subst(word):
+                # A substitution there hides which command runs, so nothing
+                # the operand checks below can prove says anything about it.
+                unreadable.extend(bail(
+                    "ask", i, f"{mark(word)} runs in command position, so "
+                              "which command runs is unknowable"))
+            elif base in OPAQUE:
+                # Its own arm, kept apart so that `.` and `source` can later
+                # return early from here when the file they name is one the
+                # guard can read, in place of this ask.
+                unreadable.extend(bail(
+                    "ask", i, f"{mark(base)} hides its arguments -- what it "
+                              "runs on is not in the command"))
+            elif EXPANSION_WORD_RE.match(word) or EXPANSION_RE.search(base):
+                # A command name built from an expansion is the same hole:
+                # `X="rm -rf /usr"; $X` runs what X holds, and `${X}rm -rf /*`
+                # names no rm until X is known. `$X/bin/rm` is still rm.
+                unreadable.extend(bail(
+                    "ask", i, f"{mark(word)} runs in command position, so "
+                              "which command runs is unknowable"))
+    # A script handed to a shell is code the guard can read. Each one found
+    # here is analysed after the line's own findings, below. "here" is whether
+    # the shell IS its segment's command: then the script runs in this shell's
+    # cwd. As anyone else's argument -- docker exec, find -exec, kubectl --
+    # it may run in another filesystem, and is judged as the ssh far end is.
+    scripts = []
+    for i, t in enumerate(toks):
+        base = os.path.basename(t)
+        if base not in SHELLS:
+            continue
+        si = shell_script(toks, i)
+        if si is None:
+            continue
+        if si is False:
+            if danger:
+                why = ("runs fish, not POSIX shell, so its script is not read"
+                       if base == "fish" else
+                       "has options the guard cannot read, or a script held in "
+                       "an expansion, so what it runs cannot be found")
+                unreadable.extend(bail("ask", i, f"{mark(base + ' -c')} {why}"))
+            continue
+        s, e = next((s, e) for s, e in bounds if s <= i < e)
+        here = s + command_word(toks[s:e])[0] == i
+        scripts.append((i, si, here))
+
     if "--no-preserve-root" in toks:
         # The flag itself is the danger, so it is highlighted along with what
         # follows it rather than left to read as one more red flag among -rf.
@@ -2540,6 +2968,20 @@ def _analyse(cmd, cwd, depth, trusted):
     # Consulted to escalate from anywhere, and to clear only before rebind_at;
     # see classify_one.
     assigned = proven_bindings(cmd)
+    # ...and every name the line assigns that the map could not prove. One
+    # with any value the guard cannot read -- a substitution, a positional, an
+    # expansion -- is opaque. One assigned only literals, after a `set -e` or a
+    # `cd` that ends the leading run, has each literal judged; see classify_one.
+    line_values = {}
+    for t in toks:
+        if ENV_ASSIGN_RE.match(t):
+            name, value = t.split("=", 1)
+            if name not in assigned:
+                line_values.setdefault(name, []).append(value)
+    opaque_names = frozenset(n for n, vs in line_values.items()
+                             if not all(LITERAL_VALUE_RE.match(v) for v in vs))
+    line_literals = {n: list(dict.fromkeys(vs)) for n, vs in line_values.items()
+                     if n not in opaque_names}
     # Where the map stops being provable. Computed once over the whole token
     # stream rather than per segment, because the answer is a property of the
     # LINE -- the first construct that could rebind a name without writing it --
@@ -2556,7 +2998,7 @@ def _analyse(cmd, cwd, depth, trusted):
     cwds = candidate_cwds(toks, cwd)
 
     in_git = git_segments(toks)
-    findings = []
+    findings = list(unreadable)
 
     # --- rm itself. Scanned across all tokens, not just command position, so
     # `sudo rm -rf` and `xargs rm -r` are both seen.
@@ -2596,7 +3038,9 @@ def _analyse(cmd, cwd, depth, trusted):
             continue
         for op in operands:
             d, r = classify_operand(op, cwds, assigned=assigned, loops=loops,
-                                    may_clear=may_clear, loops_may_clear=trusted)
+                                    may_clear=may_clear, loops_may_clear=trusted,
+                                    opaque_names=opaque_names,
+                                    line_literals=line_literals, reread=reread)
             # No label: for rm every operand is a target, which the echoed
             # command already makes obvious.
             findings.append(Finding(d, segment, None, op, r))
@@ -2606,7 +3050,99 @@ def _analyse(cmd, cwd, depth, trusted):
     for start, end in bounds:
         findings.extend(
             analyse_segment(toks[start:end], cwds, depth, assigned, loops,
-                            start < rebind_at, git_relocated, trusted))
+                            start < rebind_at, git_relocated, trusted,
+                            opaque_names=opaque_names,
+                            line_literals=line_literals, reread=reread,
+                            outer_danger=danger))
+
+    # Scripts collected above, and quoted heredocs a shell reads from stdin.
+    # A -c script is untrusted: its double quotes may have let the OUTER shell
+    # expand it first. A quoted heredoc body is literal -- nothing expanded it.
+    here_cwd = cwds[0] if len(cwds) == 1 else UNKNOWN_CWD
+    for i, si, here in scripts:
+        findings.extend(reread_findings(
+            toks[si], here_cwd if here else UNKNOWN_CWD, depth, False,
+            f"{os.path.basename(toks[i])} -c re-reads this", danger))
+    bodies = heredoc_bodies(cmd)
+    read_bodies = set()
+    if bodies:
+        for k in range(len(bounds)):
+            got = shell_stdin_script(toks, bounds, k, bodies)
+            if got is None:
+                continue
+            ph, here = got
+            read_bodies.add(ph)
+            # A shell behind another command is read as the ssh far end is:
+            # no local cwd, and nothing bound in the body clears.
+            findings.extend(reread_findings(
+                bodies[ph], here_cwd if here else UNKNOWN_CWD, depth, here,
+                "a shell reads this heredoc" if here else
+                "a shell behind another command reads this heredoc -- no "
+                "local cwd applies", danger))
+        # A known shell fed a heredoc that was not read above -- fish, a
+        # script file's stdin, a `-c` beside it, the redirection written first
+        # -- may still run the body. A destructive one asks rather than
+        # leaving the line to the withdrawal's silence. The shell may be the
+        # command word or further along: `ssh h fish`.
+        for k, (s, e) in enumerate(bounds):
+            words = [n for n in range(s, e) if toks[n] not in bodies]
+            j, base = command_word([toks[n] for n in words])
+            if base not in SHELLS:
+                j = next((n for n in range(j + 1, len(words))
+                          if os.path.basename(toks[words[n]]) in SHELLS), len(words))
+                base = os.path.basename(toks[words[j]]) if j < len(words) else ""
+            if base not in SHELLS or j >= len(words):
+                continue
+            fed = [t for t in toks[s:e] if t in bodies]
+            if k > 0 and toks[bounds[k - 1][1]] == "|":
+                fed += [t for t in toks[bounds[k - 1][0]:bounds[k - 1][1]]
+                        if t in bodies]
+            if any(ph not in read_bodies and danger_hint(bodies[ph]) for ph in fed):
+                findings.extend(bail(
+                    "ask", words[j], f"{mark(base)} reads a heredoc whose body "
+                                     "is destructive, and the guard cannot read "
+                                     "it as that shell's script"))
+    # A command substitution's body is a script the shell runs, so it is read
+    # as one. Untrusted: inside double quotes the outer shell's own expansions
+    # reach it first. Three things are undone first, so the body reads as the
+    # shell will run it:
+    #   - Heredocs were masked before the substitution was found, so its body
+    #     holds their placeholders, which the next level strips as stray
+    #     sentinels. Each goes back as written: `x=$(bash <<'EOF' ...)`.
+    #   - A backtick body is unescaped as bash does it, `\\`, `` \` `` and `\$`
+    #     losing their backslash, which is how backticks nest.
+    #   - `$((...))` is arithmetic only when its inner `(` closes at the end;
+    #     otherwise bash and zsh run it as a substitution of a subshell. Real
+    #     arithmetic runs nothing but the substitutions inside it, so it is read
+    #     as the arguments of `:` -- a `$N` there is not a command word.
+    # A substitution inside a message-flag value is not read: strip_data treats
+    # that value as data. It still runs, so one that reads as destructive
+    # withdraws the allow; see _message_runs_destructive.
+    masked, subs = mask_opaque(cmd)
+    clean = cmd.replace(SENTINEL, "").replace(MARK, "")
+    heredocs = [(ph + _heredoc_opener_rest(m), m.group(0))
+                for ph, m in _masked_heredocs(clean)]
+    msgs = [m.span() for m in MSG_FLAG_RE.finditer(masked)]
+    for ph, original in subs.items():
+        at = masked.find(ph)
+        in_message = any(s <= at < e for s, e in msgs)
+        if original.startswith("`"):
+            body = original[1:-1]
+        elif (original.startswith("$((")
+              and _close_paren(original, 2) == len(original) - 2):
+            body = ": " + original[3:-2]
+        else:
+            body = original[2:-1]
+        for held, written in heredocs:
+            body = body.replace(held, written)
+        if original.startswith("`"):
+            body = BACKTICK_ESCAPE_RE.sub(r"\1", body)
+        if in_message:
+            if _message_runs_destructive(body):
+                _WITHDRAWN[0] = True
+            continue
+        findings.extend(reread_findings(
+            body, here_cwd, depth, False, "a command substitution runs this", danger))
 
     # A relocated clean the segments never saw: inside a substitution that is
     # not in command position (`echo $(git --work-tree=/ clean -fdx)`), whose
@@ -2617,15 +3153,16 @@ def _analyse(cmd, cwd, depth, trusted):
         findings.append(bare("ask", f"{mark('git clean')} on a line that "
                                     f"relocates its work tree -- {GIT_RELOCATED}"))
 
-    _note_unread_heredocs(cmd)
+    _note_unread_heredocs(cmd, read_bodies)
 
     if not found_rm and not findings:
-        # Nothing survived parsing. Every construct that could execute a string
-        # (eval, <shell> -c, xargs, substitution) already bailed above, so a bare
-        # mention here is inert text -- unless it actually reads as a recursive
-        # rm, in which case we failed to parse something real and must not
-        # approve it. Searched against the git-stripped text, so an exempted
-        # `git -C /path rm -r` does not read as unparsed.
+        # Nothing survived parsing. Of the constructs that could execute a
+        # string, eval and xargs bailed above, and a <shell> -c script, a heredoc
+        # a shell reads and a substitution's body were each re-read as a script,
+        # so a bare mention here is inert text -- unless it actually reads as a
+        # recursive rm, in which case we failed to parse something real and
+        # must not approve it. Searched against the git-stripped text, so an
+        # exempted `git -C /path rm -r` does not read as unparsed.
         m = RM_RECURSIVE_RE.search(text)
         if m:
             # The whole line is plain readers and every match is their text:
