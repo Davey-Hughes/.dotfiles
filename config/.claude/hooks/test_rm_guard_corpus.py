@@ -4,6 +4,7 @@
     python3 test_rm_guard_corpus.py              # the committed fixture (CI)
     python3 test_rm_guard_corpus.py --live       # ...plus today's transcripts
     python3 test_rm_guard_corpus.py --regenerate # rewrite the fixture
+    python3 test_rm_guard_corpus.py --reverdict  # accept reviewed verdict moves
 
 test_rm_guard.py asserts what the guard should do. This asserts what it DID do
 to commands that actually ran on this machine, and the two catch different
@@ -51,7 +52,7 @@ name by splitting it mid-token. The residual after scrubbing is the shape of
 the work (tool names, directory layout), not credentials. gitleaks runs over
 the tree in CI for the credential half; see .forgejo/workflows/ci.yml.
 
---- the three modes -------------------------------------------------------
+--- the four modes --------------------------------------------------------
 
 The fixture is a SNAPSHOT. It cannot grow on its own, and a corpus that never
 grows stops finding new shapes -- which is exactly what it is for. So:
@@ -64,6 +65,14 @@ grows stops finding new shapes -- which is exactly what it is for. So:
                  running after touching the guard.
     --regenerate rewrite the fixture from today's transcripts, refusing to
                  write if the anonymisation is not verdict-preserving.
+    --reverdict  replay the fixture's own rows and record the verdicts the
+                 current guard gives them, printing each move as MOVED. For
+                 accepting verdict changes a reviewed guard change made, on
+                 rows that already passed the anonymisation gate when they
+                 were written. It does NOT re-run that gate, so a rule that
+                 reads a part the anonymiser renamed can record a verdict the
+                 original never had. --regenerate remains the way to add
+                 commands.
 
 $HOME and $TMPDIR are pinned for every run. safe_roots() folds both in, so a
 fixture recorded under one $HOME and replayed under another is not testing the
@@ -247,7 +256,7 @@ def make_rewriter(texts, home):
     return rewrite, mapping
 
 
-# --- the three modes ---------------------------------------------------------
+# --- the four modes ----------------------------------------------------------
 
 def load_fixture():
     if not os.path.exists(FIXTURE):
@@ -268,6 +277,43 @@ def replay(rows):
                 print("FAIL cwd=%s  want %s, got %s" % (cwd, want, got))
                 print("  " + row["cmd"].replace("\n", "\n  ")[:400])
     return bad
+
+
+def reverdict():
+    """Re-record the fixture's verdicts under the current guard; rows untouched."""
+    if not os.path.exists(FIXTURE):
+        print("no fixture at %s" % FIXTURE)
+        return 1
+    with open(FIXTURE, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    out, moved, cmds_moved, denies = [], 0, 0, 0
+    for line in lines:
+        if not line.strip() or line.startswith("#"):
+            out.append(line)
+            continue
+        row = json.loads(line)
+        changed = False
+        for cwd, want in list(row["verdicts"].items()):
+            got = run_guard(row["cmd"], cwd, FAKE_HOME)
+            if got != want:
+                moved += 1
+                changed = True
+                if want == "deny":
+                    denies += 1
+                    print("DENY MOVED cwd=%s  want %s, got %s" % (cwd, want, got))
+                else:
+                    print("MOVED cwd=%s  want %s, got %s" % (cwd, want, got))
+                print("  " + row["cmd"].replace("\n", "\n  ")[:400])
+                row["verdicts"][cwd] = got
+        cmds_moved += changed
+        out.append(json.dumps(row, sort_keys=True))
+    if denies:
+        print("refusing to write: a deny moved, which no reviewed change may do")
+        return 1
+    with open(FIXTURE, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out) + "\n")
+    print("reverdicted %d verdict(s) across %d command(s)" % (moved, cmds_moved))
+    return 0
 
 
 def regenerate():
@@ -374,6 +420,8 @@ def main():
     arg = sys.argv[1] if len(sys.argv) > 1 else ""
     if arg == "--regenerate":
         return regenerate()
+    if arg == "--reverdict":
+        return reverdict()
     if arg == "--live":
         return live()
     rows = load_fixture()
