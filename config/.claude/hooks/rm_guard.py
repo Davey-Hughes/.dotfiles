@@ -454,6 +454,41 @@ GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
 # it. noglob and nocorrect do the same job.
 WRAPPERS = {"sudo", "command", "env", "nohup", "time", "nice",
             "builtin", "noglob", "nocorrect"}
+# A wrapper's own options, so command_word can step past them to the command
+# they run: (flag letters, letters that take a value, long options that take
+# one -- as `--opt=v` or as the next word -- and long options that take none).
+# Stopping on the option instead hid the command: `env -i $X` read `-i` as the
+# command and never saw that `$X` was one. An option missing here stops
+# command_word on it and the line asks. env's -S and --split-string are left
+# out on purpose: the string they take IS the command and its arguments.
+WRAPPER_OPTS = {
+    "sudo": ("ABbEeHhiKklNnPSsVv", "aCcDgpRrTtUu",
+             {"--auth-type", "--chdir", "--chroot", "--close-from",
+              "--command-timeout", "--group", "--login-class", "--other-user",
+              "--prompt", "--role", "--type", "--user"},
+             {"--askpass", "--background", "--bell", "--edit", "--help",
+              "--host", "--list", "--login", "--non-interactive",
+              "--preserve-env", "--preserve-groups", "--remove-timestamp",
+              "--reset-timestamp", "--set-home", "--shell", "--stdin",
+              "--validate", "--version"}),
+    "env": ("iv0", "Cu", {"--chdir", "--unset"},
+            {"--block-signal", "--debug", "--default-signal", "--help",
+             "--ignore-environment", "--ignore-signal", "--list-signal-handling",
+             "--null", "--version"}),
+    "nice": ("", "n", {"--adjustment"}, {"--help", "--version"}),
+    # GNU time's options; bash's keyword knows only -p, and runs `-f` as the
+    # command, which fails -- reading past it is then only stricter.
+    "time": ("apqvV", "fo", {"--format", "--output"},
+             {"--append", "--help", "--portability", "--quiet", "--verbose",
+              "--version"}),
+    "command": ("pvV", "", set(), set()),
+    "exec": ("cl", "a", set(), set()),
+}
+# The wrapper options above that run the command in another directory, so a
+# relative operand no longer resolves against the shell's cwd: `env -C /
+# rm -rf ./usr` is rm -rf /usr. (letters, long options)
+WRAPPER_CHDIR = {"env": ("C", {"--chdir"}),
+                 "sudo": ("DR", {"--chdir", "--chroot"})}
 # ...and the keywords and grouping that can stand in front of one.
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!",
             "(", "{", ")", "}"}
@@ -498,8 +533,10 @@ RCLONE_DESTRUCTIVE = {
 }
 SSH_VALUE_OPTS = {
     "-p", "-i", "-l", "-o", "-F", "-L", "-R", "-D", "-c", "-m", "-b", "-e",
-    "-J", "-W", "-S", "-w", "-Q", "-E", "-I", "-B",
+    "-J", "-W", "-S", "-w", "-Q", "-E", "-I", "-B", "-O", "-P",
 }
+# ...the same, as the letters of a bundle: `ssh -tp 22 h`.
+SSH_VALUE_CHARS = {o[1] for o in SSH_VALUE_OPTS}
 # A remote spec: user@host:path, host:path, or a URL. Never a local path.
 REMOTE_SPEC_RE = re.compile(r"^[A-Za-z0-9_.+-]*(?:@[A-Za-z0-9_.-]+)?:|^[a-z][a-z0-9+.-]*://")
 
@@ -996,7 +1033,8 @@ def classify_path(p, cwd):
         if ".." in p.split("/"):
             return "ask", "relative path escapes upward via '..'"
         if cwd == UNKNOWN_CWD:
-            return "ask", ("an earlier `cd`, `pushd` or `popd` in this command "
+            return "ask", ("a `cd`, `pushd` or `popd`, or a wrapper's "
+                           "directory option such as `env -C`, in this command "
                            "goes somewhere the guard cannot resolve, so where "
                            "this lands is unknown")
         # A named subdirectory is bounded wherever cwd happens to be. An operand
@@ -1627,11 +1665,32 @@ def command_word(argv):
     operator -- without that, command_word stopped on the token `2` and
     `2>/dev/null typeset -g ...` hid the typeset from _rebinding_possible.
     """
-    j = 0
+    j, base, _, _ = command_word_detail(argv)
+    return j, base
+
+
+def command_word_detail(argv):
+    """-> (index, basename, moved, known): command_word, and what a wrapper's
+    options in front of the command say about it.
+
+    moved: a wrapper option runs the command in another directory
+    (WRAPPER_CHDIR). known: False when the walk stopped on a wrapper's option
+    it cannot read, so the index is that option's and the real command is
+    somewhere after it, unknown.
+    """
+    j, moved, known, wrapped = 0, False, True, False
     while j < len(argv):
         t = argv[j]
-        if ENV_ASSIGN_RE.match(t) or t in KEYWORDS or command_name(t) in WRAPPERS:
+        if ENV_ASSIGN_RE.match(t) or t in KEYWORDS:
             j += 1
+            continue
+        name = command_name(t)
+        if name in WRAPPERS:
+            wrapped = True
+            j, m, known = _past_wrapper_opts(argv, j + 1, name)
+            moved = moved or m
+            if not known:
+                break
             continue
         # `2` `>` `/dev/null`, `>` `/dev/null`, a fused `2>` `/dev/null`, or
         # bash's `{fd}` `>` `/dev/null`.
@@ -1642,8 +1701,58 @@ def command_word(argv):
             continue
         break
     if j >= len(argv):
-        return j, ""
-    return j, command_name(argv[j])
+        return j, "", moved, known
+    # An option where the command should be, behind a wrapper -- `env >x -i
+    # CMD` puts a redirection between them -- is the same unknown.
+    if wrapped and argv[j].startswith("-"):
+        known = False
+    return j, command_name(argv[j]), moved, known
+
+
+def _past_wrapper_opts(argv, j, name):
+    """-> (index past wrapper `name`'s options from argv[j], moved, known).
+
+    A bundle takes a value from the rest of its word or else the next word:
+    `-u root`, `-uroot`, `-iu FOO`. `--` ends the options. See
+    command_word_detail for moved and known.
+    """
+    flags, values, long_values, long_flags = WRAPPER_OPTS.get(
+        name, ("", "", set(), set()))
+    chdir_letters, chdir_long = WRAPPER_CHDIR.get(name, ("", set()))
+    moved = False
+    while j < len(argv):
+        t = argv[j]
+        if t == "--":
+            return j + 1, moved, True
+        if t == "-" and name == "env":     # env's old spelling of -i
+            j += 1
+            continue
+        if not t.startswith("-") or t == "-":
+            return j, moved, True
+        if t.startswith("--"):
+            opt = t.split("=", 1)[0]
+            if opt in long_values:
+                moved = moved or opt in chdir_long
+                j += 1 if "=" in t else 2
+            elif opt in long_flags:
+                j += 1
+            else:
+                return j, moved, False
+            continue
+        if name == "nice" and t[1:].isdigit():     # `nice -5`, the old form
+            j += 1
+            continue
+        for k in range(1, len(t)):
+            c = t[k]
+            if c in values:
+                moved = moved or c in chdir_letters
+                j += 1 if k + 1 < len(t) else 2
+                break
+            if c not in flags:
+                return j, moved, False
+        else:
+            j += 1
+    return min(j, len(argv)), moved, True
 
 
 def git_segments(toks):
@@ -2378,7 +2487,11 @@ def candidate_cwds(toks, cwd):
     out = [cwd]
     for start, end in segment_bounds(toks):
         argv = [t for t in toks[start:end] if t not in GROUPING]
-        idx, base = command_word(argv)
+        idx, base, moved, _ = command_word_detail(argv)
+        if moved:
+            # `env -C / rm -rf ./usr` moves only the command it runs, and to
+            # a place this does not follow.
+            out.append(UNKNOWN_CWD)
         if base not in ("cd", "pushd", "popd"):
             continue
         # Options first. One the guard does not know -- `pushd -n`, a typo --
@@ -2605,24 +2718,42 @@ def git_subcommand(argv):
 
 
 def ssh_remote_command(argv):
-    """ssh: -> the remote command string, or "" if this is an interactive login."""
+    """ssh: -> the remote command string, or "" if this is an interactive login.
+
+    OpenSSH reads options on both sides of the host: once it has the host it
+    parses the words after it for options again, unless a `--` came before
+    the host. A `--` after the host ends them and is dropped. So `ssh h -- CMD`
+    and `ssh h -t CMD` both run CMD, and reading the `--` or the `-t` as the
+    first word of the remote command hid what CMD was.
+    """
     idx, _ = command_word(argv)
-    i = idx + 1
+    i, host, ended = idx + 1, None, False
     while i < len(argv):
         t = argv[i]
-        if t.startswith("-"):
-            if t in SSH_VALUE_OPTS and len(t) == 2:
-                i += 2
-                continue
+        if not ended and t == "--":
+            ended = True
             i += 1
             continue
-        break
-    if i >= len(argv):
+        if not ended and t.startswith("-") and t != "-":
+            i += ssh_option_width(t)
+            continue
+        if host is not None:
+            break
+        host = i
+        i += 1
+    if host is None or i >= len(argv):
         return ""
-    rest = argv[i + 1:]  # argv[i] is the host
-    if not rest:
-        return ""
+    rest = argv[i:]
     return rest[0] if len(rest) == 1 else " ".join(rest)
+
+
+def ssh_option_width(t):
+    """-> how many words the ssh option word t takes: 2 when its last letter
+    wants a value (`-p 22`, `-tp 22`), else 1 (`-t`, `-p22`, `-tp22`)."""
+    for k in range(1, len(t)):
+        if t[k] in SSH_VALUE_CHARS:
+            return 1 if k + 1 < len(t) else 2
+    return 1
 
 
 def _past_redirections(argv, j, end):
@@ -2896,7 +3027,29 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
         elif remote:
             out.append(Finding("ask", segment, "over ssh", None,
                                "ssh nested too deeply to analyse"))
+        # Base read every word after the host as the remote command, so `ssh
+        # h -o 'rm -rf /'` denied, though -o takes that word for its value
+        # and no command runs. That reading's denies stand: no deny may
+        # weaken, as the old tokenizer's do not.
+        as_base = ssh_command_as_base_read(argv)
+        if as_base and as_base != remote and depth < MAX_DEPTH:
+            hop = "over ssh, as base read its command"
+            out.extend(f._replace(label=f"{hop}; {f.label}" if f.label else hop)
+                       for f in analyse(as_base, "", depth + 1, trusted=False,
+                                        outer_danger=outer_danger, reread=True)
+                       if f.decision == "deny")
     return out
+
+
+def ssh_command_as_base_read(argv):
+    """ssh's remote command as base read it: options only before the host,
+    and every word after the host the command."""
+    idx, _ = command_word(argv)
+    i = idx + 1
+    while i < len(argv) and argv[i].startswith("-"):
+        i += 2 if argv[i] in SSH_VALUE_OPTS and len(argv[i]) == 2 else 1
+    rest = argv[i + 1:]
+    return rest[0] if len(rest) == 1 else " ".join(rest)
 
 
 # Analysis at any depth sets this flag when it sees an unread destructive
@@ -3210,12 +3363,19 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     # ask and the analysis goes on, so a deny elsewhere on the line still wins.
     if danger:
         for start, end in bounds:
-            j, base = command_word(toks[start:end])
+            j, base, _, known = command_word_detail(toks[start:end])
             i = start + j
             if i >= end:
                 continue
             word = toks[i]
-            if has_subst(word):
+            if not known:
+                # `env -Z $X`, `env -S "$X"`: an option the guard cannot read
+                # may take the next word as its value, or be the command.
+                unreadable.extend(bail(
+                    "ask", i, f"{mark(word)} is an option of the wrapper in "
+                              "front of it that the guard cannot read, so "
+                              "which command runs is unknowable"))
+            elif has_subst(word):
                 # A substitution there hides which command runs, so nothing
                 # the operand checks below can prove says anything about it.
                 unreadable.extend(bail(

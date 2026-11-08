@@ -1121,6 +1121,52 @@ CASES = [
     ("zsh's $~@", "rm -rf $~@", "ask"),
     ("zsh's $=1", "rm -rf $=1", "ask"),
     ("zsh's $~{W}", "rm -rf $~{W}", "ask"),
+    # --- ssh options after the host ---------------------------------------------
+    # OpenSSH parses the words after the host for options again, and a `--`
+    # there ends them. Reading the `--` or the `-t` as the remote command's
+    # first word hid the expansion that IS the command.
+    ("ssh: -- after the host", 'rm -rf ./b; ssh h -- "$S"', "ask"),
+    ("ssh: ...with S bound to a wipe", 'S="rm -rf /"; rm -rf ./b; ssh h -- "$S"', "ask"),
+    ("ssh: an option after the host", 'rm -rf ./b; ssh h -t "$S"', "ask"),
+    ("ssh: ...one that takes a value", 'rm -rf ./b; ssh h -l u "$S"', "ask"),
+    ("ssh: a bundle ending in a value letter", 'rm -rf ./b; ssh -tp 22 h "$S"', "ask"),
+    ("ssh: -- after the host, literal wipe", 'rm -rf ./b; ssh h -- "rm -rf /"', "deny"),
+    ("ssh: -- after the host, bounded far end", 'rm -rf ./b; ssh h -- "rm -rf /tmp/x"',
+     "allow"),
+    ("ssh: a bundle, bounded far end", 'ssh -tl u h "rm -rf /tmp/x"', "allow"),
+    # Base read every word after the host as the remote command, so an
+    # option's value that spells a wipe denied, though no command runs. That
+    # reading's denies stand: no deny may weaken.
+    ("ssh: an option's value base read as a command still denies",
+     "ssh h -o 'rm -rf /'; rm -rf ./x", "deny"),
+    ("ssh: ...-p", "ssh h -p 'rm -rf /'; rm -rf ./x", "deny"),
+    ("ssh: ...-i", "ssh h -i 'rm -rf /'; rm -rf ./x", "deny"),
+    ("ssh: ...-l", "ssh h -l 'rm -rf /'; rm -rf ./x", "deny"),
+    ("ssh: ...-L", "ssh h -L 'rm -rf /'; rm -rf ./x", "deny"),
+    ("ssh: ...-J", "ssh h -J 'rm -rf /'; rm -rf ./x", "deny"),
+    ("ssh: ...-O", "ssh h -O 'rm -rf /'", "deny"),
+    ("ssh: ...and only its denies", "ssh h -o 'rm -rf ./x'; rm -rf ./y", "allow"),
+    # --- a wrapper's own options --------------------------------------------------
+    # command_word stopped on `-i`, so the expansion behind it was never in
+    # command position: X's value runs, split into words.
+    ("wrapper: env -i before an expansion command", "X='rm -rf /'; rm -rf ./b; env -i $X",
+     "ask"),
+    ("wrapper: env -u NAME", "X='rm -rf /'; rm -rf ./b; env -u FOO $X", "ask"),
+    ("wrapper: env --unset NAME", "X='rm -rf /'; rm -rf ./b; env --unset FOO $X", "ask"),
+    ("wrapper: nice -n 5", "X='rm -rf /'; rm -rf ./b; nice -n 5 $X", "ask"),
+    ("wrapper: nice -5", "X='rm -rf /'; rm -rf ./b; nice -5 $X", "ask"),
+    ("wrapper: one behind another", "X='rm -rf /'; rm -rf ./b; env -i nice -n 5 $X", "ask"),
+    ("wrapper: env -S's value is the command", "X='rm -rf /'; rm -rf ./b; env -S \"$X\"",
+     "ask"),
+    ("wrapper: an option the guard cannot read", "X='rm -rf /'; rm -rf ./b; env -Z $X", "ask"),
+    # env -C runs the command elsewhere: this is rm -rf /usr.
+    ("wrapper: env -C moves the command", "env -C / rm -rf ./usr", "ask"),
+    ("wrapper: ...as --chdir=", "env --chdir=/ rm -rf ./usr", "ask"),
+    ("wrapper: ...inside a bundle", "env -iC / rm -rf ./usr", "ask"),
+    ("wrapper: env -i, bounded target", "env -i FOO=1 rm -rf ./build", "allow"),
+    ("wrapper: nice -n 5, bounded target", "nice -n 5 rm -rf ./build", "allow"),
+    ("wrapper: env -i, a wipe", "env -i rm -rf /", "deny"),
+    ("wrapper: env -i bash -c is read", 'env -i bash -c "rm -rf /"', "deny"),
     # --- a nameref writes the name it refers to -----------------------------
     ("nameref: a target written through its reference",
      'declare -n R=W; R=/; rm -rf "${W:?}"/x', "ask"),
