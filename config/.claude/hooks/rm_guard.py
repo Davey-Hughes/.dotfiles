@@ -1204,7 +1204,11 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
             used = [n for n in dict.fromkeys(
                 m.group(1) or m.group(2) for m in SUBST_NAME_RE.finditer(op))
                 if n in assigned]
-            if d == "deny" or (may_clear and all(assigned[n] for n in used)):
+            # A glued operand names another variable than the one read here:
+            # `Wusr=/tmp/x; W=/; rm -rf "$W"usr` is rm -rf /usr, not /tmp/x.
+            # It may still condemn.
+            if d == "deny" or (may_clear and not glued
+                               and all(assigned[n] for n in used)):
                 shown = ", ".join("%s=%s" % (n, assigned[n]) for n in used)
                 return d, f"{shown} in this command, so this reads as {resolved}; {r}"
 
@@ -1248,6 +1252,10 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                                     glued=glued)
                 out.append((d, f"the loop sets ${name} to {val}; {r}"))
             d, r = worst_of(out)
+            # The same misread as the binding block above: the loop's name is
+            # not the one a glued operand expands.
+            if d == "allow" and glued:
+                return "ask", GLUED_REASON
             # Inside a string another shell re-reads, the outer shell may have
             # expanded $name before the inner one ever ran the loop, so the
             # words above prove nothing. They may still condemn.

@@ -1116,6 +1116,15 @@ CASES = [
     ("quote glue: ...an opening quote", "W=/; rm -rf $W\"usr\"", "ask"),
     ("quote glue: ...${W:?} too", "rm -rf \"${W:?}\"x", "ask"),
     ("quote glue: a slash is not glue", "rm -rf \"${W:?}\"/*", "allow"),
+    # The glued name is bound too, but it is not the one the shell expands:
+    # each of these is rm -rf /usr.
+    ("quote glue: a binding of the glued name does not clear",
+     "Wusr=/tmp/x; W=/; rm -rf \"$W\"usr", "ask"),
+    ("quote glue: ...nor a loop over it",
+     "for Wusr in /tmp/x; do W=/; rm -rf \"$W\"usr; done", "ask"),
+    ("quote glue: ...nor one past a quoted heredoc",
+     "Wusr=/tmp/x; W=/; cat <<'EOF'; rm -rf \"$W\"usr\nEOF", "ask"),
+    ("quote glue: an unglued binding still clears", "W=/tmp/b; rm -rf \"$W\"/*", "allow"),
     # --- zsh expansion flags before a non-letter -------------------------------
     ("zsh's $~1", "rm -rf $~1", "ask"),
     ("zsh's $~@", "rm -rf $~@", "ask"),
