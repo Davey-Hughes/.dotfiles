@@ -1349,6 +1349,138 @@ BINDING_CASES = [
 ]
 
 
+def check_sourced():
+    """Fix 3: a sourced file is read in place. Real files, so not in CASES.
+
+    Every path in `cases` is absolute -- CWD is synthetic and does not exist,
+    so a `./env.sh` would never resolve. `at_d` runs from the temp dir itself.
+    """
+    d = tempfile.mkdtemp(prefix="rmguard-src-")
+    try:
+        def put(name, text):
+            p = os.path.join(d, name)
+            with open(p, "w") as fh:
+                fh.write(text)
+            return p
+        ok = put("env.sh", "# the record dir\nR=/tmp/rec-x\n")
+        to_root = put("cd.sh", "cd /\n")
+        empty = put("empty.sh", "R=\n")
+        risky = put("sudo.sh", "R=/tmp/rec-x\nsudo true\n")
+        aliased = put("alias.sh", "alias ls='ls -la'\nR=/tmp/rec-x\n")
+        wipes = put("rm.sh", "rm -rf /\n")
+        big = put("big.sh", "R=/tmp/rec-x\n#" + "x" * (64 * 1024) + "\n")
+        quote = put("quote.sh", "X='abc\n")
+        open_doc = put("heredoc.sh", "cat <<'EOF'\n")
+        os.mkdir(os.path.join(d, "-"))
+        put("-/env.sh", "R=/tmp/rec-x\n")
+        os.mkdir(os.path.join(d, "=eq"))
+        put("=eq/env.sh", "R=/tmp/rec-x\n")
+        # Unfinished: both shells drop the open loop or list and run the rest.
+        for_open = put("for_open.sh", "for d in /tmp/y; do\n")
+        and_open = put("and_open.sh", "R=/tmp/x &&\n")
+        func_loop = put("func.sh", "f() { for d in /tmp/y; do :; done; }\n")
+        tick = put("tick.sh", "R=/tmp/x && X=`\n")
+        semi = put("semi.sh", "R=/tmp/x ;;\n")
+        brace = put("brace.sh", "R=/tmp/x && X=${\n")
+        bracket = put("bracket.sh", "R=/tmp/x && X=$[\n")
+        array = put("array.sh", "R=/tmp/x && arr=(a\n")
+        closed = put("closed.sh", "R=/tmp/rec-x\nY=${R}/sub\n")
+        redir = put("redir.sh", "R=/tmp/x && X=1 2>\n")
+        redir2 = put("redir2.sh", "R=/tmp/x && X=1 >\n")
+        # zsh expands `=cmd` in an assignment; a failure stops the file.
+        eqcmd = put("eqcmd.sh", "X==nosuchcmd_zz\nR=/tmp/safe\n")
+        subst_open = put("subst_open.sh", "X=$(echo a #)\nR=/tmp/safe\n")
+        cd_tilde = put("cd_tilde.sh", "R=/tmp/safe\ncd ~/x\n")
+        ro_status = put("ro_status.sh", "status=0\nR=/tmp/rec-x\n")
+        ro_uid = put("ro_uid.sh", "UID=12345\nR=/tmp/rec-x\n")
+        realish = put("real.sh", "# record dir, and the worktree.\nR=/tmp/rec-x\n"
+                      "BASE=$(cat \"$R/BASE\" 2>/dev/null)\ncd \"$R\" || return 1\n")
+        cases = [
+            ("a sourced binding clears", f'. {ok}; rm -rf "$R/build"', "allow"),
+            ("source, spelled out", f'source {ok} && rm -rf "$R/build"', "allow"),
+            ("a sourced cd moves the shell", f". {to_root}; rm -rf ./usr", "deny"),
+            ("a sourced empty binding condemns", f'. {empty}; rm -rf "$R"/*', "deny"),
+            # Only env-file lines are read in place; anything else asks, as
+            # every sourced line did before.
+            ("a file that is not all env lines is not read", f". {wipes}; rm -rf ./build", "ask"),
+            ("an unquoted = in a value is not read", f'. {eqcmd}; rm -rf "$R/build"', "ask"),
+            ("a substitution left open by a comment is not read",
+             f'. {subst_open}; rm -rf "$R/build"', "ask"),
+            ("a cd to ~ is not read", f'. {cd_tilde}; rm -rf ./build', "ask"),
+            # zsh refuses these assignments, and the file stops there.
+            ("a lower-case name is not read", f'. {ro_status}; rm -rf "$R/build"', "ask"),
+            ("a name the shell holds read-only is not read",
+             f'. {ro_uid}; rm -rf "$R/build"', "ask"),
+            ("the real env-file shape is read",
+             f'. {realish}; rm -rf "$R/build"', "allow"),
+            ("a risky file is not inlined", f'. {risky}; rm -rf "$R/build"', "ask"),
+            ("an alias is not inlined", f'. {aliased}; rm -rf "$R/build"', "ask"),
+            ("too big to inline", f'. {big}; rm -rf "$R/build"', "ask"),
+            ("a missing file", f'. {d}/nope.sh; rm -rf "$R/build"', "ask"),
+            ("not the first command", f'true; . {ok}; rm -rf "$R/build"', "ask"),
+            ("a bare name searches $PATH", '. env.sh; rm -rf "$R/build"', "ask"),
+            # bash and zsh read a sourced file on its own, and the rest of
+            # the line runs after a broken one -- joined, it would hide it.
+            ("an unclosed quote cannot swallow the rest",
+             f". {quote}; rm -rf /", "deny"),
+            ("an open heredoc cannot swallow the rest",
+             f". {open_doc}; rm -rf /\nEOF", "deny"),
+            # realpath would drop the slash; the shell's open() fails ENOTDIR.
+            ("a trailing slash is not the file", f'. {ok}/; rm -rf "$R/build"', "ask"),
+            ("a heredoc fed to a shell keeps its ask",
+             f"bash <<'EOF'\n. {ok}; rm -rf \"$R/build\"\nEOF", "ask"),
+        ]
+        # Relative paths, so these run from d itself.
+        at_d = [
+            ("a relative path resolves against cwd",
+             '. ./env.sh; rm -rf "$R/build"', "allow"),
+            ("a leading dash is an option to bash's .",
+             '. -/env.sh; rm -rf "$R/build"', "ask"),
+            ("a leading = is a command path to zsh",
+             '. =eq/env.sh; rm -rf "$R/build"', "ask"),
+            ("a loop the file leaves open is not read",
+             f'. {for_open}; rm -rf "$d"/*', "ask"),
+            ("a list the file leaves open is not read",
+             f'. {and_open}; rm -rf "$R/build"', "ask"),
+            ("a loop in a function the file defines is not read",
+             f'. {func_loop}; rm -rf "$d"/*', "ask"),
+            ("an unmatched backtick fails the whole file",
+             f'. {tick}; rm -rf "$R/build"', "ask"),
+            ("an operator the shells refuse there fails it too",
+             f'. {semi}; rm -rf "$R/build"', "ask"),
+            ("an open ${ fails the whole file", f'. {brace}; rm -rf "$R/build"', "ask"),
+            ("an open $[ fails it", f'. {bracket}; rm -rf "$R/build"', "ask"),
+            ("an open array fails it", f'. {array}; rm -rf "$R/build"', "ask"),
+            ("a closed ${...} in the file is fine", f'. {closed}; rm -rf "$R/build"', "allow"),
+            ("a redirection with no target fails the file", f'. {redir}; rm -rf "$R/build"', "ask"),
+            ("...without an fd digit too", f'. {redir2}; rm -rf "$R/build"', "ask"),
+        ]
+        fails = []
+        for name, cmd, want in cases:
+            got, reason = verdict(cmd)
+            if got != want:
+                fails.append((name, cmd, want, got, reason))
+        for name, cmd, want in at_d:
+            got, reason = verdict(cmd, d)
+            if got != want:
+                fails.append((name, cmd, want, got, reason))
+        cmd = '. ~/env.sh; rm -rf "$R/build"'
+        got, reason = run([sys.executable, GUARD], cmd,
+                          env=dict(os.environ, HOME=d))
+        if got != "allow":
+            fails.append(("~/ resolves against $HOME", cmd, "allow", got, reason))
+        cmd = cases[0][1]
+        got, reason = run([sys.executable, GUARD, "--no-disk"], cmd)
+        if got != "ask":
+            fails.append(("--no-disk turns inlining off", cmd, "ask", got, reason))
+        return fails
+    finally:
+        shutil.rmtree(d)
+
+
+SOURCED_CHECKS = 37
+
+
 def check_bindings():
     """proven_bindings() in isolation. Nothing here is executed -- see module doc."""
     fails = []
@@ -1575,6 +1707,7 @@ def main():
     fails += check_wrapper()
     fails += check_render()
     fails += check_bindings()
+    fails += check_sourced()
 
     for name, cmd, expected, got, reason in fails:
         first = reason.replace("\x1b", "\\e").splitlines()[0][:160] if reason else ""
@@ -1586,7 +1719,8 @@ def main():
             print(f"  why:  {first}")
         print()
 
-    total = len(CASES) + WRAPPER_CHECKS + RENDER_CHECKS + len(BINDING_CASES)
+    total = (len(CASES) + WRAPPER_CHECKS + RENDER_CHECKS + len(BINDING_CASES)
+             + SOURCED_CHECKS)
     print(f"{total - len(fails)}/{total} passed")
     return 1 if fails else 0
 

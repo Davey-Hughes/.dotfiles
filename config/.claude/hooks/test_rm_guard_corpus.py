@@ -119,12 +119,15 @@ STRUCTURAL = {"home", "u", "tmp", "usr", "var", "etc", "opt", "srv", "mnt",
 
 
 def run_guard(cmd, cwd, home):
-    """-> the guard's decision, with the environment pinned."""
+    """-> the guard's decision, with the environment pinned.
+
+    --no-disk: the fixture is anonymised, so nothing it names exists on disk.
+    """
     env = dict(os.environ, HOME=home)
     env.pop("TMPDIR", None)
     payload = json.dumps({"tool_name": "Bash", "cwd": cwd,
                           "tool_input": {"command": cmd}})
-    p = subprocess.run([sys.executable, GUARD], input=payload,
+    p = subprocess.run([sys.executable, GUARD, "--no-disk"], input=payload,
                        capture_output=True, text=True, env=env)
     if p.returncode != 0:
         return "CRASH"

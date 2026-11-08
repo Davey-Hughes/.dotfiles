@@ -209,6 +209,7 @@ import os
 import posixpath
 import re
 import shlex
+import stat
 import sys
 from collections import namedtuple
 from typing import NoReturn
@@ -546,6 +547,21 @@ RANK = {"allow": 0, "ask": 1, "deny": 2}
 # end, a `sh -c` script, a heredoc fed to a shell, a sourced file -- before
 # the guard stops following and asks.
 MAX_DEPTH = 3
+# Set by --no-disk (see main). Turns off every rule that reads the filesystem,
+# so the corpus fixture replays hermetically. A flag, never an environment
+# variable: Claude Code runs this hook with no arguments, so nothing in a
+# session can switch it on.
+NO_DISK = False
+# Fix 3: the largest sourced file read in place.
+MAX_SOURCED_BYTES = 64 * 1024
+# Reserved words that open a construct GROUPING_WORDS does not list, refused
+# in a sourced file for the same reason: left unfinished, it is dropped.
+SOURCED_OPENERS = {"!", "time", "[[", "coproc"}
+# `. FILE` or `source FILE` leading the line, FILE a plain word. The charset
+# excludes every quote, escape, expansion and glob, so this reading and
+# shlex's cannot disagree about what FILE is -- the token is also compared.
+SOURCE_LEAD_RE = re.compile(
+    r"[ \t]*(?:\.|source)[ \t]+([A-Za-z0-9_./~+@:,%=-]+)[ \t]*(;|&&|\n|$)")
 
 # --- how far an `allow` is allowed to reach ------------------------------------
 # A PreToolUse `allow` bypasses the permission system for the WHOLE Bash call --
@@ -1840,6 +1856,10 @@ LITERAL_CHAR = r"[^\s'\"\\;&|()<>$`~" + SENTINEL + r"]"
 BINDING_RE = re.compile(
     r"[ \t]*([A-Za-z_][A-Za-z0-9_]*)=(" + LITERAL_CHAR + r"*)"
     r"[ \t]*(;|&&|\Z)")
+# Statements that may stand before the leading run of bindings without breaking
+# it. Here, only the empty one: the ";" mask_opaque leaves where a comment
+# line or a blank line was, which every sourced env file starts with.
+PRELUDE_RE = re.compile(r"[ \t]*;")
 # ...and the same charset over an assignment TOKEN's value, for the names a line
 # assigns outside the leading run. Those values may condemn and never clear.
 LITERAL_VALUE_RE = re.compile(r"^" + LITERAL_CHAR + r"*$")
@@ -1921,6 +1941,19 @@ def _indirection_present(rest):
     return any(os.path.basename(w) in OPAQUE for w in words)
 
 
+def _home():
+    """The hook's $HOME when it can be used as a fact: absolute, and not `/`.
+
+    normpath keeps a leading `//` (POSIX leaves it implementation-defined), and
+    on Linux that is `/` too, so every all-slash spelling counts as root.
+    """
+    h = os.environ.get("HOME", "")
+    if not h or not posixpath.isabs(h):
+        return None
+    h = posixpath.normpath(h)
+    return None if not h.strip("/") else h
+
+
 def proven_bindings(cmd):
     """-> {name: literal} the command proves about its own variables.
 
@@ -1952,6 +1985,11 @@ def proven_bindings(cmd):
     """
     masked, subs = mask_opaque(cmd)
     bindings, pos = {}, 0
+    while True:
+        p = PRELUDE_RE.match(masked, pos)
+        if not p:
+            break
+        pos = p.end()
     while True:
         m = BINDING_RE.match(masked, pos)
         if not m:
@@ -2945,6 +2983,182 @@ def reread_findings(script, cwd, depth, trusted, how, outer_danger=False):
                              outer_danger=outer_danger, reread=True)]
 
 
+# A value an env file assigns: plain word characters and path punctuation,
+# $NAME and ${NAME} (closed), single-quoted runs, double-quoted runs of the
+# same, and a `$(...)` closed on the same line whose body holds no parenthesis,
+# backtick, quote other than a plain double-quoted run, backslash, comment,
+# heredoc, list operator or brace -- `BASE=$(cat "$R/3/BASE" 2>/dev/null)`.
+# Its body is a substitution the analysis reads like any other. Unquoted `=`
+# and `~` are left out: zsh expands `=cmd` and `~user` in an assignment, and
+# one that fails stops the rest of the file.
+_NAME_REF = r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})"
+_SOURCED_VALUE = (r"(?:[A-Za-z0-9_./:@%+,-]|" + _NAME_REF
+                  + r"|'[^'\n]*'"
+                  + r"|\$\((?:[^()`'\"\\\n#<;&|{}$]|" + _NAME_REF
+                  + r"|\"(?:[^\"`\\\n$]|" + _NAME_REF + r")*\")*\)"
+                  + r"|\"(?:[A-Za-z0-9_./~:@%+,= -]|" + _NAME_REF + r")*\")")
+# The lines inline_source reads in place: blank, a comment, `[export ]NAME=VALUE`,
+# and `cd VALUE [|| return [N]]`, each with an optional trailing comment.
+SOURCED_LINE_RE = re.compile(
+    r"^[ \t]*(?:"
+    r"(?:export[ \t]+)?[A-Z_][A-Z0-9_]*=" + _SOURCED_VALUE + r"*"
+    r"|cd[ \t]+" + _SOURCED_VALUE + r"+(?:[ \t]*\|\|[ \t]*return(?:[ \t]+[0-9]+)?)?"
+    r")?[ \t]*(?:(?<=[ \t])#.*|^[ \t]*#.*)?$")
+# The name an env-file line assigns. Upper case only, as env files are written:
+# zsh's lower-case specials (status, pipestatus, the zsh/parameter arrays)
+# refuse an assignment, and one refused stops the rest of the file.
+SOURCED_NAME_RE = re.compile(r"^[ \t]*(?:export[ \t]+)?([A-Z_][A-Z0-9_]*)=")
+# ...and the upper-case names bash or zsh hold read-only or special, which fail
+# the same way: `UID=1000` is `failed to change user ID` in zsh, `PPID=1` and
+# `TTYIDLE=1` read-only. The zsh 5.9 and bash 5.3 lists, so a newer shell may
+# add one; an unlisted special costs the file being read when it should ask.
+SHELL_SPECIAL_NAMES = {
+    "ARGC", "BASHOPTS", "BASHPID", "BASH_ARGC", "BASH_ARGV", "BASH_ARGV0",
+    "BASH_COMMAND", "BASH_LINENO", "BASH_SOURCE", "BASH_SUBSHELL",
+    "BASH_VERSINFO", "BASH_VERSION", "EGID", "EPOCHREALTIME", "EPOCHSECONDS",
+    "ERRNO", "EUID", "FUNCNAME", "GID", "GROUPS", "HISTCMD", "LINENO",
+    "PIPESTATUS", "PPID", "SHELLOPTS", "SIGNALS", "SRANDOM", "TTYIDLE", "UID",
+    "USERNAME", "ZCURSES_COLORS", "ZCURSES_COLOR_PAIRS", "ZFTP_SESSION",
+    "ZSH_ARGZERO", "ZSH_EVAL_CONTEXT", "ZSH_EXECUTION_STRING", "ZSH_NAME",
+    "ZSH_PATCHLEVEL", "ZSH_SCRIPT", "ZSH_SUBSHELL", "ZSH_VERSION",
+}
+QUOTED_SPAN_RE = re.compile(r"""'[^']*'|"(?:\\.|[^"\\])*"|\\.""", re.S)
+
+
+def _brackets_balance(text):
+    """Do (), {} and [] pair up in text, quoted spans and escapes aside?
+
+    A sourced file left inside one -- `X=${`, `X=$[`, `arr=(a` -- fails as a
+    whole, and tokenizes as a plain assignment word.
+    """
+    pairs, stack = {")": "(", "}": "{", "]": "["}, []
+    for c in QUOTED_SPAN_RE.sub("", text):
+        if c in "({[":
+            stack.append(c)
+        elif c in pairs:
+            if not stack or stack.pop() != pairs[c]:
+                return False
+    return not stack
+
+
+def inline_source(cmd, toks, cwd):
+    """`. FILE; rest` leading the line -> FILE's text, a newline, then rest.
+
+    A sourced file is code that runs in this very shell, so the honest reading
+    of the line is the file's text in its place. Nothing on the line runs
+    before the first command, so nothing on it can have written the file.
+    Every refusal is None, and the caller asks exactly as it always did.
+    """
+    if NO_DISK or len(toks) < 2:
+        return None
+    m = SOURCE_LEAD_RE.match(cmd)
+    if not m or m.group(1) != toks[1]:
+        return None
+    if len(toks) > 2 and toks[2] not in (";", "&&"):
+        return None
+    path = m.group(1)
+    if "/" not in path:
+        return None                   # a bare name is looked up on $PATH first
+    # The shells disagree on these, so neither reading is the line's: bash's
+    # `.` takes `-/env.sh` as an invalid option and zsh sources it, and zsh
+    # reads a leading `=` (or one after `=`, under MAGIC_EQUAL_SUBST) as a
+    # command-path expansion that bash leaves literal.
+    if path.startswith("-") or "=" in path:
+        return None
+    if path.startswith("~/"):
+        home = _home()
+        if not home:
+            return None
+        path = home + path[1:]
+    elif "~" in path:
+        return None
+    if not posixpath.isabs(path):
+        if not (cwd and posixpath.isabs(cwd)):
+            return None
+        path = posixpath.join(cwd, path)
+    # The path as written, never its realpath: the kernel resolves it here as
+    # it will for the shell. realpath is lexical about `..` and a trailing
+    # `/`, so `env.sh/` and `notadir/../env.sh` read a file that both shells
+    # then fail to source with ENOTDIR -- and the rest runs without it.
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) > MAX_SOURCED_BYTES:
+            return None
+        # Non-blocking, and checked again once open: a FIFO swapped in after
+        # the stat would hang the open. Capped as well: a /proc file reports
+        # size 0, and a file can grow between the calls.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return None
+            data = fh.read(MAX_SOURCED_BYTES + 1)
+        if len(data) > MAX_SOURCED_BYTES:
+            return None
+        text = data.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    # An allow would approve the file's commands too, so RISKY_NEIGHBOURS has to
+    # see them; main() only ever sees the line. An alias rewrites what a later
+    # word means, which no rule here models.
+    if risky_neighbour(text) or re.search(r"(?<![\w-])alias(?![\w-])", text):
+        return None
+    # The primary gate: every line must be one of the shapes an env file is
+    # made of. Each is a complete simple command on its own, so nothing the
+    # file leaves open can reach the rest of the line -- the checks after this
+    # one were each written for a shape that got past the one before, and are
+    # kept as a second wall.
+    lines = text.split("\n")
+    if not all(SOURCED_LINE_RE.match(line) for line in lines):
+        return None
+    if any((nm := SOURCED_NAME_RE.match(line)) and nm.group(1) in SHELL_SPECIAL_NAMES
+           for line in lines):
+        return None
+    # bash and zsh parse a sourced file on its own. An unclosed quote fails
+    # only the source, and a heredoc left open ends at the end of the file;
+    # either way the rest of the line still runs. Joined, the same file pulls
+    # the rest into its quote or its heredoc body: `rm -rf /` then reads as
+    # unparseable or as data. So the join stands only where it reads, token
+    # for token, as the file alone, a separator, then the rest alone.
+    rest = cmd[m.end():]
+    joined = text + "\n" + rest
+    try:
+        ftoks = tokenize(text)
+        if tokenize(joined) != ftoks + [";"] + tokenize(rest):
+            return None
+    except ValueError:
+        return None
+    # Composing token for token is not enough: the file must also be finished.
+    # Both shells drop a compound or a list the file leaves open -- `for d in
+    # /tmp/y; do` with no done, `R=/tmp/x &&` -- and go on to the rest of the
+    # line, so what the file seems to set is never set: with the rest `rm -rf
+    # "$d"/*`, that is rm -rf /*. Counting keywords cannot tell (`do :` then
+    # `echo done` balances), so any compound or grouping word, or a list
+    # operator at the end, keeps the ask.
+    if any(t in GROUPING_WORDS or t in SOURCED_OPENERS for t in ftoks):
+        return None
+    # The same for what the tokens do not show. An unmatched backtick
+    # (`R=/tmp/x && X=\``) fails the whole file and survives tokenizing as part
+    # of a word, so the masked text is searched for any substitution or
+    # arithmetic left open; and an operator other than the four plain list
+    # ones -- `;;`, `;&`, `&`, `|&` -- ends the file somewhere the shells refuse.
+    masked, _ = mask_opaque(text)
+    if re.search(r"`|\$\(|\(\(", masked) or not _brackets_balance(masked):
+        return None
+    if any(re.match(r"^[;&|()]+$", t) and t not in (";", "&&", "||", "|")
+           for t in ftoks):
+        return None
+    while ftoks and ftoks[-1] == ";":
+        ftoks.pop()
+    if ftoks and ftoks[-1] in SEPARATORS:
+        return None
+    # A redirection with no target (`X=1 2>` at the end of the file, or
+    # before a separator) is a syntax error that fails the file too.
+    for k, t in enumerate(ftoks):
+        if (t in REDIRECTS or REDIRECT_TOKEN_RE.match(t)) and (
+                k + 1 >= len(ftoks) or ftoks[k + 1] in SEPARATORS):
+            return None
+    return joined
+
+
 # --- analysis ----------------------------------------------------------------
 
 # The non-rm commands this file knows how to reason about. Used to find one
@@ -3425,9 +3639,25 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
                     "ask", i, f"{mark(word)} runs in command position, so "
                               "which command runs is unknowable"))
             elif base in OPAQUE:
-                # Its own arm, kept apart so that `.` and `source` can later
-                # return early from here when the file they name is one the
-                # guard can read, in place of this ask.
+                # Fix 3: `. FILE` or `source FILE` as the line's first word
+                # reads FILE in its place, and the line is judged as that text
+                # followed by the rest. Only for a line analysed as itself:
+                # text another reader runs -- a `bash -c` script, a heredoc
+                # fed to a shell, an ssh string -- has no cwd or $HOME the
+                # guard can vouch for, and keeps this ask. Every path out of
+                # the recursive analysis records the inlined text's heredocs,
+                # which hold all of this line's: `. FILE;` cannot open one.
+                if (i == 0 and base in (".", "source") and depth < MAX_DEPTH
+                        and trusted and not reread):
+                    inlined = inline_source(cmd, toks, cwd)
+                    if inlined is not None:
+                        how = f"with {toks[1]} read in place"
+                        return [f._replace(label=f"{how}; {f.label}"
+                                           if f.label else how)
+                                for f in analyse(inlined, cwd, depth + 1,
+                                                 trusted=trusted,
+                                                 outer_danger=outer_danger,
+                                                 reread=reread)]
                 unreadable.extend(bail(
                     "ask", i, f"{mark(base)} hides its arguments -- what it "
                               "runs on is not in the command"))
@@ -3838,6 +4068,8 @@ def render(headline, findings):
                        + unmark(f.reason))
     return "\n".join(out)
 def main():
+    global NO_DISK
+    NO_DISK = "--no-disk" in sys.argv[1:]
     try:
         payload = json.load(sys.stdin)
     except Exception as e:
