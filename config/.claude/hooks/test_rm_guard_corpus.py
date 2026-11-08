@@ -115,7 +115,8 @@ RECURSIVE_RM_RE = re.compile(
 # /n70/u -- a different depth, which classify_path reads.
 STRUCTURAL = {"home", "u", "tmp", "usr", "var", "etc", "opt", "srv", "mnt",
               "bin", "lib", "dev", "proc", "run", "config", "cache", "local",
-              "share", "state", "ssh", "git", "claude", "projects", "gemini"}
+              "share", "state", "ssh", "git", "claude", "projects", "gemini",
+              "temp", ".cache"}
 
 
 def run_guard(cmd, cwd, home):

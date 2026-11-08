@@ -977,7 +977,44 @@ def safe_roots(cwd, home=None):
             roots.append(posixpath.normpath(v))
     if cwd and posixpath.isabs(cwd):
         roots.append(posixpath.normpath(cwd))
+    roots.extend(home_roots(home))
     return roots
+
+
+def home_roots(home):
+    """~/temp and ~/.cache: scratch and regenerable by convention on this
+    machine, and only for a local analysis -- a far end's home is not ours."""
+    return [posixpath.join(home, "temp"), posixpath.join(home, ".cache")] if home else []
+
+
+def _under(p, d):
+    """Is p strictly below d? Both absolute and free of `.` and `..`."""
+    return p.startswith(d.rstrip("/") + "/")
+
+
+def _stays_under(p, root, home):
+    """Does p, every symlink that exists resolved, still lie under root?
+
+    p is the path as written, not its normpath: the kernel follows a link
+    before the `..` after it, so `~/temp/link/../x` is wherever link leads,
+    one up. realpath resolves in that same order, and keeps a missing tail as
+    written, so a path that does not exist yet is judged by the part of it
+    that does. A root that resolves to / or to a directory holding the home
+    is no scratch directory, and nothing clears under it.
+    """
+    # Unlike the git rule, which --no-disk turns off, this keeps the lexical
+    # rule the /tmp root has: the corpus replays an anonymised fixture where
+    # nothing exists, and there that is the comparison worth making.
+    if NO_DISK:
+        return True
+    try:
+        real_root = os.path.realpath(root)
+        real_home = os.path.realpath(home)
+        if not real_root.strip("/") or real_home == real_root or _under(real_home, real_root):
+            return False
+        return _under(os.path.realpath(p), real_root)
+    except (OSError, ValueError):
+        return False
 
 
 # --- brace expansion ---------------------------------------------------------
@@ -1098,10 +1135,271 @@ def expand_braces(word, limit=MAX_BRACE_PRODUCTS):
     return out
 
 
-def classify_path(p, cwd, home=None):
+def _git_marker(d):
+    """Is d/.git a real repository marker: a directory holding HEAD, or a file
+    whose first line is a `gitdir:` pointer (a linked worktree or submodule)?
+
+    A .git that is a symlink, to a directory or to a file, is not one. The
+    file is opened non-blocking and checked once open, as a sourced file is:
+    a FIFO swapped in after the stat would hang the hook.
+    """
+    g = os.path.join(d, ".git")
+    try:
+        if os.path.islink(g):
+            return False
+        if os.path.isdir(g):
+            return os.path.isfile(os.path.join(g, "HEAD"))
+        if os.path.isfile(g):
+            fd = os.open(g, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as fh:
+                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    return False
+                return fh.read(8) == b"gitdir: "
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def _tree_of(p, home):
+    """-> the work tree p sits strictly inside, read off p's own spelling.
+
+    Walks up from p's parent to the first directory with a .git entry, and
+    stops before home, so a home that is itself a repository clears nothing.
+    None when p holds a .git of its own (it is a tree's top, nested or not),
+    when it lies in the .git of the tree found, or when that .git is no
+    repository marker. The walk does not go past a .git that is no marker,
+    so a stray or empty .git inside a real tree makes all below it ask.
+    """
+    if not _under(p, home) or os.path.lexists(os.path.join(p, ".git")):
+        return None
+    d = posixpath.dirname(p)
+    while _under(d, home):
+        if os.path.lexists(os.path.join(d, ".git")):
+            first = p[len(d) + 1:].split("/", 1)[0]
+            if not _git_marker(d) or first.lower() == ".git":
+                return None
+            return d
+        d = posixpath.dirname(d)
+    return None
+
+
+def _hidden_top(tree, home):
+    """Is tree under a hidden top-level directory of home -- ~/.dotfiles,
+    ~/.password-store, ~/.local, ~/.config? tree is strictly under home."""
+    return tree[len(home.rstrip("/")) + 1:].startswith(".")
+
+
+def inside_work_tree(p, home):
+    """-> the git work tree p sits strictly inside, or None.
+
+    p is the path as written. Both its spelling and its realpath -- every
+    symlink that exists resolved, in the kernel's order -- must sit strictly
+    inside a tree below the home, and the real one inside the written one's
+    real directory. So a link out of the tree, a link into a .git or onto a
+    tree's top, and a `..` after a link do not ride the parent's verdict.
+
+    No tree under a hidden top-level directory of the home counts, by either
+    reading: the user's decision. Those hold dotfiles, a password store, and
+    tools' own clones, where "it is in git" says least about what a delete
+    loses. ~/.cache keeps its home-root rule. Local only, and off under
+    --no-disk, since it reads the disk.
+    """
+    if NO_DISK or not home:
+        return None
+    try:
+        tree = _tree_of(posixpath.normpath(p), home)
+        if not tree or _hidden_top(tree, home):
+            return None
+        real_home = os.path.realpath(home)
+        real = _tree_of(os.path.realpath(p), real_home)
+        real_tree = os.path.realpath(tree)
+        if not real or not (real == real_tree or _under(real, real_tree)):
+            return None
+        if _hidden_top(real, real_home):
+            return None
+        return tree
+    except (OSError, ValueError):
+        return None
+
+
+# A delete inside a work tree may still hold another one: a registered linked
+# worktree, a submodule, or a clone nobody registered. How far below the
+# delete the guard looks for the last kind, breadth first: levels below it,
+# and entries listed in all.
+NESTED_WALK_DEPTH = 3
+NESTED_WALK_ENTRIES = 1000
+# The most of a .gitmodules or a git pointer file read; a larger one asks.
+MAX_GIT_FILE_BYTES = 64 * 1024
+
+
+def _read_git_file(path):
+    """-> the text of a small regular file, or None when there is none.
+
+    Raises OSError for anything else -- a FIFO, a directory, a file over
+    MAX_GIT_FILE_BYTES -- which the caller turns into an ask. Opened
+    non-blocking and checked once open, as _git_marker does.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise OSError(f"{path} is not a regular file")
+        data = fh.read(MAX_GIT_FILE_BYTES + 1)
+    if len(data) > MAX_GIT_FILE_BYTES:
+        raise OSError(f"{path} is too large to read")
+    return data.decode("utf-8", errors="replace")
+
+
+def _first_line(text):
+    """git's reading of a pointer file: the trailing newline trimmed."""
+    return text.split("\n", 1)[0].rstrip("\r")
+
+
+def _common_dir(tree):
+    """-> the git directory that registers tree's linked worktrees.
+
+    tree's .git is a marker (see _git_marker). A directory is its own common
+    dir. A `gitdir:` file, relative to tree when not absolute, names either
+    a linked worktree's admin directory, whose `commondir` file (relative to
+    that directory) leads to the main repository's .git, or a submodule's
+    repository under modules/, which has no commondir and is its own.
+    Raises OSError when a pointer leads nowhere.
+    """
+    g = os.path.join(tree, ".git")
+    if os.path.isdir(g) and not os.path.islink(g):
+        return g
+    text = _read_git_file(g)
+    if text is None or not text.startswith("gitdir: "):
+        raise OSError(f"{g} is no gitdir pointer")
+    gitdir = posixpath.join(tree, _first_line(text)[len("gitdir: "):])
+    if not os.path.isdir(gitdir):
+        raise OSError(f"{g} points at no git directory")
+    common = _read_git_file(os.path.join(gitdir, "commondir"))
+    if common is None:
+        return gitdir
+    common = posixpath.join(gitdir, _first_line(common))
+    if not os.path.isdir(common):
+        raise OSError(f"{gitdir}/commondir points at no git directory")
+    return common
+
+
+def _registered_trees(common):
+    """-> the top of every work tree common knows besides its submodules: each
+    linked worktree, from worktrees/<id>/gitdir, which holds the path of that
+    worktree's .git file (relative to worktrees/<id>/ when not absolute),
+    and the main worktree when common is a .git directory."""
+    tops = []
+    if posixpath.basename(posixpath.normpath(common)) == ".git":
+        tops.append(posixpath.dirname(posixpath.normpath(common)))
+    wdir = os.path.join(common, "worktrees")
+    try:
+        ids = os.listdir(wdir)
+    except (FileNotFoundError, NotADirectoryError):
+        return tops
+    if len(ids) > NESTED_WALK_ENTRIES:
+        raise OSError(f"{wdir} registers too many worktrees to read")
+    for i in ids:
+        admin = os.path.join(wdir, i)
+        text = _read_git_file(os.path.join(admin, "gitdir"))
+        if text is None:
+            continue                  # git prunes it; it names no tree
+        dotgit = posixpath.normpath(posixpath.join(admin, _first_line(text).rstrip()))
+        tops.append(posixpath.dirname(dotgit))
+    return tops
+
+
+GITMODULES_PATH_RE = re.compile(r"^[ \t]*path[ \t]*=[ \t]*(.*?)[ \t]*$", re.M | re.I)
+
+
+def _submodule_tops(tree):
+    """-> the path of every submodule tree's .gitmodules names, under tree.
+
+    A quoted value ends at its closing quote; an unquoted one at a comment.
+    A misread costs only this check: the walk below is the backstop.
+    """
+    text = _read_git_file(os.path.join(tree, ".gitmodules"))
+    out = []
+    for m in GITMODULES_PATH_RE.finditer(text or ""):
+        v = m.group(1)
+        if v.startswith('"'):
+            v = v[1:].split('"', 1)[0]
+        else:
+            v = re.split(r"[ \t]*[#;]", v, maxsplit=1)[0]
+        if v:
+            out.append(posixpath.normpath(posixpath.join(tree, v)))
+    return out
+
+
+def _git_entry_below(top):
+    """-> the first .git entry below top, or None.
+
+    Breadth first and never through a symlink, NESTED_WALK_DEPTH levels down
+    and at most NESTED_WALK_ENTRIES entries listed. Reaching that bound ends
+    the walk with None, so a large build directory (target/, node_modules/)
+    keeps its allow. The residual is accepted: a clone nobody registered,
+    deeper than the bound, or past the first thousand entries, is not seen.
+    """
+    level, seen = [top], 0
+    for _ in range(NESTED_WALK_DEPTH):
+        below = []
+        for d in level:
+            try:
+                it = os.scandir(d)
+            except (FileNotFoundError, NotADirectoryError):
+                continue              # nothing there, or a file: nothing below
+            with it:
+                for e in it:
+                    seen += 1
+                    if e.name.lower() == ".git":
+                        return e.path
+                    if seen >= NESTED_WALK_ENTRIES:
+                        return None
+                    if e.is_dir(follow_symlinks=False):
+                        below.append(e.path)
+        level = below
+    return None
+
+
+def nested_work_tree(p, home):
+    """-> why deleting p would take another work tree with it, or None.
+
+    The user's decision: a delete that contains a nested work tree asks. p
+    is strictly inside a tree (see inside_work_tree), and is judged by its
+    realpath, as rm descends it. It asks when it is, or holds, a worktree
+    the enclosing tree's repository registers or a submodule its
+    .gitmodules names -- exact, at any depth -- or when a shallow walk
+    below it meets a .git entry. A disk error asks.
+    """
+    norm = posixpath.normpath(p)
+    if NO_DISK:
+        return "the guard reads no disk under --no-disk"
+    try:
+        real = os.path.realpath(p)
+        tree = _tree_of(real, os.path.realpath(home))
+        if not tree:
+            return f"{norm} is in no work tree the guard can read"
+        for top in _registered_trees(_common_dir(tree)) + _submodule_tops(tree):
+            rt = os.path.realpath(top)
+            if real == rt or _under(rt, real) or norm == top or _under(top, norm):
+                return (f"{top} is a work tree the repository at {tree} knows, "
+                        f"and deleting {norm} takes it")
+        found = _git_entry_below(real)
+        if found:
+            return f"{found} marks a work tree below {norm}, which this takes"
+    except (OSError, ValueError) as e:
+        return f"the guard could not read what lies below {norm} ({e})"
+    return None
+
+
+def classify_path(p, cwd, home=None, through_glob=False):
     """Classify a fully-literal path. -> (decision, reason)
 
     home is the local $HOME, or None for a far end; see analyse.
+    through_glob is True for a glob's literal prefix when a `/` follows the
+    wildcard: the shell may then walk through a link no one can see yet, so
+    neither home root nor work tree may clear it.
     """
     if not posixpath.isabs(p):
         # A literal relative path cannot become "/" at any cwd. Bounded blast
@@ -1148,12 +1446,25 @@ def classify_path(p, cwd, home=None):
     if h and norm == h:
         return "deny", "operand is the home directory"
     parts = [x for x in norm.split("/") if x]
+    homes = home_roots(home)
     for root in safe_roots(cwd, home):
         rp = [x for x in posixpath.normpath(root).split("/") if x]
         if parts[:len(rp)] == rp and len(parts) >= len(rp) + 1:
-            if len(parts) - len(rp) < 1:
-                return "ask", f"too shallow under {root}"
+            if root in homes and through_glob:
+                return "ask", (f"a wildcard mid-path under {root} may pass "
+                               "through a symlink out of it")
+            if root in homes and not _stays_under(p, root, home):
+                return "ask", f"{norm} leaves {root} through a symlink"
             return "allow", f"literal path under safe root {root}"
+    tree = inside_work_tree(p, home)
+    if tree and through_glob:
+        return "ask", (f"a wildcard mid-path inside the git work tree {tree} "
+                       "may pass through a symlink out of it")
+    held = tree and nested_work_tree(p, home)
+    if held:
+        return "ask", held
+    if tree:
+        return "allow", f"inside the git work tree {tree}"
     return "ask", f"absolute path outside safe roots: {norm}"
 
 
@@ -1539,7 +1850,7 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
         prefix = prefix.rsplit("/", 1)[0]
         if prefix in ("", "/"):
             return "deny", "glob directly under the filesystem root"
-        return classify_path(prefix, cwd, home)
+        return classify_path(prefix, cwd, home, through_glob="/" in op[idx:])
 
     return classify_path(op, cwd, home)
 
@@ -3084,9 +3395,16 @@ def candidate_cwds(toks, cwd, resolve=None):
 # --- per-command target extraction -------------------------------------------
 
 def find_targets(argv):
-    """find: -> (destructive, roots). Roots are the paths find descends from."""
-    i = 1
+    """find: -> (destructive, roots, follows). Roots are the paths find
+    descends from. follows names the flag that makes find follow symlinks
+    below them -- a leading -L, or -follow anywhere in the expression -- or
+    is None. Any -L counts, even one a later -H or -P overrides, which costs
+    an ask. -H follows only a root that is itself a link, which the root's
+    own judgement already covers wherever it reads the disk."""
+    i, follows = 1, None
     while i < len(argv) and argv[i] in FIND_LEADING_OPTS:
+        if argv[i] == "-L":
+            follows = "find -L"
         i += 1
     roots = []
     while i < len(argv) and not argv[i].startswith("-") and argv[i] not in ("(", "!", ")"):
@@ -3097,15 +3415,19 @@ def find_targets(argv):
     for j, t in enumerate(rest):
         if t == "-delete":
             destructive = True
+        elif t == "-follow":
+            follows = follows or "find -follow"
         elif t in FIND_EXEC_ACTIONS and j + 1 < len(rest):
             if command_name(rest[j + 1]) in DESTRUCTIVE_EXEC:
                 destructive = True
-    return destructive, roots
+    return destructive, roots, follows
 
 
 def fd_targets(argv):
-    """fd: -> (destructive, roots). fd's --exec is find's -exec."""
-    positional, named, destructive = [], [], False
+    """fd: -> (destructive, roots, follows). fd's --exec is find's -exec.
+    follows names --follow, or its -L alone or in a bundle of short flags,
+    when one makes fd follow symlinks below its roots; else None."""
+    positional, named, destructive, follows = [], [], False, None
     i = 1
     while i < len(argv):
         t = argv[i]
@@ -3114,6 +3436,10 @@ def fd_targets(argv):
                 destructive = True
             break  # everything after this is the exec'd command, not a path
         head = t.split("=", 1)[0]
+        if t == "--follow":
+            follows = "fd --follow"
+        elif t.startswith("-") and not t.startswith("--") and "L" in t[1:]:
+            follows = "fd -L"
         if t.startswith("-"):
             if head in FD_ROOT_OPTS:
                 if "=" in t:
@@ -3134,7 +3460,7 @@ def fd_targets(argv):
     # fd [pattern] [path...] -- the first positional is the pattern. A
     # --search-path is a root in its own right and does not displace the pattern.
     roots = named + positional[1:]
-    return destructive, roots
+    return destructive, roots, follows
 
 
 def rsync_targets(argv):
@@ -3698,8 +4024,14 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
     if not argv:
         return out
 
-    def rate(targets, label, missing, bare_var_ok=False):
-        """Judge each target, tagging every Finding with the same why-this-one label."""
+    def rate(targets, label, missing, bare_var_ok=False, follows=None):
+        """Judge each target, tagging every Finding with the same why-this-one label.
+
+        follows names a flag that makes the command follow symlinks below
+        its targets (find -L, fd --follow). Every root's proof is about the
+        root alone, under /tmp and the cwd as under the home roots, so such a
+        target asks where it would have cleared. A deny stays a deny.
+        """
         if not targets:
             out.append(Finding("ask", segment, label, None, missing))
             return
@@ -3711,6 +4043,9 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                                     opaque_names=opaque_names,
                                     line_literals=line_literals, reread=reread,
                                     glued=glued, home=home)
+            if follows and d == "allow":
+                d, r = "ask", (f"{follows} follows symlinks below {t}, so what it "
+                               f"deletes is not bounded by it ({r})")
             out.append(Finding(d, segment, label, t, r))
 
     def input_runs(flags, what):
@@ -3724,21 +4059,23 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                                "roots say nothing about"))
 
     if base == "find":
-        destructive, roots = find_targets(argv)
+        destructive, roots, follows = find_targets(argv)
         if destructive:
             rate(roots,
                  "find deletes everything under its search roots",
-                 "no search root given, so find descends from the current directory")
+                 "no search root given, so find descends from the current directory",
+                 follows=follows)
         input_runs(FIND_EXEC_ACTIONS, "find")
     elif base in ("fd", "fdfind"):
-        destructive, roots = fd_targets(argv)
+        destructive, roots, follows = fd_targets(argv)
         if destructive:
             # fd with no path argument searches the current directory, exactly
             # as `find . ` does -- so treat it as the literal `.` rather than as
             # a missing operand.
             rate(roots or ["."],
                  "fd -x/-X runs a destructive command on everything under its search roots",
-                 "no search root given, so fd descends from the current directory")
+                 "no search root given, so fd descends from the current directory",
+                 follows=follows)
         input_runs(FD_EXEC_FLAGS, base)
     elif base == "rsync":
         destructive, targets, ok, label = rsync_targets(argv)

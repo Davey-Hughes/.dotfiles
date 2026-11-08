@@ -341,6 +341,21 @@ CASES = [
      "fd -e log /tmp/build -x rm", "ask"),
     ("fd's positional path still works", "fd log /tmp/build -x rm", "allow"),
 
+    # --- a walk that follows symlinks below its roots ------------------------
+    # find -L, find -follow and fd -L delete through a link under the root, so
+    # the root's proof says nothing about what they reach: under /tmp and the
+    # cwd too. A root that denies on its own still denies.
+    ("find -L under /tmp", "find -L /tmp/build -delete", "ask"),
+    ("find -follow under /tmp", "find /tmp/build -follow -delete", "ask"),
+    ("...with -exec rm", "find /tmp/build -follow -exec rm -rf {} +", "ask"),
+    ("find -L under the cwd", "find -L ./build -delete", "ask"),
+    ("find -L at the root still denies", "find -L / -delete", "deny"),
+    ("fd -L under /tmp", "fd -L log /tmp/build -x rm -rf", "ask"),
+    ("fd -L in a bundle", "fd -HL log /tmp/build -x rm -rf", "ask"),
+    ("fd --follow under /tmp", "fd --follow log /tmp/build -X rm -rf", "ask"),
+    ("find without a follow flag still clears", "find /tmp/build -delete", "allow"),
+    ("...and fd too", "fd -H log /tmp/build -x rm -rf", "allow"),
+
     # --- the other two commands that were passing in silence -----------------
     ("rsync --remove-source-files drains the SOURCE",
      "rsync -a --remove-source-files /home/u/ /backup/", "ask"),
@@ -1470,9 +1485,9 @@ CASES = [
     ("...without an fd", 'cd >/dev/null / && rm -rf usr', "deny"),
     ("...after it, to /", 'cd / 2>/dev/null && rm -rf usr', "deny"),
     ("...before it, to a bounded place", 'cd 2>/dev/null /tmp/s && rm -rf build', "allow"),
-    # $HOME resolves now, and ~/.cache is under no safe root until Task 8 adds
-    # the home rules -- which are expected to turn this back into an allow.
-    ('"${HOME:?}"/x asks until the home rules', 'rm -rf "${HOME:?}/.cache/x"', "ask"),
+    # $HOME resolves, and ~/.cache is a home root: the path it names clears,
+    # not the guarded form. check_home_roots pins the same against a fake home.
+    ('"${HOME:?}"/x clears under a home root', 'rm -rf "${HOME:?}/.cache/x"', "allow"),
     # A loop word with whitespace is two paths to an unquoted $C, and one to
     # "$C"; shlex has dropped the quotes, so neither use clears. Its fields
     # condemn, as do the list's other words.
@@ -1774,6 +1789,188 @@ def check_sourced():
 SOURCED_CHECKS = 39
 
 
+def check_home_roots():
+    """Fix 6: ~/temp, ~/.cache and git work trees, against a real fake $HOME.
+
+    The home lives under /dev/shm, because a home under /tmp would already be
+    inside a safe root and every case here would pass for the wrong reason.
+    """
+    base = "/dev/shm"
+    if not (os.path.isdir(base) and os.access(base, os.W_OK)):
+        return [("home roots", "", "a writable /dev/shm", "none",
+                 "cannot build a fake $HOME outside every safe root")]
+    h = tempfile.mkdtemp(prefix="rmguard-home-", dir=base)
+    try:
+        def mk(*p):
+            os.makedirs(os.path.join(h, *p), exist_ok=True)
+
+        def put(text, *p):
+            with open(os.path.join(h, *p), "w") as fh:
+                fh.write(text)
+
+        def link(to, *p):
+            os.symlink(to, os.path.join(h, *p))
+        mk("temp", "rec")
+        mk(".cache", "x-target")
+        link("/etc", "temp", "link")
+        mk("proj", "repo", ".git")
+        put("ref: refs/heads/main\n", "proj", "repo", ".git", "HEAD")
+        mk("proj", "repo", "build")
+        link("/etc", "proj", "repo", "data")
+        # A link that stays in the tree but lands in its .git.
+        link(os.path.join(h, "proj", "repo", ".git"), "proj", "repo", "build", "gl")
+        repo = os.path.join(h, "proj", "repo")
+
+        def worktree(*p):
+            """A linked worktree of repo at repo/<p>, registered as git does."""
+            wt, name = os.path.join(repo, *p), p[-1]
+            os.makedirs(wt, exist_ok=True)
+            admin = os.path.join(repo, ".git", "worktrees", name)
+            os.makedirs(admin, exist_ok=True)
+            put(f"gitdir: {admin}\n", wt, ".git")
+            put(f"{wt}/.git\n", admin, "gitdir")
+            put("../..\n", admin, "commondir")
+        worktree(".claude", "worktrees", "wt")
+        # Deeper than the walk looks: only the registration names these. The
+        # second is reached from inside wt, through its .git and commondir.
+        worktree("deep", "a", "b", "c", "wt2")
+        worktree(".claude", "worktrees", "wt", "nest", "a", "b", "c", "wt3")
+        mk("proj", "repo", "sub", ".git")
+        put("ref: refs/heads/main\n", "proj", "repo", "sub", ".git", "HEAD")
+        # A submodule only .gitmodules names, and a clone nobody registered.
+        put('[submodule "sm"]\n\tpath = mods/a/b/c/sm\n\turl = ../sm\n',
+            "proj", "repo", ".gitmodules")
+        mk("proj", "repo", "mods", "a", "b", "c", "sm")
+        put("gitdir: ../../../../../.git/modules/sm\n",
+            "proj", "repo", "mods", "a", "b", "c", "sm", ".git")
+        mk("proj", "repo", "vendor", "x", "clone", ".git")
+        # A build dir past the walk's bound, hiding a clone: the residual.
+        mk("proj", "repo", "target", "zz", "clone", ".git")
+        for n in range(1100):
+            put("", "proj", "repo", "target", f"f{n}")
+        # Trees under hidden top-level directories, and a way in from outside.
+        for top in (".dotfiles", ".password-store"):
+            mk(top, ".git")
+            put("ref: x\n", top, ".git", "HEAD")
+            mk(top, "x")
+        link(os.path.join(h, ".dotfiles"), "proj", "dl")
+        # A .git that is a symlink to a gitdir file.
+        put("gitdir: /x\n", "proj", "gitfile")
+        mk("proj", "symfile", "x")
+        link(os.path.join(h, "proj", "gitfile"), "proj", "symfile", ".git")
+        mk("proj", "bad", ".git")          # a .git with no HEAD
+        # Another home, whose ~/temp is the home itself.
+        mk("alt")
+        link(os.path.join(h, "alt"), "alt", "temp")
+        # TMPDIR is a safe root too, and must not be what clears a case here.
+        env = dict(os.environ, HOME=h)
+        env.pop("TMPDIR", None)
+        cases = [
+            ("~/temp below the root", f"rm -rf {h}/temp/rec", "allow"),
+            ("~/temp itself", f"rm -rf {h}/temp", "ask"),
+            ("~/temp with a tilde", "rm -rf ~/temp/rec", "allow"),
+            ("~/.cache through $HOME", 'rm -rf "$HOME/.cache/x-target"', "allow"),
+            ("~/temp through ${HOME:?}", 'rm -rf "${HOME:?}/temp/rec"', "allow"),
+            ("loop words from $HOME clear", 'for d in "$HOME/.cache/a" ~/temp/b; '
+             'do rm -rf "${d:?}"; done', "allow"),
+            ("~/temp/* is the root, as /tmp/* is", "rm -rf ~/temp/*", "ask"),
+            ("a sibling of ~/temp is not under it", "rm -rf ~/tempx/rec", "ask"),
+            ("a symlink out of ~/temp", f"rm -rf {h}/temp/link/x", "ask"),
+            # The kernel resolves the link before the `..`: this is /x.
+            ("a .. after a symlink out of ~/temp", f"rm -rf {h}/temp/link/../x", "ask"),
+            ("a .. out of ~/temp", f"rm -rf {h}/temp/rec/../../.ssh", "ask"),
+            ("a .. back to the home", f"rm -rf {h}/temp/..", "deny"),
+            ("~/.config is not a root", f"rm -rf {h}/.config/x", "ask"),
+            # A wildcard mid-path may pass through a link no one can see yet.
+            ("a glob mid-path in ~/temp", f"rm -rf {h}/temp/rec/*/x", "ask"),
+            ("inside a work tree", f"rm -rf {h}/proj/repo/build", "allow"),
+            ("inside a work tree through $HOME", 'rm -rf "$HOME/proj/repo/build"', "allow"),
+            ("a glob inside a work tree", f"rm -rf {h}/proj/repo/build/*", "allow"),
+            ("a glob mid-path in a work tree", f"rm -rf {h}/proj/repo/build/*/x", "ask"),
+            ("the work tree itself", f"rm -rf {h}/proj/repo", "ask"),
+            ("the work tree with a tilde", "rm -rf ~/proj/repo", "ask"),
+            ("the work tree through a ..", f"rm -rf {h}/proj/repo/build/..", "ask"),
+            ("a glob at the work tree's top", f"rm -rf {h}/proj/repo/*", "ask"),
+            ("the repository", f"rm -rf {h}/proj/repo/.git", "ask"),
+            ("inside the repository", f"rm -rf {h}/proj/repo/.git/objects", "ask"),
+            ("a symlink out of a work tree", f"rm -rf {h}/proj/repo/data/x", "ask"),
+            ("a .. after a symlink out of a work tree",
+             f"rm -rf {h}/proj/repo/data/../x", "ask"),
+            ("a symlink into the repository", f"rm -rf {h}/proj/repo/build/gl/objects",
+             "ask"),
+            ("a .. out of a work tree", f"rm -rf {h}/proj/repo/../loose", "ask"),
+            ("a nested repository's top", f"rm -rf {h}/proj/repo/sub", "ask"),
+            ("a nested repository's .git", f"rm -rf {h}/proj/repo/sub/.git", "ask"),
+            ("inside a nested repository", f"rm -rf {h}/proj/repo/sub/src", "allow"),
+            ("a nested worktree's top", f"rm -rf {h}/proj/repo/.claude/worktrees/wt", "ask"),
+            ("inside a nested worktree",
+             f"rm -rf {h}/proj/repo/.claude/worktrees/wt/build", "allow"),
+            ("a .git without HEAD", f"rm -rf {h}/proj/bad/x", "ask"),
+            ("a .git that is a symlink to a file", f"rm -rf {h}/proj/symfile/x", "ask"),
+            ("in no work tree", f"rm -rf {h}/proj/loose", "ask"),
+            ("the home itself", 'rm -rf "$HOME"', "deny"),
+            ("over ssh no local root applies", "ssh box 'rm -rf ~/temp/rec'", "ask"),
+            ("over ssh, spelled out", f"ssh box 'rm -rf {h}/temp/rec'", "ask"),
+            ("over ssh no work tree applies", f"ssh box 'rm -rf {h}/proj/repo/build'", "ask"),
+            # A delete that holds another work tree asks: the user's decision.
+            ("a parent of registered worktrees",
+             f"rm -rf {h}/proj/repo/.claude/worktrees", "ask"),
+            ("a registered worktree deeper than the walk", f"rm -rf {h}/proj/repo/deep", "ask"),
+            ("...found from inside a linked worktree",
+             f"rm -rf {h}/proj/repo/.claude/worktrees/wt/nest", "ask"),
+            ("a parent of a submodule", f"rm -rf {h}/proj/repo/mods", "ask"),
+            ("an unregistered clone two levels down", f"rm -rf {h}/proj/repo/vendor", "ask"),
+            ("...and a glob over it", f"rm -rf {h}/proj/repo/vendor/*", "ask"),
+            ("a clone past the walk's bound is the residual",
+             f"rm -rf {h}/proj/repo/target", "allow"),
+            # No tree under a hidden top-level directory of $HOME clears.
+            ("a tree in ~/.dotfiles", f"rm -rf {h}/.dotfiles/x", "ask"),
+            ("a tree in ~/.password-store", "rm -rf ~/.password-store/x", "ask"),
+            ("a link into a hidden tree", f"rm -rf {h}/proj/dl/x", "ask"),
+            ("a tree under a visible directory", "rm -rf ~/proj/repo/x", "allow"),
+            # A walk that follows links proves nothing about what it reaches.
+            ("find without -L", f"find {h}/temp/rec -delete", "allow"),
+            ("find -L under ~/temp", f"find -L {h}/temp/rec -delete", "ask"),
+            ("find -L in a work tree", f"find -L {h}/proj/repo/build -delete", "ask"),
+            ("find -follow", f"find {h}/proj/repo/build -follow -delete", "ask"),
+            ("fd -L", f"fd -L x {h}/temp/rec -x rm -rf", "ask"),
+            ("fd --follow", f"fd --follow x {h}/proj/repo/build -X rm -rf", "ask"),
+        ]
+        fails = []
+        for name, cmd, want in cases:
+            got, reason = run([sys.executable, GUARD], cmd, env=env)
+            if got != want:
+                fails.append((name, cmd, want, got, reason))
+        cmd = f"rm -rf {h}/proj/repo/build"
+        got, reason = run([sys.executable, GUARD, "--no-disk"], cmd, env=env)
+        if got != "ask":
+            fails.append(("--no-disk turns the git rule off", cmd, "ask", got, reason))
+        # The home roots read no disk to clear, so the corpus replay keeps them.
+        cmd = f"rm -rf {h}/temp/rec"
+        got, reason = run([sys.executable, GUARD, "--no-disk"], cmd, env=env)
+        if got != "allow":
+            fails.append(("--no-disk keeps the home roots", cmd, "allow", got, reason))
+        # A ~/temp that is the home is no scratch directory.
+        cmd = f"rm -rf {h}/alt/temp/.ssh"
+        got, reason = run([sys.executable, GUARD], cmd,
+                          env=dict(env, HOME=os.path.join(h, "alt")))
+        if got != "ask":
+            fails.append(("a ~/temp that is the home", cmd, "ask", got, reason))
+        # $HOME as a repository: the walk stops before $HOME, so nothing clears.
+        mk(".git")
+        put("ref: x\n", ".git", "HEAD")
+        cmd = f"rm -rf {h}/docs"
+        got, reason = run([sys.executable, GUARD], cmd, env=env)
+        if got != "ask":
+            fails.append(("$HOME as a repository", cmd, "ask", got, reason))
+        return fails
+    finally:
+        shutil.rmtree(h)
+
+
+HOME_ROOT_CHECKS = 61
+
+
 def check_bindings():
     """proven_bindings() in isolation. Nothing here is executed -- see module doc."""
     fails = []
@@ -2004,6 +2201,7 @@ def main():
     fails += check_render()
     fails += check_bindings()
     fails += check_sourced()
+    fails += check_home_roots()
 
     for name, cmd, expected, got, reason in fails:
         first = reason.replace("\x1b", "\\e").splitlines()[0][:160] if reason else ""
@@ -2016,7 +2214,7 @@ def main():
         print()
 
     total = (len(CASES) + WRAPPER_CHECKS + RENDER_CHECKS + len(BINDING_CASES)
-             + SOURCED_CHECKS)
+             + SOURCED_CHECKS + HOME_ROOT_CHECKS)
     print(f"{total - len(fails)}/{total} passed")
     return 1 if fails else 0
 
