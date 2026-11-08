@@ -1167,6 +1167,32 @@ CASES = [
     ("wrapper: nice -n 5, bounded target", "nice -n 5 rm -rf ./build", "allow"),
     ("wrapper: env -i, a wipe", "env -i rm -rf /", "deny"),
     ("wrapper: env -i bash -c is read", 'env -i bash -c "rm -rf /"', "deny"),
+    # A redirection does not end env's options -- the shell removes it first --
+    # but an assignment does: past one, a `-u` is the command env runs.
+    ("wrapper: a redirection between env and its option",
+     "X='rm -rf /'; rm -rf ./b; env >/dev/null -i $X", "ask"),
+    # env A=1 -i runs a command named -i, which fails: $X never runs.
+    ("wrapper: an option after env's assignment is its command",
+     "X='rm -rf /'; rm -rf ./b; env A=1 -i $X", "allow"),
+    # sudo takes VAR=value among its options, so -i is still one there.
+    ("wrapper: sudo's options stay open past an assignment",
+     "X='rm -rf /'; rm -rf ./b; sudo A=1 -i $X", "ask"),
+    ("wrapper: ...and so does a directory option", "sudo A=1 -D / rm -rf ./usr", "ask"),
+    ("wrapper: sudo -h takes a host the table cannot place",
+     "X='rm -rf /'; rm -rf ./b; sudo -h h $X", "ask"),
+    ("wrapper: env -a takes a value", "env -a foo rm -rf ./build", "allow"),
+    ("wrapper: nice's --5 form", "nice --5 rm -rf ./build", "allow"),
+    # A substitution in a message runs, and env -S runs its string.
+    ("wrapper: env -S inside a message substitution",
+     "X='rm -rf /'; rm -rf ./b; git commit -m \"$(env -S \"$X\")\"", "pass"),
+    # --- printf -v is an option, so only before the format --------------------
+    ("printf: -v in prose after the format",
+     "printf '%s\\n' '- see -v $N'; rm -rf ./build", "allow"),
+    ("printf: -v after the format is printed", 'printf "%s" -v "$N" x; rm -rf ./build', "allow"),
+    ("printf: -v before the format still counts",
+     'W=/tmp/b; N=W; printf -v "$N" /; rm -rf "$W"/*', "ask"),
+    ("print: -v behind zsh's -C COLS", 'W=/tmp/b; N=W; print -C 1 -v "$N" /; rm -rf "$W"/*',
+     "ask"),
     # --- a nameref writes the name it refers to -----------------------------
     ("nameref: a target written through its reference",
      'declare -n R=W; R=/; rm -rf "${W:?}"/x', "ask"),

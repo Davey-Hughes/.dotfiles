@@ -459,19 +459,21 @@ WRAPPERS = {"sudo", "command", "env", "nohup", "time", "nice",
 # one -- as `--opt=v` or as the next word -- and long options that take none).
 # Stopping on the option instead hid the command: `env -i $X` read `-i` as the
 # command and never saw that `$X` was one. An option missing here stops
-# command_word on it and the line asks. env's -S and --split-string are left
-# out on purpose: the string they take IS the command and its arguments.
+# command_word on it, and a line with a delete on it asks. env's -S and
+# --split-string are left out on purpose: the string they take IS the command
+# and its arguments. So are sudo's -h and --host, which take the next word
+# only when it is neither an option nor an assignment.
 WRAPPER_OPTS = {
-    "sudo": ("ABbEeHhiKklNnPSsVv", "aCcDgpRrTtUu",
+    "sudo": ("ABbEeHiKklNnPSsVv", "aCcDgpRrTtUu",
              {"--auth-type", "--chdir", "--chroot", "--close-from",
               "--command-timeout", "--group", "--login-class", "--other-user",
               "--prompt", "--role", "--type", "--user"},
              {"--askpass", "--background", "--bell", "--edit", "--help",
-              "--host", "--list", "--login", "--non-interactive",
+              "--list", "--login", "--non-interactive",
               "--preserve-env", "--preserve-groups", "--remove-timestamp",
               "--reset-timestamp", "--set-home", "--shell", "--stdin",
               "--validate", "--version"}),
-    "env": ("iv0", "Cu", {"--chdir", "--unset"},
+    "env": ("iv0", "aCu", {"--argv0", "--chdir", "--unset"},
             {"--block-signal", "--debug", "--default-signal", "--help",
              "--ignore-environment", "--ignore-signal", "--list-signal-handling",
              "--null", "--version"}),
@@ -482,7 +484,6 @@ WRAPPER_OPTS = {
              {"--append", "--help", "--portability", "--quiet", "--verbose",
               "--version"}),
     "command": ("pvV", "", set(), set()),
-    "exec": ("cl", "a", set(), set()),
 }
 # The wrapper options above that run the command in another directory, so a
 # relative operand no longer resolves against the shell's cwd: `env -C /
@@ -1678,17 +1679,31 @@ def command_word_detail(argv):
     it cannot read, so the index is that option's and the real command is
     somewhere after it, unknown.
     """
-    j, moved, known, wrapped = 0, False, True, False
+    # The wrapper whose options are still open. A redirection does not close
+    # them: `env >x -i CMD` hands env `-i CMD`. An assignment closes env's --
+    # `env A=1 -u B` runs a command named -u, which fails -- but not sudo's,
+    # which takes VAR=value among its options: `sudo A=1 -u root CMD`.
+    j, moved, known, open_opts = 0, False, True, None
     while j < len(argv):
         t = argv[j]
+        if open_opts and t.startswith("-"):
+            nj, m, known, still = _past_wrapper_opts(argv, j, open_opts)
+            advanced, j, moved = nj != j, nj, moved or m
+            if not known:
+                break
+            if advanced:
+                open_opts = still and open_opts
+                continue
+            open_opts = None    # a lone `-`: not an option, so the command
         if ENV_ASSIGN_RE.match(t) or t in KEYWORDS:
+            if not (open_opts == "sudo" and ENV_ASSIGN_RE.match(t)):
+                open_opts = None
             j += 1
             continue
         name = command_name(t)
         if name in WRAPPERS:
-            wrapped = True
-            j, m, known = _past_wrapper_opts(argv, j + 1, name)
-            moved = moved or m
+            j, m, known, still = _past_wrapper_opts(argv, j + 1, name)
+            moved, open_opts = moved or m, still and name
             if not known:
                 break
             continue
@@ -1702,19 +1717,16 @@ def command_word_detail(argv):
         break
     if j >= len(argv):
         return j, "", moved, known
-    # An option where the command should be, behind a wrapper -- `env >x -i
-    # CMD` puts a redirection between them -- is the same unknown.
-    if wrapped and argv[j].startswith("-"):
-        known = False
     return j, command_name(argv[j]), moved, known
 
 
 def _past_wrapper_opts(argv, j, name):
-    """-> (index past wrapper `name`'s options from argv[j], moved, known).
+    """-> (index past wrapper `name`'s options from argv[j], moved, known,
+    still_open).
 
     A bundle takes a value from the rest of its word or else the next word:
-    `-u root`, `-uroot`, `-iu FOO`. `--` ends the options. See
-    command_word_detail for moved and known.
+    `-u root`, `-uroot`, `-iu FOO`. `--` ends the options, and still_open is
+    then False. See command_word_detail for moved and known.
     """
     flags, values, long_values, long_flags = WRAPPER_OPTS.get(
         name, ("", "", set(), set()))
@@ -1723,12 +1735,15 @@ def _past_wrapper_opts(argv, j, name):
     while j < len(argv):
         t = argv[j]
         if t == "--":
-            return j + 1, moved, True
+            return j + 1, moved, True, False
         if t == "-" and name == "env":     # env's old spelling of -i
             j += 1
             continue
         if not t.startswith("-") or t == "-":
-            return j, moved, True
+            return j, moved, True, True
+        if name == "nice" and t[1:].lstrip("+-").isdigit():  # `nice -5`, `--5`
+            j += 1
+            continue
         if t.startswith("--"):
             opt = t.split("=", 1)[0]
             if opt in long_values:
@@ -1737,10 +1752,7 @@ def _past_wrapper_opts(argv, j, name):
             elif opt in long_flags:
                 j += 1
             else:
-                return j, moved, False
-            continue
-        if name == "nice" and t[1:].isdigit():     # `nice -5`, the old form
-            j += 1
+                return j, moved, False, True
             continue
         for k in range(1, len(t)):
             c = t[k]
@@ -1749,10 +1761,10 @@ def _past_wrapper_opts(argv, j, name):
                 j += 1 if k + 1 < len(t) else 2
                 break
             if c not in flags:
-                return j, moved, False
+                return j, moved, False, True
         else:
             j += 1
-    return min(j, len(argv)), moved, True
+    return min(j, len(argv)), moved, True, True
 
 
 def git_segments(toks):
@@ -2339,14 +2351,10 @@ def unread_sets(toks):
             seen.add(st + j)
             args = argv[j + 1:]
             if base in ("printf", "print"):
-                for k, a in enumerate(args):
-                    if not (a.startswith("-") and "v" in a[1:]):
-                        continue
-                    name = a[a.index("v", 1) + 1:] or (args[k + 1] if k + 1 < len(args) else "")
-                    m = NAME_PREFIX_RE.match(name)
-                    if m:
-                        out.append((s, m.group(0), True))
-                    break
+                name = print_v_word(args)
+                m = NAME_PREFIX_RE.match(name) if name is not None else None
+                if m:
+                    out.append((s, m.group(0), True))
             elif base in ("mapfile", "readarray"):
                 names, k = [], 0
                 while k < len(args):
@@ -2459,13 +2467,37 @@ def computed_target(argv, j):
             k += 1
         return None
     if base in ("printf", "print"):
-        for k, a in enumerate(args):
-            if a.startswith("-") and "v" in a[1:]:
-                name = a[a.index("v", 1) + 1:] or (args[k + 1] if k + 1 < len(args) else "")
-                return name if computed(name) else None
-        return None
+        name = print_v_word(args)
+        return name if name is not None and computed(name) else None
     if base == "getopts" and len(args) >= 2 and computed(args[1]):
         return args[1]
+    return None
+
+
+# zsh print's option letters that take a value (bash's printf has only -v).
+PRINT_VALUE_CHARS = set("CfuvxX")
+OPTION_WORD_RE = re.compile(r"^-[A-Za-z]")
+
+
+def print_v_word(args):
+    """-> the word printf's or print's -v assigns through, or None.
+
+    Options come first and end at the first word that is not one: the
+    format, or prose. Reading every word for a `-v` took `printf '%s\\n'
+    '- a -v b'` for one. `-vNAME` carries the word, `-v NAME` the next one.
+    """
+    k = 0
+    while k < len(args) and OPTION_WORD_RE.match(args[k]):
+        a = args[k]
+        for m in range(1, len(a)):
+            if a[m] in PRINT_VALUE_CHARS:
+                value = a[m + 1:] or (args[k + 1] if k + 1 < len(args) else "")
+                if a[m] == "v":
+                    return value
+                k += 1 if a[m + 1:] else 2
+                break
+        else:
+            k += 1
     return None
 
 
@@ -2490,7 +2522,9 @@ def candidate_cwds(toks, cwd):
         idx, base, moved, _ = command_word_detail(argv)
         if moved:
             # `env -C / rm -rf ./usr` moves only the command it runs, and to
-            # a place this does not follow.
+            # a place this does not follow. The candidates are the line's, so
+            # every relative operand on it asks: a false ask on `env -C / ls;
+            # rm -rf ./b`, which is rare.
             out.append(UNKNOWN_CWD)
         if base not in ("cd", "pushd", "popd"):
             continue
@@ -3250,8 +3284,9 @@ def _message_runs_destructive(body):
     except ValueError:
         return True
     for s, e in segment_bounds(toks):
-        j, base = command_word(toks[s:e])
-        if s + j < e and ("$" in toks[s + j] or base in OPAQUE or base in SHELLS):
+        j, base, _, known = command_word_detail(toks[s:e])
+        if s + j < e and (not known or "$" in toks[s + j]
+                          or base in OPAQUE or base in SHELLS):
             return True
     return (not CAT_HEREDOC_RE.match(strip_data(body))
             and any(danger_hint(b) for b in heredoc_bodies(body).values()))
@@ -3476,7 +3511,9 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
 
     # The free passes read a name off a token shlex has unquoted, which is
     # not the name the shell expands once a quote glues a word on.
-    glued = bool(QUOTE_GLUE_RE.search(cmd))
+    # A heredoc body is not this line's code -- one fed to a shell is read
+    # on its own -- so its text does not count.
+    glued = bool(QUOTE_GLUE_RE.search(strip_heredocs(cmd)))
     # Where the map stops being provable. Computed once over the whole token
     # stream rather than per segment, because the answer is a property of the
     # LINE -- the first construct that could rebind a name without writing it --
