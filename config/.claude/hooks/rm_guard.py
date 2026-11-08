@@ -969,7 +969,7 @@ def strip_heredocs(text):
         if m.span() in masked else m.group(0), text)
 
 
-def safe_roots(cwd):
+def safe_roots(cwd, home=None):
     roots = ["/tmp", "/var/tmp"]
     for var in ("TMPDIR",):
         v = os.environ.get(var)
@@ -1098,8 +1098,11 @@ def expand_braces(word, limit=MAX_BRACE_PRODUCTS):
     return out
 
 
-def classify_path(p, cwd):
-    """Classify a fully-literal path. -> (decision, reason)"""
+def classify_path(p, cwd, home=None):
+    """Classify a fully-literal path. -> (decision, reason)
+
+    home is the local $HOME, or None for a far end; see analyse.
+    """
     if not posixpath.isabs(p):
         # A literal relative path cannot become "/" at any cwd. Bounded blast
         # radius, so it does not need cd-tracking to clear.
@@ -1120,11 +1123,11 @@ def classify_path(p, cwd):
         # resolve and check those cases.
         if cwd and posixpath.isabs(cwd):
             resolved = posixpath.normpath(posixpath.join(cwd, p))
-            home = os.environ.get("HOME", "")
+            env_home = os.environ.get("HOME", "")
             depth = len([x for x in resolved.split("/") if x])
             if resolved == "/" or depth <= 1:
                 return "deny", f"relative path resolves to {resolved}"
-            if home and resolved == posixpath.normpath(home):
+            if env_home and resolved == posixpath.normpath(env_home):
                 return "deny", "relative path resolves to the home directory"
             if whole_cwd:
                 return "ask", ("operand is the working directory itself "
@@ -1139,8 +1142,13 @@ def classify_path(p, cwd):
     norm = posixpath.normpath(p)
     if norm == "/":
         return "deny", "operand is the filesystem root"
+    # This machine's $HOME, wherever the operand came from: `$HOME` and `~`
+    # now resolve to it, and the bare-variable deny no longer sees them.
+    h = _home()
+    if h and norm == h:
+        return "deny", "operand is the home directory"
     parts = [x for x in norm.split("/") if x]
-    for root in safe_roots(cwd):
+    for root in safe_roots(cwd, home):
         rp = [x for x in posixpath.normpath(root).split("/") if x]
         if parts[:len(rp)] == rp and len(parts) >= len(rp) + 1:
             if len(parts) - len(rp) < 1:
@@ -1160,7 +1168,7 @@ def worst_of(results):
 
 def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                      may_clear=False, loops_may_clear=True, opaque_names=frozenset(),
-                     line_literals=None, reread=False, glued=False):
+                     line_literals=None, reread=False, glued=False, home=None):
     """-> (decision, reason), over every path this operand can actually become.
 
     Two things multiply a single written operand into several real ones, and
@@ -1179,8 +1187,8 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     candidate cwd can change.
 
     loops_may_clear is False inside a string another shell re-reads; see
-    analyse's `trusted`. opaque_names, line_literals, reread and glued are
-    carried through to classify_one.
+    analyse's `trusted`. opaque_names, line_literals, reread, glued and home
+    are carried through to classify_one.
     """
     cwds = [cwd] if isinstance(cwd, str) else list(cwd) or [""]
     products = expand_braces(op)
@@ -1192,7 +1200,7 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
             d, r = classify_one(p, c, bare_var_ok, assigned, loops, may_clear,
                                 loops_may_clear, opaque_names=opaque_names,
                                 line_literals=line_literals, reread=reread,
-                                glued=glued)
+                                glued=glued, home=home)
             if p != op:
                 r = f"brace expansion produces {p}; {r}"
             results.append((d, r))
@@ -1201,7 +1209,7 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
 
 def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                  may_clear=False, loops_may_clear=True, opaque_names=frozenset(),
-                 line_literals=None, reread=False, glued=False):
+                 line_literals=None, reread=False, glued=False, home=None):
     """-> (decision, reason). Anything not provably safe returns ask/deny.
 
     bare_var_ok encodes an rm-specific fact: `rm -rf $X` with X unset or empty
@@ -1214,7 +1222,7 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     "empty only errors" for a bare one and "non-empty" for ${d:?} -- assume
     nothing on the line chose its value, and for these something did.
     line_literals ({name: values}) are the names it assigns only literals
-    that proven_bindings could not prove, as in `set -e; W=/; rm -rf "$W"`.
+    that proven_bindings could not prove, as in `echo; W=/; rm -rf "$W"`.
     Each value is judged, and may condemn; it never clears, because the
     assignment may not have run -- the free pass is then all that is left.
 
@@ -1238,6 +1246,9 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     character -- see QUOTE_GLUE_RE. The tokens have lost the quotes, so the
     name read here may not be the one the shell expands, and neither free
     pass holds either.
+
+    home is the local $HOME, or None on a far end; see analyse. A `~` there
+    reads as the HOME binding analyse adds, when it adds one.
     """
     if XARGS_INPUT in op:
         return "ask", ("xargs supplies this operand from its input, which is "
@@ -1287,7 +1298,8 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                     continue
                 d, r = classify_one(sub, cwd, bare_var_ok, assigned,
                                     may_clear=may_clear, opaque_names=opaque_names,
-                                    line_literals=rest, reread=reread, glued=glued)
+                                    line_literals=rest, reread=reread, glued=glued,
+                                    home=home)
                 out.append((d, f"{n}={val} on this line, so this may read as "
                                f"{sub}; {r}"))
             d, r = worst_of(out) if out else ("allow", "")
@@ -1295,7 +1307,17 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                 return d, r
         return None
 
+    # A local `~` is $HOME, and $HOME is a binding when analyse could add one,
+    # so it is rewritten into the form the block below resolves and gates.
+    # Unresolved, it goes back as written, for the tilde rules further down.
+    tilde = op
+    if (home and assigned and "HOME" in assigned
+            and (op == "~" or op.startswith("~/"))):
+        op = "${HOME}" + op[1:]
+
     if assigned:
+        zsh_read = []
+
         def bound(m):
             val = assigned.get(m.group(1) or m.group(2))
             # ${W:?} never expands an empty value -- it aborts, and the delete
@@ -1304,20 +1326,31 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
             # is what turns "$W"/* into /*.
             if val is None or (val == "" and ":?" in m.group(0)):
                 return m.group(0)
+            if _zsh_suffixed(m):
+                zsh_read.append(m.group(2))
             return val
         resolved = SUBST_NAME_RE.sub(bound, op)
         if resolved != op and not EXPANSION_RE.search(resolved):
-            d, r = classify_one(resolved, cwd, bare_var_ok)
+            d, r = classify_one(resolved, cwd, bare_var_ok, home=home)
             used = [n for n in dict.fromkeys(
                 m.group(1) or m.group(2) for m in SUBST_NAME_RE.finditer(op))
                 if n in assigned]
             # A glued operand names another variable than the one read here:
             # `Wusr=/tmp/x; W=/; rm -rf "$W"usr` is rm -rf /usr, not /tmp/x.
-            # It may still condemn.
-            if d == "deny" or (may_clear and not glued
-                               and all(assigned[n] for n in used)):
+            # A zsh-suffixed one is not W's value at all; see _zsh_suffixed.
+            # Both may still condemn.
+            #
+            # An ask condemns too, as a literal the line assigns does, once
+            # every value is non-empty: falling through would hand the line's
+            # own `W=/` to the ${W:?} free pass, whose premise is that nothing
+            # on the line chose W -- `W=/; printf x; rm -rf "${W:?}"/x`
+            # cleared as guarded, and is rm -rf /x.
+            nonempty = all(assigned[n] for n in used)
+            if d == "deny" or (d == "ask" and nonempty) or (
+                    may_clear and not glued and not zsh_read and nonempty):
                 shown = ", ".join("%s=%s" % (n, assigned[n]) for n in used)
                 return d, f"{shown} in this command, so this reads as {resolved}; {r}"
+    op = tilde
 
     # A loop BINDS the name, and unlike the assignment map -- which can be stale,
     # which is why clearing from it is gated -- a loop's word list is complete,
@@ -1356,13 +1389,20 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                 d, r = classify_one(sub, cwd, bare_var_ok, assigned,
                                     may_clear=may_clear, opaque_names=opaque_names,
                                     line_literals=line_literals, reread=reread,
-                                    glued=glued)
+                                    glued=glued, home=home)
                 out.append((d, f"the loop sets ${name} to {val}; {r}"))
             d, r = worst_of(out)
             # The same misread as the binding block above: the loop's name is
             # not the one a glued operand expands.
             if d == "allow" and glued:
                 return "ask", GLUED_REASON
+            # ...nor is it the loop's word that zsh expands after it.
+            if d == "allow" and any(
+                    _zsh_suffixed(m) and m.group(2) == name
+                    for m in SUBST_NAME_RE.finditer(op)):
+                return "ask", (f"{r} -- but zsh reads ${name} with what follows "
+                               "it, as a modifier (:h) or a subscript ([1]), "
+                               "so the loop's word is not what this expands to")
             # The body may assign the name too: `for d in /tmp/y; do d=/;
             # rm -rf "$d"/*; done` is rm -rf //*. Such a value may condemn,
             # and one the guard cannot read keeps the loop's words from
@@ -1377,6 +1417,10 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
             if d == "allow" and isinstance(values, OutsideLoop):
                 return "ask", (f"{r} -- but this runs outside the loop that "
                                f"sets ${name}, which may never have run here")
+            if d == "allow" and isinstance(values, SplitWords):
+                return "ask", (f"{r} -- but an unquoted ${name} may split the "
+                               "loop's words into other paths, on whitespace in "
+                               "a word or on an IFS the line writes")
             # Inside a string another shell re-reads, the outer shell may have
             # expanded $name before the inner one ever ran the loop, so the
             # words above prove nothing. They may still condemn.
@@ -1438,6 +1482,17 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
             worse = condemned_by_line(guarded)
             if worse:
                 return worse
+            # The free pass is "non-empty, so a path under it": no help for a
+            # name that holds a critical directory. `"${HOME:?}"` is the
+            # home directory exactly as bare $HOME is, and `"${PWD:?}"` the
+            # working one. Reached when no HOME binding resolved it first --
+            # the line writes HOME, or `git add .` drops the binding.
+            crit = next((n for n in guarded if n in DANGEROUS_VARS), None)
+            if crit and GUARDED_RE.match(op):
+                return "deny", f"${{{crit}:?}} expands to a critical directory"
+            if crit:
+                return "ask", (f"${{{crit}:?}} proves only that it is not empty, "
+                               f"and ${crit} holds a critical directory")
             held = [n for n in guarded if n in opaque_names or ANY_NAME in opaque_names]
             if held:
                 return "ask", (f"${held[0]} is assigned on this line to a value "
@@ -1456,7 +1511,7 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                            "count rather than as one path, so no value of it "
                            "is safe to assume")
         # A literal the line assigns may condemn here too, and an empty one
-        # most of all: `set -e; W=; rm -rf "$W"/*` runs as `rm -rf /*`. Only a
+        # most of all: `echo; W=; rm -rf "$W"/*` runs as `rm -rf /*`. Only a
         # deny is taken, so an ask keeps the advice below.
         worse = condemned_by_line(
             dict.fromkeys(m.group(1) for m in
@@ -1484,9 +1539,9 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
         prefix = prefix.rsplit("/", 1)[0]
         if prefix in ("", "/"):
             return "deny", "glob directly under the filesystem root"
-        return classify_path(prefix, cwd)
+        return classify_path(prefix, cwd, home)
 
-    return classify_path(op, cwd)
+    return classify_path(op, cwd, home)
 
 
 # --- spans the tokenizer must not read ---------------------------------------
@@ -2058,9 +2113,19 @@ BINDING_RE = re.compile(
     r"[ \t]*([A-Za-z_][A-Za-z0-9_]*)=(" + LITERAL_CHAR + r"*)"
     r"[ \t]*(;|&&|\Z)")
 # Statements that may stand before the leading run of bindings without breaking
-# it. Here, only the empty one: the ";" mask_opaque leaves where a comment
-# line or a blank line was, which every sourced env file starts with.
-PRELUDE_RE = re.compile(r"[ \t]*;")
+# it, because none can write a variable: the empty one mask_opaque leaves for a
+# comment or blank line; `set` with flag-only arguments (an `o` bundle takes
+# the option name after it, and zsh's `A` is left out: `set -AW` empties the
+# array W); and `cd` to a literal -- which writes only PWD and OLDPWD, both
+# DANGEROUS_VARS. Each must be followed by `;`. After `cd X && S=/x; rm -rf
+# $S/y`, a failed cd skips the assignment and the `;` still runs the rm with S
+# unset, as `rm -rf /y` -- and `set` fails too, on a letter or an option name
+# the shell does not know (`set -Q`, `set -o nosuch`).
+PRELUDE_RE = re.compile(
+    r"[ \t]*(?:"
+    r"set(?:[ \t]+(?:[-+][B-Za-z]*o[ \t]+[A-Za-z]+|[-+][B-Za-z]+))+[ \t]*;"
+    r"|cd[ \t]+[^\s'\"\\;&|()<>$`~*?\[{}" + SENTINEL + r"]+[ \t]*;"
+    r"|;)")
 # ...and the same charset over an assignment TOKEN's value, for the names a line
 # assigns outside the leading run. Those values may condemn and never clear.
 LITERAL_VALUE_RE = re.compile(r"^" + LITERAL_CHAR + r"*$")
@@ -2153,6 +2218,61 @@ def _home():
         return None
     h = posixpath.normpath(h)
     return None if not h.strip("/") else h
+
+
+def _zsh_suffixed(m):
+    """Is this SUBST_NAME_RE match an unbraced $NAME that zsh reads on into?
+
+    zsh takes what follows an unbraced name as part of the expansion: `$W:h`
+    is W's head and `$W[1,1]` its first character, so `W=/tmp/ab/c; rm -rf
+    $W:h:h:h/*` is rm -rf //* there and `$W[1,1]usr` is /usr. bash reads
+    both as W's value and literal text. Such a word resolves to no single
+    value: the bash reading may condemn, and nothing may clear.
+    """
+    return bool(m.group(2)) and m.string[m.end():m.end() + 1] in ("[", ":")
+
+
+def _resolve_word(w, assigned, home=None):
+    """A word built only from proven bindings and literal text -> that literal.
+
+    -> None when anything in it is not a proven, non-empty binding, or the
+    result is not a plain literal, or holds whitespace (an unquoted word
+    splits there, and shlex has removed the quotes that would tell). A `~`
+    is $HOME when home is given, so it resolves only through a HOME binding.
+    This says what the word reads as, not whether the bindings still hold
+    where it sits: callers gate on rebind_at.
+    """
+    if home and (w == "~" or w.startswith("~/")):
+        w = "${HOME}" + w[1:]
+    if _plain_literal(w) and not w.startswith("~"):
+        return w
+
+    def sub(m):
+        val = (assigned or {}).get(m.group(1) or m.group(2))
+        return val if val and not _zsh_suffixed(m) else m.group(0)
+    out = SUBST_NAME_RE.sub(sub, w)
+    if not _plain_literal(out) or out.startswith("~") or re.search(r"\s", out):
+        return None
+    return out
+
+
+def _literal_export(toks, i):
+    """`export NAME` / `export NAME=value`, every argument spelled out.
+
+    That writes only names written in the text, which _read_only_mentions
+    already polices. declare, typeset, local and readonly stay refused: each
+    takes -n, a nameref, which writes a name it never spells. A value with a
+    substitution or a `$[` is refused too, since `$((W=1))` is arithmetic
+    that assigns.
+    """
+    j = i + 1
+    while j < len(toks) and toks[j] not in SEPARATORS:
+        a = toks[j]
+        if not (BARE_NAME_RE.match(a)
+                or (ENV_ASSIGN_RE.match(a) and not has_subst(a) and "$[" not in a)):
+            return False
+        j += 1
+    return j > i + 1
 
 
 def proven_bindings(cmd):
@@ -2273,7 +2393,8 @@ LOOP_CLOSERS = set(LOOP_CLOSER_FOR.values())
 PUNCT_COMMANDS = {"[", "[[", ":"}
 # set's -o (and zsh's +o) consumes the option name after it, so
 # `set -euo pipefail` is all flags. Anything else that is not a -flag assigns:
-# zsh's `set -A name ...` fills an array.
+# zsh's `set -A name ...` fills an array, and so does `set -AW`, which takes
+# the rest of its bundle as the name.
 SET_OPT_ARG_RE = re.compile(r"^[-+][A-Za-z]*o$")
 SET_FLAG_RE = re.compile(r"^[-+][A-Za-z]+$")
 # The split _indirection_present applies to the raw text, applied here to each
@@ -2336,8 +2457,12 @@ def _rebinding_possible(toks, text=""):
         an assigning builtin      REBINDING_BUILTINS above -- every one is
                                   already fatal to a binding when it names the
                                   variable; this catches the computed name.
-        `set` with a non-flag     zsh's `set -A name ...`. set -u, set -e and
-        argument                  set -o pipefail are all flags and still clear.
+        `set` with a non-flag     zsh's `set -A name ...`, or `-AW` bundled.
+        argument                  set -u, set -e and set -o pipefail are all
+                                  flags and still clear.
+
+    One write is stopped here although it names its target: IFS. It rebinds
+    no binding, but changes what every later unquoted one reads as.
 
     The builtins are matched in COMMAND POSITION only, via command_word so a
     wrapper or a `do` does not hide one. A builtin rebinds nothing when it is
@@ -2409,6 +2534,13 @@ def _rebinding_possible(toks, text=""):
         elif (t in LOOP_CLOSERS and loop_starts and i in in_cmd_pos
               and t == loop_starts[-1][1]):
             loop_starts.pop()
+        # IFS decides where every later unquoted expansion splits, so a line
+        # that writes it -- by any spelling, an assignment token included --
+        # changes what each binding reads as from there on: after `IFS=/`,
+        # bash splits $W/x with W=/tmp/usr into tmp, usr and x.
+        if not _read_only_mentions("IFS", t):
+            at, reason = i, "a write to IFS changes how a later unquoted expansion splits"
+            break
         if ENV_ASSIGN_RE.match(t):
             continue
         if t in ("function", "()") or (
@@ -2420,19 +2552,26 @@ def _rebinding_possible(toks, text=""):
         if t == "set":
             j = i + 1
             while j < len(toks) and toks[j] not in SEPARATORS:
-                if toks[j] in REDIRECTS or SET_OPT_ARG_RE.match(toks[j]):
+                w = toks[j]
+                if w in REDIRECTS:
                     j += 2
                     continue
-                if not SET_FLAG_RE.match(toks[j]):
+                # zsh's A, alone or in a bundle, names an array to fill:
+                # `set -AW` empties W.
+                if not SET_FLAG_RE.match(w) or "A" in w:
                     at, reason = i, "`set` with a non-flag argument can assign"
                     break
-                j += 1
+                j += 2 if SET_OPT_ARG_RE.match(w) else 1
             if at is not None:
                 break
             continue
         words = [os.path.basename(w) for w in TOKEN_WORDS_RE.split(t) if w]
         hit = next((w for w in words
                     if w in REBINDING_BUILTINS or w == "set"), None)
+        # A literal export writes only the names it spells, which
+        # _read_only_mentions has already judged; see _literal_export.
+        if hit == "export" and t == "export" and _literal_export(toks, i):
+            continue
         if hit is not None:
             at, reason = i, f"`{hit}` can assign to a name it computes"
             break
@@ -2473,6 +2612,17 @@ class OutsideLoop(list):
     behind `false &&`, in an `if` not taken, in a subshell or a pipeline -- and
     then its name holds whatever it held before: `f() { for d in /tmp/y; do :;
     done; }; rm -rf "$d"/*` is rm -rf /*. So the words may condemn, never clear.
+    """
+
+
+class SplitWords(list):
+    """A loop's words where an unquoted use may split them into others.
+
+    A word holding whitespace -- `for C in "/tmp/x /usr"` -- is one path to
+    `rm -rf "$C"` and two to `rm -rf $C` in bash (and zsh under SH_WORD_SPLIT),
+    and shlex has removed the quotes that would tell the uses apart. A line
+    that writes IFS splits any word. So the words, and each word's whitespace
+    fields, may condemn; none clears.
     """
 
 
@@ -2536,7 +2686,7 @@ def loops_at(loops, scopes, pos):
             for n, ws in loops.items()}
 
 
-def loop_bindings(toks):
+def loop_bindings(toks, resolve=None):
     """-> {name: [literal words] or None} for every name a loop binds.
 
     None means "bound to something not in this command" -- `while read f`, or a
@@ -2546,14 +2696,28 @@ def loop_bindings(toks):
 
     A name bound twice collapses to the union of both lists, so a second loop
     cannot quietly replace a first one's values with gentler ones.
+
+    resolve(word, index) -> literal or None lets a word built from proven
+    bindings count as visible, when the caller can vouch for them at index.
+    A word it cannot resolve is read as it always was: a plain literal stands
+    as written -- `~` included, which classify_one still condemns -- and
+    anything else refuses the list.
     """
     out = {}
+
+    def readable(w, at):
+        got = resolve(w, at) if resolve is not None else None
+        if got is not None:
+            return got
+        return w if _plain_literal(w) else None
 
     def bind(name, words):
         if name in out and (out[name] is None or words is None):
             out[name] = None
         elif name in out:
-            out[name] = out[name] + [w for w in words if w not in out[name]]
+            merged = out[name] + [w for w in words if w not in out[name]]
+            split = isinstance(out[name], SplitWords) or isinstance(words, SplitWords)
+            out[name] = SplitWords(merged) if split else merged
         else:
             out[name] = words
 
@@ -2565,8 +2729,14 @@ def loop_bindings(toks):
                 while j < len(toks) and toks[j] not in SEPARATORS and toks[j] != "do":
                     words.append(toks[j])
                     j += 1
-                bind(name, words if words and all(_plain_literal(w) for w in words)
-                     else None)
+                words = [readable(w, i) for w in words]
+                if not words or any(w is None for w in words):
+                    bind(name, None)
+                elif any(re.search(r"\s", w) for w in words):
+                    fields = [f for w in words for f in w.split() if f not in words]
+                    bind(name, SplitWords(words + list(dict.fromkeys(fields))))
+                else:
+                    bind(name, words)
             else:
                 bind(name, None)       # `for f; do` iterates "$@"
         elif os.path.basename(t) == "read":
@@ -2818,7 +2988,7 @@ def print_v_word(args):
     return None
 
 
-def candidate_cwds(toks, cwd):
+def candidate_cwds(toks, cwd, resolve=None):
     """-> every directory a relative operand in this command can resolve against.
 
     `cd`, `pushd` and `popd` are the only things in a pipeline that move the
@@ -2832,6 +3002,13 @@ def candidate_cwds(toks, cwd):
     `x && cd /tmp && rm -rf ./y` runs the rm where it started if the cd never
     happens. classify_operand judges all of them and takes the worst, which
     covers the conditional case without having to decide whether it fires.
+
+    resolve(word, index) is loop_bindings': a target built from bindings that
+    hold at the cd -- `S=/tmp/s; cd $S` -- places the shell. Only an absolute
+    result does, since a relative one is looked up on CDPATH. `~` and a bare
+    `cd` go to $HOME, which places the shell only through a HOME binding; a
+    `~` target keeps its literal reading too, as a directory named `~` -- what
+    `cd "~"` means, and shlex has removed the quotes.
     """
     out = [cwd]
     for start, end in segment_bounds(toks):
@@ -2849,8 +3026,9 @@ def candidate_cwds(toks, cwd):
             continue
         # Options first. One the guard does not know -- `pushd -n`, a typo --
         # may change what the next word means, so the shell is unplaceable.
-        # `-` and a stack index (`-2`) are targets, not options.
-        args, k, unknown = argv[idx + 1:], 0, False
+        # `-` and a stack index (`-2`) are targets, not options. Redirections
+        # are the shell's, wherever they stand: `cd 2>/dev/null /` goes to /.
+        args, k, unknown = strip_redirections(argv[idx + 1:]), 0, False
         while (k < len(args) and args[k].startswith("-") and args[k] != "-"
                and not DIR_STACK_INDEX_RE.match(args[k])):
             if args[k] == "--":
@@ -2870,14 +3048,34 @@ def candidate_cwds(toks, cwd):
         if base == "popd" or (base == "pushd" and not args) or (
                 args and DIR_STACK_INDEX_RE.match(args[0])):
             out.append(UNKNOWN_CWD)
-        elif not args:
-            out.append(os.environ.get("HOME", "") or UNKNOWN_CWD)
-        elif args[0] == "-" or not _plain_literal(args[0]):
+            continue
+        # Two targets are zsh's `cd OLD NEW`, which swaps OLD for NEW in
+        # $PWD: `cd /home/u/project /` lands in /. bash refuses the form.
+        # The first one's reading stays a candidate too, as it always was.
+        if len(args) > 1:
             out.append(UNKNOWN_CWD)
-        elif posixpath.isabs(args[0]):
-            out.append(posixpath.normpath(args[0]))
+        target = args[0] if args else "~"
+        got = resolve(target, start) if resolve is not None else None
+        through = got is not None and got != target
+        if through:
+            out.append(posixpath.normpath(got) if posixpath.isabs(got)
+                       else UNKNOWN_CWD)
+        elif resolve is not None and target.startswith("~"):
+            # A $HOME the line does not prove: it writes HOME, or a rebinding
+            # may have run before the cd.
+            out.append(UNKNOWN_CWD)
+        if through and not target.startswith("~"):
+            continue
+        # As written: how every target read before resolve, and still the
+        # only reading of one it leaves alone.
+        if not args:
+            out.append(os.environ.get("HOME", "") or UNKNOWN_CWD)
+        elif target == "-" or not _plain_literal(target):
+            out.append(UNKNOWN_CWD)
+        elif posixpath.isabs(target):
+            out.append(posixpath.normpath(target))
         elif cwd and posixpath.isabs(cwd):
-            out.append(posixpath.normpath(posixpath.join(cwd, args[0])))
+            out.append(posixpath.normpath(posixpath.join(cwd, target)))
         else:
             out.append(UNKNOWN_CWD)
     return list(dict.fromkeys(out))
@@ -3239,7 +3437,8 @@ def shell_stdin_script(toks, bounds, k, bodies):
     return None
 
 
-def reread_findings(script, cwd, depth, trusted, how, outer_danger=False):
+def reread_findings(script, cwd, depth, trusted, how, outer_danger=False,
+                    local=True):
     """Findings for text another reader runs, each labelled with how it got there.
 
     outer_danger is the reading line's own danger, carried in so the script
@@ -3247,14 +3446,16 @@ def reread_findings(script, cwd, depth, trusted, how, outer_danger=False):
     `rm -rf` bails as an `eval` on the line itself would. Past MAX_DEPTH a
     line with danger asks, and one with none has nothing left to hide.
     The script is read with reread set, so no variable in it gets a free
-    pass; see classify_one.
+    pass; see classify_one. local is analyse's: False for a reader on
+    another machine, or one whose $HOME this line does not prove.
     """
     if depth + 1 > MAX_DEPTH:
         return ([bare("ask", f"{how} nested too deeply to analyse")]
                 if outer_danger else [])
     return [f._replace(label=f"{how}; {f.label}" if f.label else how)
             for f in analyse(script, cwd, depth + 1, trusted=trusted,
-                             outer_danger=outer_danger, reread=True)]
+                             outer_danger=outer_danger, reread=True,
+                             local=local)]
 
 
 # A value an env file assigns: plain word characters and path punctuation,
@@ -3444,7 +3645,7 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                     may_clear=False, git_relocated=False, trusted=True,
                     opaque_names=frozenset(), line_literals=None,
                     reread=False, outer_danger=False, glued=False,
-                    read_xargs=True):
+                    read_xargs=True, home=None):
     """-> [Finding] for the non-rm commands in one segment.
 
     may_clear is decided per SEGMENT by analyse, because that is the unit a
@@ -3452,7 +3653,7 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
     git_relocated is decided per LINE, for the reason GIT_RELOCATE_RE gives.
     trusted is analyse's: False inside a string another shell re-reads, and
     passed on to every target this judges. opaque_names, line_literals,
-    reread and glued are analyse's too; see classify_one. outer_danger is the line's
+    reread, glued and home are analyse's too; see classify_one. outer_danger is the line's
     danger, which an ssh remote string is read with, as reread_findings
     reads a script. read_xargs False reads an xargs segment's words as
     written, never through the xargs: one level, so nesting stays linear.
@@ -3475,7 +3676,8 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
             same = (cwd, depth, assigned, loops, may_clear, git_relocated,
                     trusted)
             kw = dict(opaque_names=opaque_names, line_literals=line_literals,
-                      reread=reread, outer_danger=outer_danger, glued=glued)
+                      reread=reread, outer_danger=outer_danger, glued=glued,
+                      home=home)
             return (analyse_segment(argv, *same, read_xargs=False, **kw)
                     + analyse_segment(with_xargs_input(argv[p[0]:], p[1]),
                                       *same, **kw))
@@ -3508,7 +3710,7 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                                     loops_may_clear=trusted,
                                     opaque_names=opaque_names,
                                     line_literals=line_literals, reread=reread,
-                                    glued=glued)
+                                    glued=glued, home=home)
             out.append(Finding(d, segment, label, t, r))
 
     def input_runs(flags, what):
@@ -3596,7 +3798,8 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
             # text is: with the line's danger, and no variable free pass.
             hop = "over ssh -- no local safe root clears a path on the far end"
             for f in analyse(remote, "", depth + 1, trusted=False,
-                             outer_danger=outer_danger, reread=True):
+                             outer_danger=outer_danger, reread=True,
+                             local=False):
                 out.append(f._replace(
                     label=f"{hop}; {f.label}" if f.label else hop))
         elif remote:
@@ -3736,7 +3939,8 @@ def _inert_line(toks, bounds, text):
     return True
 
 
-def analyse(cmd, cwd, depth=0, trusted=True, outer_danger=False, reread=False):
+def analyse(cmd, cwd, depth=0, trusted=True, outer_danger=False, reread=False,
+            local=True):
     """-> [Finding]. Empty means the guard has no opinion.
 
     trusted is False for a string another shell re-reads -- an ssh remote
@@ -3751,6 +3955,11 @@ def analyse(cmd, cwd, depth=0, trusted=True, outer_danger=False, reread=False):
     reread is True for any text another reader runs, a quoted heredoc fed to
     a shell included, and switches off the variable free passes; see
     classify_one. Off by default: a line analysed as itself keeps them.
+
+    local is False on a far end (ssh, a shell inside another command), where
+    $HOME and ~ are not this machine's and no home-relative rule applies --
+    and for any text another reader runs when the reading line does not
+    itself prove $HOME, since that reader inherits the line's.
     """
     # The allow is withdrawn, as RISKY_NEIGHBOURS does in main(): an allow
     # would also approve a destructive heredoc body that something on the line
@@ -3758,7 +3967,7 @@ def analyse(cmd, cwd, depth=0, trusted=True, outer_danger=False, reread=False):
     # ask or a deny. Decided here, once, over what every depth recorded.
     if depth == 0:
         _WITHDRAWN[0] = False
-    findings = _analyse(cmd, cwd, depth, trusted, outer_danger, reread)
+    findings = _analyse(cmd, cwd, depth, trusted, outer_danger, reread, local)
     if (depth == 0 and _WITHDRAWN[0] and findings
             and all(f.decision == "allow" for f in findings)):
         return []
@@ -3834,7 +4043,8 @@ def _message_runs_destructive(body):
             and any(danger_hint(b) for b in heredoc_bodies(body).values()))
 
 
-def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
+def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
+             local=True):
     # A command named only by an expansion and handed a recursive flag hides
     # whatever it runs, and names nothing guarded for the scans below to find.
     # The token check sees this line's own segments; EXPANSION_FLAG_RE sees one
@@ -4025,7 +4235,7 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
                                 for f in analyse(inlined, cwd, depth + 1,
                                                  trusted=trusted,
                                                  outer_danger=outer_danger,
-                                                 reread=reread)]
+                                                 reread=reread, local=local)]
                 name = f"xargs {base}" if runs else base
                 unreadable.extend(bail(
                     "ask", i, f"{mark(name)} hides its arguments -- what it "
@@ -4091,10 +4301,18 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     # Consulted to escalate from anywhere, and to clear only before rebind_at;
     # see classify_one.
     assigned = proven_bindings(cmd)
+    # The hook's own $HOME is a fact about this machine, so it enters the map
+    # as a binding would -- condemning from anywhere, clearing only behind
+    # may_clear -- unless the line could change it: by writing the name, or
+    # by reaching something that rebinds without one.
+    home = _home() if local else None
+    if home and _read_only_mentions("HOME", cmd) and not _indirection_present(cmd):
+        assigned = dict(assigned, HOME=home)
     # ...and every name the line assigns that the map could not prove. One
     # with any value the guard cannot read -- a substitution, a positional, an
-    # expansion -- is opaque. One assigned only literals, after a `set -e` or a
-    # `cd` that ends the leading run, has each literal judged; see classify_one.
+    # expansion -- is opaque. One assigned only literals, after an `echo` or a
+    # `cd X &&` that ends the leading run, has each literal judged; see
+    # classify_one.
     line_values = {}
     for k, t in enumerate(toks):
         if ENV_ASSIGN_RE.match(t):
@@ -4143,9 +4361,19 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     # These two do clear as well as condemn, and both earn it the same way: a
     # loop's word list and a literal `cd` target are complete and visible right
     # here, where an assignment map's binding may already have been overwritten.
-    loops = loop_bindings(toks)
+    # A word built from bindings earns it only where they still hold: before
+    # rebind_at, and on a line where no quote glues a name to the next word.
+    def resolve(w, at):
+        """A loop word or cd target, through bindings that hold at token at."""
+        return _resolve_word(w, assigned if at < rebind_at and not glued else None,
+                             home)
+    loops = loop_bindings(toks, resolve)
+    # An IFS the line writes splits every word an unquoted $C holds, and
+    # rebind_at does not gate a loop's words; see SplitWords.
+    if not _read_only_mentions("IFS", cmd):
+        loops = {n: (ws if ws is None else SplitWords(ws)) for n, ws in loops.items()}
     scopes = loop_scopes(toks, mask_opaque(cmd)[0])
-    cwds = candidate_cwds(toks, cwd)
+    cwds = candidate_cwds(toks, cwd, resolve)
 
     in_git = git_segments(toks)
     findings = list(unreadable)
@@ -4211,7 +4439,7 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
                                     may_clear=may_clear, loops_may_clear=trusted,
                                     opaque_names=opaque_names,
                                     line_literals=lits, reread=reread,
-                                    glued=glued)
+                                    glued=glued, home=home)
             # No label: for rm every operand is a target, which the echoed
             # command already makes obvious.
             findings.append(Finding(d, segment, None, op, r))
@@ -4225,16 +4453,23 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
                             start < rebind_at, git_relocated, trusted,
                             opaque_names=opaque_names,
                             line_literals=literals_at(start), reread=reread,
-                            outer_danger=danger, glued=glued))
+                            outer_danger=danger, glued=glued, home=home))
 
     # Scripts collected above, and quoted heredocs a shell reads from stdin.
     # A -c script is untrusted: its double quotes may have let the OUTER shell
     # expand it first. A quoted heredoc body is literal -- nothing expanded it.
     here_cwd = cwds[0] if len(cwds) == 1 else UNKNOWN_CWD
+
+    def home_holds_at(pos):
+        """Does a reader started at token pos inherit the $HOME this line
+        proves? Text another reader runs sees the line's HOME, written or
+        not, so its own text alone cannot prove it."""
+        return "HOME" in assigned and pos < rebind_at
     for i, si, here in scripts:
         findings.extend(reread_findings(
             toks[si], here_cwd if here else UNKNOWN_CWD, depth, False,
-            f"{command_name(toks[i])} -c re-reads this", danger))
+            f"{command_name(toks[i])} -c re-reads this", danger,
+            local=here and home_holds_at(segment_start(i))))
     bodies = heredoc_bodies(cmd)
     read_bodies = set()
     if bodies:
@@ -4250,7 +4485,8 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
                 bodies[ph], here_cwd if here else UNKNOWN_CWD, depth, here,
                 "a shell reads this heredoc" if here else
                 "a shell behind another command reads this heredoc -- no "
-                "local cwd applies", danger))
+                "local cwd applies", danger,
+                local=here and home_holds_at(bounds[k][0])))
         # A known shell fed a heredoc that was not read above -- fish, a
         # script file's stdin, a `-c` beside it, the redirection written first
         # -- may still run the body. A destructive one asks rather than
@@ -4314,7 +4550,8 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
                 _WITHDRAWN[0] = True
             continue
         findings.extend(reread_findings(
-            body, here_cwd, depth, False, "a command substitution runs this", danger))
+            body, here_cwd, depth, False, "a command substitution runs this", danger,
+            local="HOME" in assigned))
 
     # A relocated clean the segments never saw: inside a substitution that is
     # not in command position (`echo $(git --work-tree=/ clean -fdx)`), whose

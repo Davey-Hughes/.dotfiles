@@ -1380,6 +1380,113 @@ CASES = [
     # `2>x` redirects and `2 >x` is the duration, and the tokens are the same.
     ("timeout: a word before a redirection may be the duration",
      "timeout 2>/dev/null 5 rm -rf ./build", "ask"),
+    # --- variables the line proves -------------------------------------------
+    ("$HOME with a suffix outside the safe roots", 'rm -rf "$HOME/.config/x"', "ask"),
+    ("$HOME itself still denies", 'rm -rf "$HOME"', "deny"),
+    ("a bare tilde still denies", "rm -rf ~", "deny"),
+    ("a line that writes HOME cannot use it", "HOME=/tmp/h; rm -rf ~/x", "ask"),
+    ("set -e before the bindings", 'set -e\nS=/tmp/s\nrm -rf "$S"/x', "allow"),
+    ("set -euo pipefail before the bindings",
+     "set -euo pipefail; S=/tmp/s; rm -rf $S/x", "allow"),
+    ("cd; before the bindings", "cd /tmp; S=/tmp/s; rm -rf $S/x", "allow"),
+    ("cd && before the bindings stays an ask", "cd /tmp && S=/tmp/s; rm -rf $S/x", "ask"),
+    ("loop words from a binding",
+     'R=/tmp/rec; for C in $R/a $R/b; do rm -rf -- "${C:?}"; done', "allow"),
+    ("loop words from $HOME",
+     'for d in "$HOME/.config/a"; do rm -rf "${d:?}"; done', "ask"),
+    ("loop words from a binding still condemn",
+     'R=/; for C in $R $R/etc; do rm -rf "${C:?}"; done', "deny"),
+    ("cd to a proven binding places the shell", "S=/tmp/s; cd $S && rm -rf build", "allow"),
+    ("cd to a proven binding at / condemns", 'S=/; cd "$S" && rm -rf ./usr', "deny"),
+    ("export of a literal name does not stop clearing",
+     'W=/tmp/b; export X=1; rm -rf "$W"/*', "allow"),
+    ("export of a computed name still does",
+     'W=/tmp/b; export "$(printf W)"=/; rm -rf "$W"/*', "ask"),
+    # ...and the edges of each.
+    # `set` fails on a flag it does not know, and `&&` then skips the binding.
+    ("set && before the bindings stays an ask", 'set -e && S=/tmp/s; rm -rf "$S"/*', "ask"),
+    # zsh's `set -AW` empties the array W, so "$W"/* is /*.
+    ("set -A bundled with its array name", 'W=/tmp/x; set -AW; rm -rf "$W"/*', "ask"),
+    ("...and in the prelude, where it stays an ask", 'set -AS; S=/tmp/s; rm -rf "$S"/*',
+     "ask"),
+    ("export -n is not a literal export", 'W=/tmp/b; export -n X; rm -rf "$W"/*', "ask"),
+    # bash splits an unquoted $W/x on IFS: with IFS=/ and W=/tmp/usr that is
+    # rm -rf "" tmp usr x, and after `cd /` it takes /tmp and /usr.
+    ("a write to IFS stops clearing", 'W=/tmp/usr; IFS=/; cd /; rm -rf $W/x', "ask"),
+    ("...written first", 'IFS=/; W=/tmp/usr; rm -rf $W/x', "ask"),
+    ("...an exported IFS too", 'W=/tmp/usr; export IFS=/; rm -rf $W/x', "ask"),
+    ("...and loop words after it", 'R=/tmp/usr; IFS=/; for C in $R/x; do rm -rf "$C"; done',
+     "ask"),
+    ("reading IFS keeps clearing", 'W=/tmp/b; echo "$IFS"; rm -rf "$W"/*', "allow"),
+    # A binding that cannot clear still condemns at ask: the ${W:?} free pass
+    # assumes nothing on the line chose W, and this line chose /.
+    ("a proven / is no guarded free pass", 'W=/; printf x; rm -rf "${W:?}"/x', "ask"),
+    ("...nor once IFS stops clearing", 'IFS=/; W=/; rm -rf "${W:?}"/x', "ask"),
+    # zsh reads on after an unbraced name: $R:h is R's head, $R[1,1] its first
+    # character. Either may condemn, as bash's reading; neither clears.
+    ("zsh: a modifier after a bound name", 'R=/tmp/ab/c; rm -rf $R:h:h:h/*', "ask"),
+    ("zsh: a subscript after a bound name", 'R=/tmp/ab/c; rm -rf $R[1,1]usr', "ask"),
+    ("zsh: a modifier after a loop name", 'for C in /tmp/ab/c; do rm -rf $C:h:h:h/*; done',
+     "ask"),
+    ("zsh: a modifier in a loop's words", 'R=/tmp/ab/c; for C in $R:h; do rm -rf "$C"; done',
+     "ask"),
+    ("zsh: a modifier in a cd target", 'R=/tmp/ab/c; cd $R:h:h:h && rm -rf ./usr', "ask"),
+    ("a braced name reads no further", 'R=/tmp/ab/c; rm -rf ${R}:h', "allow"),
+    ("the bash reading still condemns", 'W=/; rm -rf $W[a-z]*', "deny"),
+    # A `~` that does not resolve reads as it always did.
+    ("a tilde loop word still denies when HOME is written",
+     'HOME=/tmp/h; for d in ~; do rm -rf "$d"; done', "deny"),
+    ("cd ~ when the line writes HOME", 'HOME=/; cd ~; rm -rf usr', "ask"),
+    ("a bare cd when the line writes HOME", 'HOME=/; cd; rm -rf usr', "ask"),
+    # (`./`, not `.`: a bare `.` word reads as source, and drops the binding.)
+    ("cd ~, then ./ is the home directory", 'cd ~ && rm -rf ./', "deny"),
+    ('"${HOME:?}" is the home directory', 'rm -rf "${HOME:?}"', "deny"),
+    # ...even where no HOME binding resolves it: `.` drops every binding.
+    ('...unresolved, as bare $HOME is', 'git add . && rm -rf "${HOME:?}"', "deny"),
+    ('"${PWD:?}" is the working directory', 'rm -rf "${PWD:?}"', "deny"),
+    ("a guarded critical name with a suffix asks", 'git add . && rm -rf "${HOME:?}"/.config',
+     "ask"),
+    ('"$HOME/" is too', 'rm -rf "$HOME/"', "deny"),
+    ("a far end's ~ is not this one, and still condemns",
+     "ssh h 'for d in ~; do rm -rf \"$d\"; done'", "deny"),
+    ("a heredoc shell inherits the line's HOME",
+     "HOME=/ bash <<'EOF'\nrm -rf ~/usr\nEOF", "ask"),
+    # Resolution needs the name the shell expands, a single word, and a place.
+    ("a glued name cannot place the shell", 'Rusr=/tmp/b; R=/; cd "$R"usr && rm -rf bin',
+     "ask"),
+    ("a loop word with a space does not resolve",
+     'R=/tmp/x; for C in "$R /usr"; do rm -rf $C; done', "ask"),
+    ("a relative cd target from a binding stays unplaced", 'S=usr; cd $S && rm -rf bin',
+     "ask"),
+    # zsh's `cd OLD NEW` swaps OLD for NEW in $PWD, so this one lands in /.
+    ("zsh: cd with two targets", 'S=/home/u/project; cd $S / && rm -rf usr', "ask"),
+    ("...spelled out", 'cd /home/u/project / && rm -rf usr', "ask"),
+    ("...and the first target still condemns", 'cd / /tmp && rm -rf ./usr', "deny"),
+    ("a redirection after the target is not one", 'cd /tmp/s 2>/dev/null && rm -rf build',
+     "allow"),
+    # ...nor one before it: the shell sets it aside and goes to /.
+    ("a redirection before the cd target hides nothing", 'cd 2>/dev/null / && rm -rf usr',
+     "deny"),
+    ("...without an fd", 'cd >/dev/null / && rm -rf usr', "deny"),
+    ("...after it, to /", 'cd / 2>/dev/null && rm -rf usr', "deny"),
+    ("...before it, to a bounded place", 'cd 2>/dev/null /tmp/s && rm -rf build', "allow"),
+    # $HOME resolves now, and ~/.cache is under no safe root until Task 8 adds
+    # the home rules -- which are expected to turn this back into an allow.
+    ('"${HOME:?}"/x asks until the home rules', 'rm -rf "${HOME:?}/.cache/x"', "ask"),
+    # A loop word with whitespace is two paths to an unquoted $C, and one to
+    # "$C"; shlex has dropped the quotes, so neither use clears. Its fields
+    # condemn, as do the list's other words.
+    ("a loop word with a space splits unquoted", 'for C in "/tmp/x /usr"; do rm -rf $C; done',
+     "ask"),
+    ("...and its quoted use does not clear either",
+     'for C in "/tmp/x /tmp/y"; do rm -rf "$C"; done', "ask"),
+    ("...a field of it condemns", 'for C in "/tmp/x /"; do rm -rf $C; done', "deny"),
+    ("...and so does another word in the list", 'for d in / "a b"; do rm -rf "$d"; done',
+     "deny"),
+    ("an IFS write splits loop words too", 'IFS=/; cd /; for C in /tmp/x; do rm -rf $C; done',
+     "ask"),
+    ("a loop word with no space still clears", 'for C in /tmp/x /tmp/y; do rm -rf $C; done',
+     "allow"),
     # --- a nameref writes the name it refers to -----------------------------
     ("nameref: a target written through its reference",
      'declare -n R=W; R=/; rm -rf "${W:?}"/x', "ask"),
@@ -1548,6 +1655,10 @@ def check_sourced():
         aliased = put("alias.sh", "alias ls='ls -la'\nR=/tmp/rec-x\n")
         wipes = put("rm.sh", "rm -rf /\n")
         big = put("big.sh", "R=/tmp/rec-x\n#" + "x" * (64 * 1024) + "\n")
+        shaped = put("record.sh", "# the record dir\nR=/tmp/rec-x\n"
+                     "export CARGO_TARGET_DIR=$HOME/.cache/x-target\n"
+                     'cd "$R/wt" || return 1\n')
+        exported = put("exported.sh", "R=/tmp/rec-x\nexport CARGO_TARGET_DIR=$R/target\n")
         quote = put("quote.sh", "X='abc\n")
         open_doc = put("heredoc.sh", "cat <<'EOF'\n")
         os.mkdir(os.path.join(d, "-"))
@@ -1592,6 +1703,9 @@ def check_sourced():
              f'. {ro_uid}; rm -rf "$R/build"', "ask"),
             ("the real env-file shape is read",
              f'. {realish}; rm -rf "$R/build"', "allow"),
+            ("the real env files' shape", f'. {shaped}; rm -rf "$R/build" ./out', "allow"),
+            ("an export built from an earlier binding",
+             f'. {exported}; rm -rf "$R/build"', "allow"),
             ("a risky file is not inlined", f'. {risky}; rm -rf "$R/build"', "ask"),
             ("an alias is not inlined", f'. {aliased}; rm -rf "$R/build"', "ask"),
             ("too big to inline", f'. {big}; rm -rf "$R/build"', "ask"),
@@ -1657,7 +1771,7 @@ def check_sourced():
         shutil.rmtree(d)
 
 
-SOURCED_CHECKS = 37
+SOURCED_CHECKS = 39
 
 
 def check_bindings():
