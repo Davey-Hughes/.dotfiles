@@ -197,8 +197,8 @@ the allowlist doing its job: unprovable reads as unsafe.
 Output shape: every dangerous operand becomes a Finding, and the verdict names
 the segment it came from rather than the whole command line, so `deploy.sh &&
 rm -rf $W/*` reports the `rm` half and not the deploy. Bail-outs echo their
-segment too -- `xargs` alone says which word stopped the guard and nothing about
-what xargs was told to do, so what it hides is echoed alongside it.
+segment too -- `eval` alone says which word stopped the guard and nothing about
+what eval was told to run, so what it hides is echoed alongside it.
 
 The verdict is plain text. Claude Code renders permissionDecisionReason through
 a component that strips control characters, so nothing here may rely on colour;
@@ -422,8 +422,39 @@ FD_BRACE_RE = re.compile(r"^\{\w+\}$")
 # start of a word, so `./build#x` is a filename and not a comment -- a
 # distinction shlex does not make, which is the other half of the same bug.
 COMMENT_BOUNDARY = " \t\n;&|("
-# Constructs we cannot statically reason about.
-OPAQUE = {"eval", "exec", "source", "xargs", "."}
+# Constructs whose argument is code the guard cannot see: the bail-out set.
+OPAQUE = {"eval", "source", "."}
+# What _indirection_present refuses: OPAQUE plus exec and xargs. Neither can
+# rebind the parent shell, but both were refused with the rest when this was
+# one set, and narrowing the bail-out must not also loosen proven_bindings.
+INDIRECTION = OPAQUE | {"exec", "xargs"}
+# The operand xargs supplies from its input, standing where xargs puts it:
+# after the command's own arguments, or in place of each -I string inside
+# one. classify_one refuses it before anything else. It is a plain word on
+# purpose: an argument list that is joined and read again -- ssh's remote
+# command -- must still hold it as one word, where `<xargs-input>` would come
+# back as two redirections and an operand would vanish. A real word equal to
+# it costs a prompt and nothing more.
+XARGS_INPUT = "{xargs-input}"
+# GNU xargs plus the BSD subset. Short options that take a value (attached or
+# as the next word), take none, or take an OPTIONAL attached value (-i, -e, -l).
+# An option missing here makes the xargs unreadable, which asks.
+XARGS_FLAGS = set("0rtpxo")
+XARGS_VALUE = set("adEILnPs")
+XARGS_OPTIONAL = set("iel")
+XARGS_LONG_VALUE = {"--arg-file", "--delimiter", "--max-args", "--max-procs",
+                    "--max-chars", "--process-slot-var"}
+XARGS_LONG_FLAGS = {"--null", "--no-run-if-empty", "--verbose", "--interactive",
+                    "--exit", "--open-tty", "--show-limits", "--help", "--version"}
+XARGS_LONG_OPTIONAL = {"--replace", "--eof", "--max-lines"}
+# The long option each short one spells, where it has one, so parse_xargs can
+# ask one question of both: -i is --replace, -n --max-args, -l --max-lines.
+XARGS_LONG_NAME = {"i": "--replace", "n": "--max-args", "l": "--max-lines",
+                   "e": "--eof", "a": "--arg-file", "d": "--delimiter",
+                   "P": "--max-procs", "s": "--max-chars"}
+# A count as GNU xargs reads one (strtol, base 10). Only one that comes out
+# as 1 leaves an earlier -I standing; see parse_xargs.
+XARGS_COUNT_RE = re.compile(r"^[ \t\n\v\f\r]*[+-]?[0-9]+$")
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 # A shell's own options, so the script after `-c` can be found. A short bundle
 # containing `c` is how `bash -lc` and `sh -ec` spell it. Each `o` or `O` in a
@@ -444,7 +475,7 @@ GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
 # Words that prefix a command without changing which command it is.
 #
 # The first six spawn a subprocess, so they cannot rebind the calling shell and
-# were only ever about naming the right command. The last three are zsh
+# were only ever about naming the right command. The next three are zsh
 # PRECOMMAND MODIFIERS -- they run the command IN the current shell, which makes
 # their absence a wrong `allow` rather than a cosmetic miss:
 #
@@ -453,8 +484,16 @@ GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
 # came back allow and runs as `rm -rf //*`. `builtin` was, word for word, the
 # wrapper _rebinding_possible's docstring claimed could not hide a builtin from
 # it. noglob and nocorrect do the same job.
+#
+# exec runs the command in place of the shell. It was a bail-out, which asked
+# on every line it led, and a wrapper says which command it is: `exec rm -rf
+# /` is that rm. With no command left -- `exec 3>/dev/null` -- it runs nothing.
+# timeout, stdbuf and setsid spawn the command after their own options, and
+# reading their first argument as the command hid an expansion that IS one:
+# `X=...; rm -rf ./b; timeout 5 $X` cleared on the strength of the ./b.
 WRAPPERS = {"sudo", "command", "env", "nohup", "time", "nice",
-            "builtin", "noglob", "nocorrect"}
+            "builtin", "noglob", "nocorrect", "exec", "timeout", "stdbuf",
+            "setsid"}
 # A wrapper's own options, so command_word can step past them to the command
 # they run: (flag letters, letters that take a value, long options that take
 # one -- as `--opt=v` or as the next word -- and long options that take none).
@@ -485,7 +524,24 @@ WRAPPER_OPTS = {
              {"--append", "--help", "--portability", "--quiet", "--verbose",
               "--version"}),
     "command": ("pvV", "", set(), set()),
+    # bash's and zsh's exec: -c empties the environment, -l makes a login
+    # process, -a sets argv[0].
+    "exec": ("cl", "a", set(), set()),
+    "timeout": ("v", "ks", {"--kill-after", "--signal"},
+                {"--foreground", "--help", "--preserve-status", "--verbose",
+                 "--version"}),
+    "stdbuf": ("", "eio", {"--error", "--input", "--output"},
+               {"--help", "--version"}),
+    "setsid": ("cfhVw", "", set(),
+               {"--ctty", "--fork", "--help", "--version", "--wait"}),
 }
+# Words a wrapper takes after its options and before the command, however they
+# look: timeout's duration, so `timeout 5 rm` runs rm and not a command named
+# 5. Each wrapper here stops reading options at its first such word, as GNU
+# getopt does under the `+` these tools use: `timeout 5 -s KILL x` runs `-s`.
+# One holding an expansion may split into several words and move the command,
+# so command_word_detail treats it as an option it cannot read.
+WRAPPER_POSITIONALS = {"timeout": 1}
 # The wrapper options above that run the command in another directory, so a
 # relative operand no longer resolves against the shell's cwd: `env -C /
 # rm -rf ./usr` is rm -rf /usr. (letters, long options)
@@ -1183,6 +1239,9 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     name read here may not be the one the shell expands, and neither free
     pass holds either.
     """
+    if XARGS_INPUT in op:
+        return "ask", ("xargs supplies this operand from its input, which is "
+                       "not in the command")
     if "`" in op or "$(" in op:
         return "ask", "command substitution cannot be statically resolved"
 
@@ -1714,14 +1773,15 @@ def command_word_detail(argv):
 
     moved: a wrapper option runs the command in another directory
     (WRAPPER_CHDIR). known: False when the walk stopped on a wrapper's option
-    it cannot read, so the index is that option's and the real command is
-    somewhere after it, unknown.
+    or positional word it cannot read, so the index is that word's and the
+    real command is somewhere after it, unknown.
     """
     # The wrapper whose options are still open. A redirection does not close
     # them: `env >x -i CMD` hands env `-i CMD`. An assignment closes env's --
     # `env A=1 -u B` runs a command named -u, which fails -- but not sudo's,
     # which takes VAR=value among its options: `sudo A=1 -u root CMD`.
-    j, moved, known, open_opts = 0, False, True, None
+    # pending counts the wrapper's positional words still to come.
+    j, moved, known, open_opts, pending = 0, False, True, None, 0
     while j < len(argv):
         t = argv[j]
         if open_opts and t.startswith("-"):
@@ -1733,6 +1793,20 @@ def command_word_detail(argv):
                 open_opts = still and open_opts
                 continue
             open_opts = None    # a lone `-`: not an option, so the command
+        if pending:
+            # A redirection before the word is the shell's: `timeout >x 5
+            # CMD`. A word FOLLOWED by one is either: `5 >x` hands timeout
+            # the 5, `5>x` redirects fd 5, and the tokens are the same.
+            fd_like = ((t.isdigit() or FD_BRACE_RE.match(t)) and j + 1 < len(argv)
+                       and REDIRECT_TOKEN_RE.match(argv[j + 1]))
+            if fd_like or has_subst(t) or EXPANSION_RE.search(t):
+                known = False
+                break
+            if REDIRECT_TOKEN_RE.match(t) and j + 1 < len(argv):
+                j += 2
+                continue
+            pending, open_opts, j = pending - 1, None, j + 1
+            continue
         if ENV_ASSIGN_RE.match(t) or t in KEYWORDS:
             if not (open_opts == "sudo" and ENV_ASSIGN_RE.match(t)):
                 open_opts = None
@@ -1742,6 +1816,7 @@ def command_word_detail(argv):
         if name in WRAPPERS:
             j, m, known, still = _past_wrapper_opts(argv, j + 1, name)
             moved, open_opts = moved or m, still and name
+            pending = WRAPPER_POSITIONALS.get(name, 0)
             if not known:
                 break
             continue
@@ -1803,6 +1878,118 @@ def _past_wrapper_opts(argv, j, name):
         else:
             j += 1
     return min(j, len(argv)), moved, True, True
+
+
+def parse_xargs(argv, j):
+    """xargs at argv[j] -> (index of the command it runs, its -I string).
+
+    The index is len(argv) when xargs names no command, and so runs echo. The
+    -I string is None when there is none. -> None when an option cannot be
+    read, which the caller turns into an ask. Options end at the first word
+    that is not one, as GNU xargs's `+` getopt string says: `xargs rm -i`
+    hands -i to rm. A redirection among them is the shell's, gone before
+    xargs runs, so it is stepped over as command_word steps over one --
+    before a detached value too: `-n 2>/dev/null 1` is -n 1.
+
+    GNU xargs undoes an -I that a later -L, -l or --max-lines follows, and
+    one that a later -n or --max-args follows unless its count is 1, and
+    appends the input again: `xargs -I{} -L1 rm -rf ./build` runs `rm -rf
+    ./build` and the input. A later -I wins over all of them. A count that
+    is not a literal number leaves that unknown, so it is unreadable then.
+    """
+    i, replace = j + 1, None
+    while True:
+        i = _past_redirections(argv, i, len(argv))
+        if i >= len(argv):
+            break
+        t = argv[i]
+        if t == "--":
+            i += 1
+            break
+        if not t.startswith("-") or t == "-":
+            break
+        if t.startswith("--"):
+            opt, given, val = t.partition("=")
+            if opt in XARGS_LONG_FLAGS and not given:
+                i += 1
+                continue
+            if opt not in XARGS_LONG_VALUE and opt not in XARGS_LONG_OPTIONAL:
+                return None
+            if opt in XARGS_LONG_VALUE and not given:
+                i = _past_redirections(argv, i + 1, len(argv))
+                if i >= len(argv):
+                    return None
+                given, val = "=", argv[i]
+        else:
+            opt, given, val = None, "", ""
+            for k in range(1, len(t)):
+                c = t[k]
+                if c in XARGS_FLAGS:
+                    continue
+                if c not in XARGS_VALUE and c not in XARGS_OPTIONAL:
+                    return None
+                opt, val = XARGS_LONG_NAME.get(c, "-" + c), t[k + 1:]
+                if c in XARGS_VALUE and not val:
+                    i = _past_redirections(argv, i + 1, len(argv))
+                    if i >= len(argv):
+                        return None
+                    val = argv[i]
+                given = "=" if c in XARGS_VALUE or val else ""
+                break
+        i += 1
+        if opt in ("-I", "--replace"):
+            replace = val if given else "{}"
+        elif opt in ("-L", "--max-lines"):
+            replace = None
+        elif opt == "--max-args" and replace is not None:
+            if not XARGS_COUNT_RE.match(val):
+                return None
+            if int(val) != 1:
+                replace = None
+    # An empty -I string would stand in every word at once.
+    if replace == "":
+        return None
+    return min(i, len(argv)), replace
+
+
+def effective_command(argv):
+    """-> (index, basename, moved, known, runs): command_word_detail's answer,
+    carried on past each xargs to the command that xargs runs.
+
+    runs lists each xargs crossed as (start, replace): where the command it
+    runs begins -- len(argv) when it names none and so runs echo -- and its -I
+    string or None. known is False with the index ON the xargs when its options
+    cannot be read. An index of len(argv) behind an xargs that did name
+    something means it named only wrappers -- `xargs sudo`, `xargs timeout 5`
+    -- and the command they run is xargs's input. moved covers the wrappers on
+    both sides: `xargs env -C / rm` runs rm in /.
+    """
+    off, moved, runs = 0, False, []
+    while True:
+        j, base, m, known = command_word_detail(argv[off:])
+        j, moved = j + off, moved or m
+        if not known or base != "xargs":
+            return j, base, moved, known, runs
+        p = parse_xargs(argv, j)
+        if p is None:
+            return j, base, moved, False, runs
+        runs.append(p)
+        if p[0] >= len(argv):
+            return len(argv), "", moved, True, runs
+        off = p[0]
+
+
+def with_xargs_input(args, replace):
+    """args as xargs hands them on: each -I string replaced by XARGS_INPUT, or,
+    with none, XARGS_INPUT appended.
+
+    Appended twice. The input may be several words, and a command that reads
+    its last operand apart from the rest -- rsync's destination, the remote
+    command after ssh's host -- must find input on both sides of that split.
+    """
+    if replace is None:
+        return list(args) + [XARGS_INPUT, XARGS_INPUT]
+    return [a.replace(replace, XARGS_INPUT) for a in args]
 
 
 def git_segments(toks):
@@ -1943,16 +2130,16 @@ def _indirection_present(rest):
 
     Over-rejects freely, and that costs a prompt: `git add .`, `find . -name y`
     and `cp -r . /dst` all end the run because `.` is in the set. `exec` and
-    `xargs` cannot rebind the parent shell at all -- they are refused because
-    the set is shared with analyse()'s bail-out and a narrower copy here would
-    be one more thing to keep in step.
+    `xargs` cannot rebind the parent shell at all. They are refused because
+    they were in analyse()'s bail-out set when this shared it, and taking them
+    out of the bail-out was not a reason to loosen this; see INDIRECTION.
     """
     words = re.split(r"[\s;&|()<>$]+", rest)
     try:
         words += [w.lstrip("$") for w in tokenize(rest)]
     except ValueError:
         return True
-    return any(os.path.basename(w) in OPAQUE for w in words)
+    return any(os.path.basename(w) in INDIRECTION for w in words)
 
 
 def _home():
@@ -2650,6 +2837,8 @@ def candidate_cwds(toks, cwd):
     for start, end in segment_bounds(toks):
         argv = [t for t in toks[start:end] if t not in GROUPING]
         idx, base, moved, _ = command_word_detail(argv)
+        # ...and one behind xargs moves what xargs runs: `xargs env -C / rm`.
+        moved = moved or effective_command(argv)[2]
         if moved:
             # `env -C / rm -rf ./usr` moves only the command it runs, and to
             # a place this does not follow. The candidates are the line's, so
@@ -2798,7 +2987,8 @@ def rsync_targets(argv):
 
 def rclone_targets(argv):
     """rclone: -> (destructive, targets, subcommand). sync/move destroy the
-    destination; purge/delete/rmdir destroy what they name."""
+    destination; purge/delete/rmdir destroy what they name. The subcommand
+    comes back either way, so a caller can see one xargs supplied."""
     operands, sub = [], ""
     i = 1
     while i < len(argv):
@@ -2814,7 +3004,7 @@ def rclone_targets(argv):
         return False, [], ""
     sub = operands[0]
     if sub not in RCLONE_DESTRUCTIVE:
-        return False, [], ""
+        return False, [], sub
     rest = operands[1:]
     if sub in ("sync", "move"):
         return True, rest[-1:], sub  # destination is pruned to match source
@@ -3253,7 +3443,8 @@ HANDLED = {"find", "fd", "fdfind", "rsync", "rclone", "ssh"} | GIT_NAMES
 def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                     may_clear=False, git_relocated=False, trusted=True,
                     opaque_names=frozenset(), line_literals=None,
-                    reread=False, outer_danger=False, glued=False):
+                    reread=False, outer_danger=False, glued=False,
+                    read_xargs=True):
     """-> [Finding] for the non-rm commands in one segment.
 
     may_clear is decided per SEGMENT by analyse, because that is the unit a
@@ -3263,19 +3454,39 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
     passed on to every target this judges. opaque_names, line_literals,
     reread and glued are analyse's too; see classify_one. outer_danger is the line's
     danger, which an ssh remote string is read with, as reread_findings
-    reads a script.
+    reads a script. read_xargs False reads an xargs segment's words as
+    written, never through the xargs: one level, so nesting stays linear.
     """
     out = []
     segment = argv
     idx, base = command_word(argv)
-    # command_word steps over a wrapper one token at a time, so a wrapper that
-    # takes its OWN option argument leaves it standing where the command should
-    # be: `sudo -u root find / -delete` stopped at `-u`, `nice -n 5` at `-n`,
-    # and `timeout` was never a wrapper at all. Every one of those passed in
-    # silence. rm never had this problem because it is scanned across all
-    # tokens; this is the same fallback for everything else. A guarded name
-    # appearing as a mere argument costs a prompt at worst, and only when a
-    # destructive flag sits beside it.
+    # xargs CMD ARGS runs CMD ARGS with its input: judge exactly that. The
+    # input stands where xargs puts it, as XARGS_INPUT; see with_xargs_input.
+    # The words as written are judged too, as the fallback below reads them
+    # (read_xargs=False), and the worse verdict stands: the input may take
+    # the place of a literal that reads as a deny on its own -- `xargs -I/
+    # find / -delete`, or the `/` that appended input makes rsync's source.
+    # xargs options the guard cannot read leave only that reading.
+    if base == "xargs" and read_xargs:
+        p = parse_xargs(argv, idx)
+        if p is not None and p[0] >= len(argv):
+            return out           # no command: xargs runs echo
+        if p is not None:
+            same = (cwd, depth, assigned, loops, may_clear, git_relocated,
+                    trusted)
+            kw = dict(opaque_names=opaque_names, line_literals=line_literals,
+                      reread=reread, outer_danger=outer_danger, glued=glued)
+            return (analyse_segment(argv, *same, read_xargs=False, **kw)
+                    + analyse_segment(with_xargs_input(argv[p[0]:], p[1]),
+                                      *same, **kw))
+    # command_word once stopped on a wrapper's own option argument, leaving it
+    # standing where the command should be: `sudo -u root find / -delete`
+    # stopped at `-u`, `nice -n 5` at `-n`, and `ionice` is no wrapper at all.
+    # Every one of those passed in silence. WRAPPER_OPTS reads the options
+    # now, and this stays as the fallback for the wrappers it does not list.
+    # rm never had this problem because it is scanned across all tokens. A
+    # guarded name appearing as a mere argument costs a prompt at worst, and
+    # only when a destructive flag sits beside it.
     if base not in HANDLED:
         for j, t in enumerate(argv):
             if command_name(t) in HANDLED:
@@ -3300,12 +3511,23 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                                     glued=glued)
             out.append(Finding(d, segment, label, t, r))
 
+    def input_runs(flags, what):
+        """xargs's input after an exec flag is in the command run per match,
+        whose arguments the roots say nothing about."""
+        k = next((n for n, t in enumerate(argv) if t in flags), None)
+        if k is not None and any(XARGS_INPUT in t for t in argv[k + 1:]):
+            out.append(Finding("ask", segment, f"{what} runs a command on each "
+                               "match", XARGS_INPUT, "xargs puts its input among "
+                               "that command's arguments, which the search "
+                               "roots say nothing about"))
+
     if base == "find":
         destructive, roots = find_targets(argv)
         if destructive:
             rate(roots,
                  "find deletes everything under its search roots",
                  "no search root given, so find descends from the current directory")
+        input_runs(FIND_EXEC_ACTIONS, "find")
     elif base in ("fd", "fdfind"):
         destructive, roots = fd_targets(argv)
         if destructive:
@@ -3315,6 +3537,7 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
             rate(roots or ["."],
                  "fd -x/-X runs a destructive command on everything under its search roots",
                  "no search root given, so fd descends from the current directory")
+        input_runs(FD_EXEC_FLAGS, base)
     elif base == "rsync":
         destructive, targets, ok, label = rsync_targets(argv)
         if destructive and not ok:
@@ -3330,11 +3553,17 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                      if sub in ("sync", "move")
                      else "rclone %s destroys what it names" % sub)
             rate(targets, label, f"rclone {sub} with no operand")
+        elif outer_danger and XARGS_INPUT in sub:
+            out.append(Finding("ask", segment, "rclone's subcommand", None,
+                               "xargs supplies rclone's subcommand from its "
+                               "input, so what it does is not in the command"))
     elif base in GIT_NAMES:
         # No finding at all unless the tree moved -- see the module docstring.
         # `clean` anywhere in the segment rather than git_subcommand's answer,
-        # because `git $OPT clean` puts an expansion where it looks.
-        if git_relocated and "clean" in argv:
+        # because `git $OPT clean` puts an expansion where it looks. On a line
+        # with a delete, a subcommand xargs supplies may be a clean too.
+        if git_relocated and ("clean" in argv or (
+                outer_danger and XARGS_INPUT in git_subcommand(argv)[1])):
             out.append(Finding("ask", segment, GIT_CLEAN_LABEL, None,
                                GIT_RELOCATED))
     elif base == "ssh":
@@ -3353,6 +3582,12 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
             out.append(Finding("ask", segment, "over ssh", None,
                                "the remote command starts with an expansion, "
                                "so what runs on the far end cannot be read"))
+        # The far end parses its command as shell code, so input xargs puts
+        # there is code too -- not an operand, as it is to a local command.
+        if outer_danger and XARGS_INPUT in remote:
+            out.append(Finding("ask", segment, "over ssh", None,
+                               "xargs puts its input into the remote command, "
+                               "which the far end runs as shell code"))
         if remote and depth < MAX_DEPTH:
             # No local cwd applies on the far end, so pass cwd="": only /tmp and
             # /var/tmp stay safe and every other absolute path asks. The findings
@@ -3537,7 +3772,8 @@ def expansion_runs_recursive(cmd):
     danger_hint reads names, and `${X:-rm} -rf /` names none it can match:
     the rm sits after a `-`, where RM_WORD_RE will not start. Whatever the
     expansion holds runs with -rf. Tokenized only when the raw text has both
-    a `$` and such a flag, so most lines never pay for it.
+    a `$` and such a flag, so most lines never pay for it. The command an
+    xargs runs counts: `ls | xargs $X -rf` is the same hole.
     """
     if "$" not in cmd or not RECURSIVE_FLAG_RE.search(cmd):
         return False
@@ -3546,7 +3782,7 @@ def expansion_runs_recursive(cmd):
     except ValueError:
         return False
     for s, e in segment_bounds(toks):
-        j, _ = command_word(toks[s:e])
+        j = effective_command(toks[s:e])[0]
         if (s + j < e and EXPANSION_WORD_RE.match(toks[s + j])
                 and any(RECURSIVE_FLAG_RE.search(t) for t in toks[s + j + 1:e])):
             return True
@@ -3677,8 +3913,8 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     def bail(decision, i, reason, hi=None):
         """A bail-out that still echoes the command it choked on.
 
-        Naming the construct is not enough by itself: `xargs` says which word
-        stopped the guard and nothing at all about what xargs was told to do. So
+        Naming the construct is not enough by itself: `eval` says which word
+        stopped the guard and nothing at all about what eval was told to run. So
         the segment goes back too, with everything from `hi` onward lit up --
         defaulting to the tokens AFTER the construct, because for something that
         hides what it runs, those arguments are the entire complaint.
@@ -3696,26 +3932,74 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     # wins: `$X; rm -rf /` must stay a deny. Added to the findings below.
     unreadable = []
 
+    # Each segment's command as effective_command reads it, past wrappers and
+    # through xargs. Where an xargs runs one: (the index that command starts
+    # at, its segment's end, the -I string or None) -- the stretch of tokens
+    # that xargs's input reaches.
+    effective = {start: effective_command(toks[start:end])
+                 for start, end in bounds}
+    xargs_regions = [(start + at, end, rep) for start, end in bounds
+                     for at, rep in effective[start][4] if start + at < end]
+
     # Opaque constructs bail -- but only in *command position*. `.` is the POSIX
     # source builtin at the start of a segment and a jq filter in `jq -r . f`;
     # matching it positionally is the difference between the two. Position is
-    # command_word's, so a wrapper, a keyword or a group in front of the word
-    # (`sudo $(x) -rf /`, `( eval "$X" )`) does not hide it. Each one adds an
+    # effective_command's, so a wrapper, a keyword or a group in front of the
+    # word (`sudo $(x) -rf /`, `( eval "$X" )`) does not hide it, and an xargs
+    # in front of it is read through: `xargs eval` runs eval. Each one adds an
     # ask and the analysis goes on, so a deny elsewhere on the line still wins.
     if danger:
         for start, end in bounds:
-            j, base, _, known = command_word_detail(toks[start:end])
+            j, base, _, known, runs = effective[start]
             i = start + j
+            # An -I string is replaced inside every word xargs runs, so one in
+            # the command or a wrapper in front of it lets the input choose
+            # what runs, and one in an option word what that option says.
+            # Elsewhere it makes an operand the input's, judged as such below.
+            for at, rep in runs:
+                if rep is None:
+                    continue
+                for k in range(start + at, end):
+                    if rep in toks[k] and (k <= i or toks[k].startswith("-")):
+                        what = ("part of the command it runs, so which "
+                                "command runs" if k <= i else
+                                "an option of the command it runs, so what "
+                                "that option does")
+                        unreadable.extend(bail(
+                            "ask", k, f"xargs puts its input in place of "
+                                      f"{mark(rep)} in {mark(toks[k])}, "
+                                      f"{what} is not in the command", hi=k))
             if i >= end:
+                # No command after an xargs that appends its input to words
+                # it was given: `xargs sudo`, `xargs timeout 5` and `xargs
+                # xargs` all run that input. A bare `xargs` runs echo.
+                at = next((start + a for a, rep in runs
+                           if rep is None and start + a < end), None)
+                if at is not None:
+                    unreadable.extend(bail(
+                        "ask", at, f"{mark('xargs')} appends its input where "
+                                   "the command should be, so the command "
+                                   "that runs is that input", hi=at))
                 continue
             word = toks[i]
-            if not known:
+            if not known and base == "xargs":
+                unreadable.extend(bail(
+                    "ask", i, f"{mark('xargs')} has options the guard cannot "
+                              "read, so what it runs cannot be found"))
+            elif not known:
                 # `env -Z $X`, `env -S "$X"`: an option the guard cannot read
                 # may take the next word as its value, or be the command.
+                # timeout's duration `$T` may split and move the command.
                 unreadable.extend(bail(
-                    "ask", i, f"{mark(word)} is an option of the wrapper in "
-                              "front of it that the guard cannot read, so "
-                              "which command runs is unknowable"))
+                    "ask", i, f"{mark(word)} is an option or argument of the "
+                              "wrapper in front of it that the guard cannot "
+                              "read, so which command runs is unknowable"))
+            elif XARGS_INPUT in word:
+                # Only in text read again, where xargs's input already stands
+                # in: `ls | xargs ssh h` runs the input on the far end.
+                unreadable.extend(bail(
+                    "ask", i, f"{mark(word)} runs in command position, and "
+                              "xargs supplies it from its input"))
             elif has_subst(word):
                 # A substitution there hides which command runs, so nothing
                 # the operand checks below can prove says anything about it.
@@ -3742,8 +4026,9 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
                                                  trusted=trusted,
                                                  outer_danger=outer_danger,
                                                  reread=reread)]
+                name = f"xargs {base}" if runs else base
                 unreadable.extend(bail(
-                    "ask", i, f"{mark(base)} hides its arguments -- what it "
+                    "ask", i, f"{mark(name)} hides its arguments -- what it "
                               "runs on is not in the command"))
             elif EXPANSION_WORD_RE.match(word) or EXPANSION_RE.search(base):
                 # A command name built from an expansion is the same hole:
@@ -3784,6 +4069,16 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
         s, e = next((s, e) for s, e in bounds if s <= i < e)
         here = s + command_word(toks[s:e])[0] == i
         scripts.append((i, si, here))
+        # xargs writes its input into the script in place of its -I string,
+        # and the shell parses the result: the input is code there, not an
+        # operand. The script is still read, so a deny in it wins.
+        reps = {rep for rs, re_, rep in xargs_regions
+                if rep is not None and rs <= si < re_ and rep in toks[si]}
+        if danger and reps:
+            unreadable.extend(bail(
+                "ask", i, f"{mark(base + ' -c')} runs a script xargs writes its "
+                          f"input into, in place of {mark(min(reps))}, so the "
+                          "script is not in the command", hi=si))
 
     if "--no-preserve-root" in toks:
         # The flag itself is the danger, so it is highlighted along with what
@@ -3868,8 +4163,9 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
         seg_start = segment_start(i)
         may_clear = seg_start < rebind_at
         lits = literals_at(seg_start)
+        rm_at = i
         i += 1
-        recursive, operands = False, []
+        recursive, operands, flags = False, [], []
         while i < len(toks) and toks[i] not in SEPARATORS:
             t = toks[i]
             if t in REDIRECTS:
@@ -3878,14 +4174,30 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
                     operands.pop()  # that was an fd, not an operand
                 continue
             if t.startswith("--"):
+                flags.append(t)
                 if t in ("--recursive", "--dir"):
                     recursive = True
             elif t.startswith("-") and len(t) > 1:
+                flags.append(t)
                 if any(c in t for c in "rR"):
                     recursive = True
             else:
                 operands.append(t)
             i += 1
+        # An rm anywhere in what an xargs runs gets that xargs's input as
+        # operands the command never shows: appended, or wherever its -I
+        # string sits -- in `xargs -I{} find . -exec rm -rf {} \;` too, where
+        # find's {} is xargs's first. An -I string inside a flag makes the
+        # flag the input's, so recursion is assumed, as for a substitution.
+        # The operands as written stay too, and the worst verdict wins: the
+        # input may displace a literal that is a deny on its own, as in
+        # `xargs -I/ rm -rf /`.
+        for rs, re_, rep in xargs_regions:
+            if rs <= rm_at < re_:
+                recursive = recursive or (rep is not None
+                                          and any(rep in f for f in flags))
+                operands = list(dict.fromkeys(
+                    operands + with_xargs_input(operands, rep)))
         # A literal argument list settles whether this rm recurses. A substitution
         # in it does not: `rm $(echo -rf) /tmp/x` carries no -r the scanner can
         # see, and recursion is exactly what makes rm dangerous, so assume it.
@@ -4017,9 +4329,10 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
 
     if not found_rm and not findings:
         # Nothing survived parsing. Of the constructs that could execute a
-        # string, eval and xargs bailed above, and a <shell> -c script, a heredoc
-        # a shell reads and a substitution's body were each re-read as a script,
-        # so a bare mention here is inert text -- unless it actually reads as a
+        # string, eval bailed above, xargs's command was read as the command it
+        # is, and a <shell> -c script, a heredoc a shell reads and a
+        # substitution's body were each re-read as a script, so a bare
+        # mention here is inert text -- unless it actually reads as a
         # recursive rm, in which case we failed to parse something real and
         # must not approve it. Searched against the git-stripped text, so an
         # exempted `git -C /path rm -r` does not read as unparsed.

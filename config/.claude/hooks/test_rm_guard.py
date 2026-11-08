@@ -319,7 +319,7 @@ CASES = [
     # because it is scanned across every token; nothing else was.
     ("sudo with an option argument", "sudo -u root find / -delete", "deny"),
     ("nice with an option argument", "nice -n 5 find / -delete", "deny"),
-    ("timeout is not even a known wrapper", "timeout 5 find / -delete", "deny"),
+    ("timeout and its duration", "timeout 5 find / -delete", "deny"),
     ("ionice with option arguments", "ionice -c3 -n7 find / -delete", "deny"),
     ("...and the same for the other guarded commands",
      "timeout 5 rsync -a --delete /src/ /etc/dst/", "ask"),
@@ -1256,6 +1256,130 @@ CASES = [
      'W=/tmp/b; N=W; printf -v "$N" /; rm -rf "$W"/*', "ask"),
     ("print: -v behind zsh's -C COLS", 'W=/tmp/b; N=W; print -C 1 -v "$N" /; rm -rf "$W"/*',
      "ask"),
+    # --- xargs and exec name the command they run ----------------------------
+    ("xargs: a harmless command beside a safe delete",
+     "git ls-files -z | xargs -0 clang-format --dry-run; rm -rf ./build", "allow"),
+    ("xargs: rm -rf takes its operands from input", "ls | xargs rm -rf", "ask"),
+    ("xargs: -I puts the input in the operand", "find . -name x | xargs -I{} rm -rf {}", "ask"),
+    ("xargs: mv is not a delete",
+     "find . -type f | xargs -0 -I{} mv -n {} dir/; rm -rf ./build", "allow"),
+    ("xargs: no command runs echo", "ls | xargs; rm -rf ./build", "allow"),
+    ("xargs: a shell script still gets read", "ls | xargs sh -c 'rm -rf \"$1\"' _", "ask"),
+    ("xargs: eval stays opaque", "ls | xargs eval; rm -rf ./build", "ask"),
+    ("xargs: an unknown option asks", "ls | xargs --bogus rm -rf", "ask"),
+    ("xargs: rsync's destination is the input", "ls | xargs rsync -a --delete src", "ask"),
+    ("exec: the command it runs is judged", "exec rm -rf /", "deny"),
+    ("exec: a redirect-only exec runs nothing", "exec 3>/dev/null; rm -rf ./build", "allow"),
+    ("exec: its own options", "exec -a name rm -rf ./build", "allow"),
+    ("exec: an expansion behind it", "X='rm -rf /'; rm -rf ./b; exec $X", "ask"),
+    # What xargs runs is found past wrappers, and its input reaches every word
+    # of it: an -I string is replaced inside words, and appended input lands
+    # where a command is missing.
+    ("xargs: a wrapper in front of rm", "ls | xargs nice -n 5 rm -rf; rm -rf ./b", "ask"),
+    ("xargs: -I with a fixed operand", "ls | xargs -I{} rm -rf ./build", "allow"),
+    ("xargs: wrappers and no command run the input", "ls | xargs env A=1; rm -rf ./b",
+     "ask"),
+    ("xargs: ...and so does xargs behind xargs", "ls | xargs xargs; rm -rf ./b", "ask"),
+    ("xargs: the -I string as the command", "ls | xargs -I{} {} -rf /; rm -rf ./b", "ask"),
+    ("xargs: ...inside a wrapper's option", "ls | xargs -Ii env -i rm -rf ./x", "ask"),
+    ("xargs: ...inside a shell script", "ls | xargs -I{} sh -c 'rm -rf /tmp/{}'; rm -rf ./b",
+     "ask"),
+    ("xargs: a script without the input is read", "ls | xargs sh -c 'rm -rf /'", "deny"),
+    # Nothing else on the line names a delete: the expansion behind xargs,
+    # run with -r, is what makes it dangerous. The flag is not the word right
+    # after it, so only the token check sees the pairing.
+    ("xargs: an expansion as its command", "ls | xargs \"$X\" -f -r", "ask"),
+    ("xargs: env -C moves what it runs", "ls | xargs -I{} env -C / rm -rf ./usr", "ask"),
+    ("xargs: a redirection among its options",
+     "rm -rf ./b; ls | xargs -0 2>/dev/null -I{} {}", "ask"),
+    ("xargs: find's {} is xargs's -I string",
+     "ls | xargs -I{} find ./sub -exec rm -rf {} \\;", "ask"),
+    ("xargs: the input in find's -exec command",
+     "ls | xargs -I{} find ./sub -exec unlink {} \\;", "ask"),
+    ("xargs: the input is a source rsync drains",
+     "ls | xargs rsync -a --remove-source-files ./a", "ask"),
+    # The input may be several words: some of them sources, the last one the
+    # destination; the first one ssh's host, the rest its remote command.
+    ("xargs: ...beside two written operands",
+     "ls | xargs rsync -a --remove-source-files ./a ./b", "ask"),
+    ("xargs: the input is ssh's host and command", "ls | xargs ssh; rm -rf ./b", "ask"),
+    ("xargs: the input on the ssh far end", "ls | xargs ssh h echo; rm -rf ./b", "ask"),
+    ("xargs: ...in place of the -I string there",
+     "ls | xargs -I{} ssh h 'rm -rf /tmp/{}'; rm -rf ./b", "ask"),
+    ("xargs: rclone's subcommand from the input", "ls | xargs rclone; rm -rf ./b", "ask"),
+    ("xargs: git's subcommand on a moved tree",
+     "rm -rf ./b; git --work-tree=/ status; ls | xargs git", "ask"),
+    # Options the guard cannot read leave the words as written, which still
+    # reach a deny: the segment is not dropped.
+    ("xargs: unreadable options, find behind them", "ls | xargs --bogus find / -delete",
+     "deny"),
+    ("xargs: ...an abbreviation GNU accepts", "ls | xargs --nul find / -delete", "deny"),
+    ("xargs: ...BSD's -J", "ls | xargs -J % find / -delete", "deny"),
+    ("xargs: ...find ~", "ls | xargs --bogus find ~ -delete", "deny"),
+    ("xargs: ...find -exec rm", "ls | xargs --bogus find / -exec rm -rf {} +", "deny"),
+    ("xargs: ...fd from /", "ls | xargs --bogus fd . / -x rm -rf", "deny"),
+    ("xargs: ...fd --search-path", "ls | xargs --bogus fd --search-path / -x rm", "deny"),
+    ("xargs: ...rsync into /", "ls | xargs --bogus rsync -a --delete /src/ /", "deny"),
+    ("xargs: ...rclone purge", "ls | xargs --bogus rclone purge /", "deny"),
+    ("xargs: ...an empty -I string", "ls | xargs -I '' find / -delete", "deny"),
+    ("xargs: ...behind sudo", "sudo xargs --bogus find / -delete", "deny"),
+    ("xargs: ...behind timeout", "timeout 5 xargs --bogus find / -delete", "deny"),
+    ("xargs: --help is read past", "ls | xargs --help find / -delete", "deny"),
+    ("xargs: --version runs nothing", "ls | xargs --version echo hi; rm -rf ./build",
+     "allow"),
+    # GNU xargs drops an earlier -I on a later -L, -l or --max-lines, or on a
+    # later -n or --max-args of anything but 1, and appends the input again.
+    ("xargs: -L after -I appends the input", "ls | xargs -I{} -L1 rm -rf ./build", "ask"),
+    ("xargs: ...and -n2", "ls | xargs -I{} -n2 rm -rf ./build", "ask"),
+    ("xargs: ...and -l", "ls | xargs -I{} -l rm -rf ./build", "ask"),
+    ("xargs: ...and --max-args=2", "ls | xargs -I{} --max-args=2 rm -rf ./build", "ask"),
+    ("xargs: ...and --max-lines", "ls | xargs -I{} --max-lines rm -rf ./build", "ask"),
+    ("xargs: ...after --replace", "ls | xargs --replace -L1 rm -rf ./build", "ask"),
+    ("xargs: ...after -i", "ls | xargs -i -n2 rm -rf ./build", "ask"),
+    ("xargs: ...in a bundle", "ls | xargs -I{} -0n2 rm -rf ./build", "ask"),
+    ("xargs: ...a wipe of the input", "echo /etc | xargs -I{} -L1 rm -rf ./build", "ask"),
+    ("xargs: ...beside a safe-root operand", "ls | xargs -I{} -L1 rm -rf /tmp/x", "ask"),
+    ("xargs: -I after -n2 wins", "ls | xargs -n2 -I{} rm -rf ./build", "allow"),
+    ("xargs: -I after -L1 wins", "ls | xargs -L1 -I{} rm -rf ./build", "allow"),
+    ("xargs: -n1 leaves -I standing", "ls | xargs -I{} -n1 rm -rf ./build", "allow"),
+    ("xargs: ...so does a count that reads as 1", "ls | xargs -I{} -n 01 rm -rf ./build",
+     "allow"),
+    # ...which matters: read as cancelled, the script would lose its ask.
+    ("xargs: ...and the script still takes the input",
+     "ls | xargs -I{} -n1 sh -c 'rm -rf /tmp/{}'; rm -rf ./b", "ask"),
+    ("xargs: a count that may or may not be 1", "ls | xargs -I{} -n \"$N\" rm -rf ./build",
+     "ask"),
+    # The input in place of a literal that is a deny on its own: the words as
+    # written are judged too, and the worse verdict stands.
+    ("xargs: the -I string is the root", "ls | xargs -I/ rm -rf /", "deny"),
+    ("xargs: ...spelled --replace=", "ls | xargs --replace=/ rm -rf /", "deny"),
+    ("xargs: ...a glob", "ls | xargs -I'*' rm -rf /*", "deny"),
+    ("xargs: ...home", "ls | xargs -I~ rm -rf ~", "deny"),
+    ("xargs: ...a find root", "ls | xargs -I/ find / -delete", "deny"),
+    ("xargs: ...over ssh", "ls | xargs -I/ ssh h 'rm -rf /'", "deny"),
+    ("xargs: appended input makes / rsync's source", "ls | xargs -0 rsync -a --delete /src/ /",
+     "deny"),
+    # A redirection before a detached value is the shell's: this is -n 1.
+    ("xargs: a redirection before an option's value",
+     "X='rm -rf /'; rm -rf ./b; ls | xargs -n 2>/dev/null 1 $X", "ask"),
+    ("xargs: ...a long option's",
+     "X='rm -rf /'; rm -rf ./b; ls | xargs --max-args 2>/dev/null 1 $X", "ask"),
+    # --- timeout, stdbuf and setsid run the command after their options ------
+    ("timeout: an expansion behind the duration", "X='rm -rf /'; rm -rf ./b; timeout 5 $X",
+     "ask"),
+    ("timeout: options, then the duration", "timeout -s KILL 5 rm -rf ./build", "allow"),
+    ("timeout: a wipe behind the duration", "timeout 5 rm -rf /", "deny"),
+    ("stdbuf: an expansion behind its mode", "X='rm -rf /'; rm -rf ./b; stdbuf -oL $X", "ask"),
+    ("setsid: an expansion behind it", "X='rm -rf /'; rm -rf ./b; setsid $X", "ask"),
+    # The duration may split into several words, so it hides the command.
+    ("timeout: a duration held in an expansion", "T='5 rm -rf /'; rm -rf ./b; timeout $T",
+     "ask"),
+    # timeout reads no option past the duration: it runs `-s`, which fails.
+    ("timeout: an option after the duration is its command",
+     "X='rm -rf /'; rm -rf ./b; timeout 5 -s KILL $X", "allow"),
+    # `2>x` redirects and `2 >x` is the duration, and the tokens are the same.
+    ("timeout: a word before a redirection may be the duration",
+     "timeout 2>/dev/null 5 rm -rf ./build", "ask"),
     # --- a nameref writes the name it refers to -----------------------------
     ("nameref: a target written through its reference",
      'declare -n R=W; R=/; rm -rf "${W:?}"/x', "ask"),
@@ -1397,8 +1521,9 @@ BINDING_CASES = [
     ('W=/tmp/build; command \\eval "$C"; rm -rf "$W"/*', {}),
     ('W=/tmp/build; builtin "eval" "$C"; rm -rf "$W"/*', {}),
     # xargs cannot rebind the parent shell at all, unlike the other three --
-    # this documents that the refusal covers the whole shared OPAQUE set, not
-    # only the members that can actually rebind.
+    # this documents that the refusal covers all of INDIRECTION, not only the
+    # members that can actually rebind. Reading what xargs runs for the
+    # bail-out must not have loosened it.
     ('W=/tmp/x; xargs -0 ls; rm -rf "$W"/*', {}),
 ]
 
@@ -1643,13 +1768,13 @@ PLAIN_CASES = (
     'rm -rf "$(pwd)/build"',
     'rm -rf "$W"/*',
     "rm -rf /",
-    "ls | xargs rm -rf /etc",
+    "eval rm -rf /etc",
     'awk \'{print "rm -rf /"}\'',
     "rm -rf /tmp/build",
     "git --work-tree=/ clean -fd",
 )
 
-STRUCTURE_CHECKS = 15
+STRUCTURE_CHECKS = 16
 RENDER_CHECKS = len(PLAIN_CASES) + STRUCTURE_CHECKS
 
 
@@ -1702,12 +1827,15 @@ def check_render():
              "resolved"),
 
             # A bail-out echoes its segment like every other verdict, and the
-            # arguments are the point of it: naming `xargs` says which word
-            # stopped the guard and nothing about what xargs was told to do.
+            # arguments are the point of it: naming `eval` says which word
+            # stopped the guard and nothing about what eval was told to run.
             ("a bail-out echoes what the construct hides",
-             "ls | xargs rm -rf /etc", "\n  xargs rm -rf /etc\n"),
+             "eval rm -rf /etc", "\n  eval rm -rf /etc\n"),
             ("...and the sentence names the construct",
-             "ls | xargs rm -rf /etc", "xargs hides its arguments"),
+             "eval rm -rf /etc", "eval hides its arguments"),
+            # xargs is read now, and what it supplies is an operand row.
+            ("xargs's input gets its own row", "ls | xargs rm -rf",
+             "\n  {xargs-input}  xargs supplies this operand from its input"),
             ("a bail-out flag is named", "rm -rf --no-preserve-root /",
              "--no-preserve-root defeats rm's own safety net"),
             ("...and its segment is echoed whole",
