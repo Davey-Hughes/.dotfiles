@@ -1125,6 +1125,60 @@ CASES = [
     ("quote glue: ...nor one past a quoted heredoc",
      "Wusr=/tmp/x; W=/; cat <<'EOF'; rm -rf \"$W\"usr\nEOF", "ask"),
     ("quote glue: an unglued binding still clears", "W=/tmp/b; rm -rf \"$W\"/*", "allow"),
+    # --- a loop's words hold only inside its body -------------------------------
+    # Outside it the loop may never have run, and the name keeps what it held:
+    # each of these is rm -rf /*.
+    ("loop: in a function nobody calls",
+     'f() { for d in /tmp/y; do :; done; }; rm -rf "$d"/*', "ask"),
+    ("loop: behind false &&", 'false && for d in /tmp/y; do :; done; rm -rf "$d"/*', "ask"),
+    ("loop: in an if not taken",
+     'if false; then for d in /tmp/y; do :; done; fi; rm -rf "$d"/*', "ask"),
+    ("loop: in a subshell", '(for d in /tmp/y; do :; done); rm -rf "$d"/*', "ask"),
+    ("loop: in a pipeline", 'for d in /tmp/y; do :; done | cat; rm -rf "$d"/*', "ask"),
+    ("loop: a for that is only an argument", 'echo for d in /tmp/y; rm -rf "$d"/*', "ask"),
+    ("loop: after the loop, even one that ran", 'for d in /tmp/y; do :; done; rm -rf "$d"/*',
+     "ask"),
+    ("loop: outside it, its words still condemn", 'for d in /; do :; done; rm -rf "$d"/*',
+     "deny"),
+    ("loop: inside the body still clears", 'for d in /tmp/a /tmp/b; do rm -rf "$d"/build; done',
+     "allow"),
+    ("loop: inside a function's loop body", 'f() { for d in /tmp/y; do rm -rf "$d"/*; done; }',
+     "allow"),
+    # A closer the shells accept right after esac, `)` or fi still ends the
+    # inner loop; missing it ran the inner span on into the outer body.
+    ("loop: a done right after esac closes the inner loop",
+     'for a in /tmp/z; do false && for d in /tmp/y; do case x in x) :;; esac done; '
+     'rm -rf "$d"/*; done', "ask"),
+    ("loop: ...right after a subshell",
+     'for a in /tmp/z; do false && for d in /tmp/y; do ( : ) done; rm -rf "$d"/*; done', "ask"),
+    ("loop: ...right after fi",
+     'for a in /tmp/z; do false && for d in /tmp/y; do if :; then :; fi done; '
+     'rm -rf "$d"/*; done', "ask"),
+    # A keyword that is only an argument opens nothing.
+    ("loop: a for after an argument's do opens nothing",
+     'for a in /tmp/z; do false && for d in /tmp/y; do echo do for x in q; done; '
+     'rm -rf "$d"/*; done', "ask"),
+    ("loop: ...nor one after a test's !",
+     'for a in /tmp/z; do false && for d in /tmp/y; do [ ! for = x ]; done; '
+     'rm -rf "$d"/*; done', "ask"),
+    # Quotes are gone at token level, so a quoted separator looks real.
+    ("loop: a quoted ; opens nothing",
+     'for a in /tmp/z; do false && for d in /tmp/y; do echo ";" for x in q; done; '
+     'rm -rf "$d"/*; done', "ask"),
+    ("loop: ...nor an escaped one",
+     'for a in /tmp/z; do false && for d in /tmp/y; do echo \\; for x in q; done; '
+     'rm -rf "$d"/*; done', "ask"),
+    ("loop: ...nor function as an argument",
+     'for a in /tmp/z; do false && for d in /tmp/y; do echo function x { for y in q; done; '
+     'rm -rf "$d"/*; done', "ask"),
+    ("loop: time in front of a loop", 'time for d in /tmp/y; do rm -rf "$d"/*; done', "allow"),
+    ("loop: a while's done closes the while, not the for",
+     'for a in /tmp/x; do while false; do :; done; rm -rf "$a"/*; done', "allow"),
+    # The body may assign the name as well.
+    ("loop: an assignment in the body condemns", 'for d in /tmp/y; do d=/; rm -rf "$d"/*; done',
+     "deny"),
+    ("loop: ...and a bounded one does not", 'for d in /tmp/y; do d=/tmp/z; rm -rf "$d"/*; done',
+     "allow"),
     # --- zsh expansion flags before a non-letter -------------------------------
     ("zsh's $~1", "rm -rf $~1", "ask"),
     ("zsh's $~@", "rm -rf $~@", "ask"),

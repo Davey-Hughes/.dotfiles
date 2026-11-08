@@ -1204,6 +1204,38 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     #               `W=; rm -rf "$W"` runs as a harmless `rm -rf ""`, and ""
     #               resolved as a path reads as the working directory, which
     #               would mis-deny an error-out.
+    def condemned_by_line(names, empty_too=False):
+        """The worst non-allow verdict among op's readings under each literal
+        value the line assigns one of names, or None. An empty value is
+        skipped: "" makes the bare form error out and the ${W:?} form abort.
+        empty_too keeps it, for an operand with a suffix, where "" is what
+        turns "$W"/* into /* -- unless a ${W:?} in it aborts first.
+        One name at a time, the rest left to the recursive call."""
+        for n in names:
+            if n not in (line_literals or {}):
+                continue
+            rest = {k: v for k, v in line_literals.items() if k != n}
+            aborts = any(":?" in mm.group(0) for mm in SUBST_NAME_RE.finditer(op)
+                         if (mm.group(1) or mm.group(2)) == n)
+            out = []
+            for val in line_literals[n]:
+                if not val and (not empty_too or aborts):
+                    continue
+                sub = SUBST_NAME_RE.sub(
+                    lambda mm, v=val: v if (mm.group(1) or mm.group(2)) == n
+                    else mm.group(0), op)
+                if sub == op:
+                    continue
+                d, r = classify_one(sub, cwd, bare_var_ok, assigned,
+                                    may_clear=may_clear, opaque_names=opaque_names,
+                                    line_literals=rest, reread=reread, glued=glued)
+                out.append((d, f"{n}={val} on this line, so this may read as "
+                               f"{sub}; {r}"))
+            d, r = worst_of(out) if out else ("allow", "")
+            if d != "allow":
+                return d, r
+        return None
+
     if assigned:
         def bound(m):
             val = assigned.get(m.group(1) or m.group(2))
@@ -1272,6 +1304,20 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
             # not the one a glued operand expands.
             if d == "allow" and glued:
                 return "ask", GLUED_REASON
+            # The body may assign the name too: `for d in /tmp/y; do d=/;
+            # rm -rf "$d"/*; done` is rm -rf //*. Such a value may condemn,
+            # and one the guard cannot read keeps the loop's words from
+            # clearing.
+            if d == "allow":
+                worse = condemned_by_line([name], empty_too=not BARE_VAR_RE.match(op))
+                if worse:
+                    return worse
+                if name in (opaque_names or ()) or ANY_NAME in (opaque_names or ()):
+                    return "ask", (f"{r} -- but ${name} is also assigned on this "
+                                   "line to a value the guard cannot read")
+            if d == "allow" and isinstance(values, OutsideLoop):
+                return "ask", (f"{r} -- but this runs outside the loop that "
+                               f"sets ${name}, which may never have run here")
             # Inside a string another shell re-reads, the outer shell may have
             # expanded $name before the inner one ever ran the loop, so the
             # words above prove nothing. They may still condemn.
@@ -1296,38 +1342,6 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
         return "deny", "operand is the home directory"
     if op.startswith("~"):
         return "ask", "tilde expansion not statically resolved"
-
-    def condemned_by_line(names, empty_too=False):
-        """The worst non-allow verdict among op's readings under each literal
-        value the line assigns one of names, or None. An empty value is
-        skipped: "" makes the bare form error out and the ${W:?} form abort.
-        empty_too keeps it, for an operand with a suffix, where "" is what
-        turns "$W"/* into /* -- unless a ${W:?} in it aborts first.
-        One name at a time, the rest left to the recursive call."""
-        for n in names:
-            if n not in (line_literals or {}):
-                continue
-            rest = {k: v for k, v in line_literals.items() if k != n}
-            aborts = any(":?" in mm.group(0) for mm in SUBST_NAME_RE.finditer(op)
-                         if (mm.group(1) or mm.group(2)) == n)
-            out = []
-            for val in line_literals[n]:
-                if not val and (not empty_too or aborts):
-                    continue
-                sub = SUBST_NAME_RE.sub(
-                    lambda mm, v=val: v if (mm.group(1) or mm.group(2)) == n
-                    else mm.group(0), op)
-                if sub == op:
-                    continue
-                d, r = classify_one(sub, cwd, bare_var_ok, assigned,
-                                    may_clear=may_clear, opaque_names=opaque_names,
-                                    line_literals=rest, reread=reread, glued=glued)
-                out.append((d, f"{n}={val} on this line, so this may read as "
-                               f"{sub}; {r}"))
-            d, r = worst_of(out) if out else ("allow", "")
-            if d != "allow":
-                return d, r
-        return None
 
     exps = EXPANSION_RE.findall(op)
     if exps:
@@ -2263,6 +2277,76 @@ def _plain_literal(w):
     """A word with no expansion, substitution, glob, brace or masked span."""
     return not (EXPANSION_RE.search(w) or has_subst(w) or SENTINEL in w
                 or any(c in w for c in GLOB_CHARS) or "{" in w)
+
+
+class OutsideLoop(list):
+    """A loop's words as a command outside that loop's body sees them.
+
+    The loop may never have run there -- it sits in a function nobody calls,
+    behind `false &&`, in an `if` not taken, in a subshell or a pipeline -- and
+    then its name holds whatever it held before: `f() { for d in /tmp/y; do :;
+    done; }; rm -rf "$d"/*` is rm -rf /*. So the words may condemn, never clear.
+    """
+
+
+def loop_scopes(toks, masked=""):
+    """-> {name: [(opener, closer)]}: the span of each `for` or `select` loop
+    that binds name.
+
+    The two ends fail in opposite directions, so they are read differently. An
+    opener counts only where a command starts -- the line's start, after a
+    separator, or after a keyword or grouping word -- because a phantom one
+    (`echo for d in /tmp/y`) pairs with a real closer and widens a span. A
+    closer of the open loop's kind counts anywhere: one that is really data
+    (`echo done`) only ends a span early, while one the shells accept after
+    `esac`, `fi`, `done` or `)` in the same segment, missed, would let the
+    inner span run on into its parent's body.
+    """
+    # shlex erases quotes, so `";"`, `\(`, `\;` and `"do"` arrive as bare
+    # separators and keywords. Re-tokenizing the masked text with every quoted
+    # or escaped span replaced by a plain word keeps the token boundaries and
+    # marks each token quoting touched; such a token is an ordinary word below.
+    try:
+        qtoks = (tokenize(QUOTED_SPAN_RE.sub("QQQ", masked)) if masked else toks)
+    except ValueError:
+        return {}
+    if len(qtoks) != len(toks):
+        return {}
+    quoted = {i for i, (a, b) in enumerate(zip(toks, qtoks)) if a != b}
+    # Where a command starts: the line's start, after a separator or a
+    # grouping token, or after a keyword (or `time`) that itself sits at a
+    # start -- `echo do for x` and `[ ! for = x ]` put the keyword in an
+    # argument, and the `for` after it opens nothing. `function f {` too.
+    starts = set()
+    for i in range(len(toks)):
+        prev = toks[i - 1] if i and i - 1 not in quoted else None
+        if (i == 0 or prev in SEPARATORS or prev in ("(", ")", "()")
+                or ((prev in KEYWORDS or prev == "time") and i - 1 in starts)
+                or (prev == "{" and i >= 3 and toks[i - 3] == "function"
+                    and i - 3 in starts and i - 3 not in quoted)):
+            starts.add(i)
+    scopes, stack = {}, []
+    for i, t in enumerate(toks):
+        if t in LOOP_OPENERS:
+            if i not in starts or i in quoted:
+                continue
+            name = (toks[i + 1] if t in ("for", "select") and i + 1 < len(toks)
+                    and BARE_NAME_RE.match(toks[i + 1]) else None)
+            stack.append((i, LOOP_CLOSER_FOR[t], name))
+        elif t in LOOP_CLOSERS and stack and t == stack[-1][1]:
+            start, _, name = stack.pop()
+            if name:
+                scopes.setdefault(name, []).append((start, i))
+    return scopes
+
+
+def loops_at(loops, scopes, pos):
+    """The loop map as the command at token pos sees it: a name's words stand
+    only inside the body of a loop that binds it, and are OutsideLoop
+    elsewhere."""
+    return {n: (ws if ws is None or any(a < pos < b for a, b in scopes.get(n, ()))
+                else OutsideLoop(ws))
+            for n, ws in loops.items()}
 
 
 def loop_bindings(toks):
@@ -3765,6 +3849,7 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     # loop's word list and a literal `cd` target are complete and visible right
     # here, where an assignment map's binding may already have been overwritten.
     loops = loop_bindings(toks)
+    scopes = loop_scopes(toks, mask_opaque(cmd)[0])
     cwds = candidate_cwds(toks, cwd)
 
     in_git = git_segments(toks)
@@ -3780,8 +3865,9 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
             continue
         found_rm = True
         segment = segment_at(i)
-        may_clear = segment_start(i) < rebind_at
-        lits = literals_at(segment_start(i))
+        seg_start = segment_start(i)
+        may_clear = seg_start < rebind_at
+        lits = literals_at(seg_start)
         i += 1
         recursive, operands = False, []
         while i < len(toks) and toks[i] not in SEPARATORS:
@@ -3808,7 +3894,8 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
         if not operands:
             continue
         for op in operands:
-            d, r = classify_operand(op, cwds, assigned=assigned, loops=loops,
+            d, r = classify_operand(op, cwds, assigned=assigned,
+                                    loops=loops_at(loops, scopes, seg_start),
                                     may_clear=may_clear, loops_may_clear=trusted,
                                     opaque_names=opaque_names,
                                     line_literals=lits, reread=reread,
@@ -3821,7 +3908,8 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False):
     git_relocated = git_relocates(text, toks, bounds)
     for start, end in bounds:
         findings.extend(
-            analyse_segment(toks[start:end], cwds, depth, assigned, loops,
+            analyse_segment(toks[start:end], cwds, depth, assigned,
+                            loops_at(loops, scopes, start),
                             start < rebind_at, git_relocated, trusted,
                             opaque_names=opaque_names,
                             line_literals=literals_at(start), reread=reread,
