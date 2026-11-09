@@ -107,7 +107,9 @@ fi
 
 if (( $+commands[zoxide] )); then
     eval "$(zoxide init zsh)"
-    alias cd="z"
+    # Not in Claude Code's shell: z jumps to a frecent match when the path
+    # does not exist, and the rm guard has to know where a cd lands.
+    [[ -n $CLAUDECODE ]] || alias cd="z"
 fi
 
 if (( $+commands[direnv] )); then
