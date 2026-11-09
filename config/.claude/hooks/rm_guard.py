@@ -172,17 +172,17 @@ Known gaps, left open on purpose:
                                reading commands from stdin, and Claude Code
                                runs `zsh -c`.
 
-    a word segment_bounds      shlex glues punctuation, and segment_bounds
-    does not start             splits only on SEPARATORS, so a command word
-                               after a glued `);`, `;(` or `));`, after `|&`
-                               or zsh's `repeat N do`, or inside a one-line
-                               function body is no segment's command word.
-                               An expansion there -- `B=rm; true |& $B -rf /`
-                               -- is neither bailed on nor resolved, and the
-                               line may be silent; a literal `rm` there is
-                               read, since the rm scan reads every token.
-                               Splitting glued tokens in tokenize closes it,
-                               and touches every reading.
+    a word segment_bounds      segment_bounds starts a command only after a
+    does not start             separator, so a command word after zsh's
+                               `repeat N do`, inside a function body, after
+                               a case pattern's `)` or after `coproc` is no
+                               segment's command word. An expansion there --
+                               `f() { $B -rf /; }; f` -- is neither bailed on
+                               nor resolved, and the line may be silent; a
+                               literal `rm` there is read, since the rm scan
+                               reads every token. tokenize splits a glued
+                               run of operators (`);`, `;(`, `));`, `|&`),
+                               so a word after one of those starts a command.
 
 A third approach was built and withdrawn: prepending a runtime validator to the
 command through the hook's `updatedInput`, so that approving a prompt would be
@@ -479,8 +479,26 @@ ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # statement on the next line its own segment. Without it, `git commit -m x` and
 # an `rm -rf /` on the line below were ONE segment, git_segments() read the whole
 # thing as git's business, and the rm was never scanned.
-SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
-REDIRECTS = {">", ">>", "<", "<<", ">&", "<&", "2>", "|&"}
+#
+# `|&` is a pipe (bash's and zsh's `2>&1 |`), and `;;`, `;&`, `;;&` and zsh's
+# `;|` end a case arm, so each ends a command too. Before tokenize split a
+# glued run of operators, none of them was ever a token of its own.
+SEPARATORS = {";", "&&", "||", "|", "&", "\n", "|&", ";;", ";&", ";;&", ";|"}
+REDIRECTS = {">", ">>", "<", "<<", ">&", "<&", "2>"}
+# The two sets as they were while tokenize left a glued run whole, for the
+# reading that keeps its denies; see _analyse.
+GLUED_SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
+GLUED_REDIRECTS = REDIRECTS | {"|&"}
+# shlex's punctuation_chars joins a run of these into one token -- `);`,
+# `;(`, `));`, `|&`, `&&(` -- and the shell reads the run as the operators
+# it holds, the longest first. A lone `(` or `)` is one too, so `f()` is
+# `(` and `)`; see function_parens. zsh's clobbering and appending forms are
+# here so that `>&|` stays one redirection rather than a `>&` and a pipe.
+SHELL_OPERATORS = sorted(
+    {"&>>|", ">>&|", ";;&", "<<<", "&>>", "&>|", ">&|", ">>&", ">>|",
+     ";;", ";&", ";|", "&&", "||", "|&", ">>", "<<", "&>", ">|", "<>", "<&", ">&",
+     "(", ")", ";", "&", "|", "<", ">"}, key=len, reverse=True)
+OPERATOR_CHARS = frozenset("();<>|&")
 # ...and the same thing recognised by SHAPE rather than by membership, for
 # deciding whether a token that leads a segment is a redirection to step over.
 #
@@ -512,7 +530,9 @@ FD_BRACE_RE = re.compile(r"^\{\w+\}$")
 # What may precede an unquoted `#` for it to start a comment. Bash requires the
 # start of a word, so `./build#x` is a filename and not a comment -- a
 # distinction shlex does not make, which is the other half of the same bug.
-COMMENT_BOUNDARY = " \t\n;&|("
+# Not `(`: in zsh `rm -rf (#i)/usr/share` is a glob flag, not a comment, and
+# reading a bash `(#` comment as code can only cost a prompt.
+COMMENT_BOUNDARY = " \t\n;&|"
 # Constructs whose argument is code the guard cannot see: the bail-out set.
 OPAQUE = {"eval", "source", "."}
 # What _indirection_present refuses: OPAQUE plus exec and xargs. Neither can
@@ -2228,6 +2248,13 @@ def mask_opaque(cmd):
             end = _close_paren(cmd, i + 1)
         elif c == "`":
             end = _close_backtick(cmd, i)
+        elif c == "$" and cmd[i + 1:i + 3] == "{(" and not _GLUED_READING[0]:
+            # zsh's ${(flags)NAME}: shlex tore `${(P)N}` into `${`, `(`, `P`,
+            # `)` and `N}`, five harmless words, where zsh reads N's value as
+            # a name. Kept whole, it is one expansion the guard cannot read.
+            # The glued reading masks as before, so a span that swallowed
+            # `; rm -rf /; ` up to a later `}` keeps the deny it hid.
+            end = _close_brace(cmd, i + 1)
         if end is not None:
             ph = "%sSUB%d%s" % (SENTINEL, len(subs), SENTINEL)
             subs[ph] = cmd[i:end + 1]
@@ -2239,6 +2266,20 @@ def mask_opaque(cmd):
     return "".join(out), subs
 
 
+def _close_brace(s, i):
+    """-> the index of the `}` closing the `{` at s[i], counting nested
+    braces, or None when it never closes."""
+    depth = 0
+    for j in range(i, len(s)):
+        if s[j] == "{":
+            depth += 1
+        elif s[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+    return None
+
+
 def unmask(tok, subs):
     for ph, original in subs.items():
         tok = tok.replace(ph, original)
@@ -2248,6 +2289,59 @@ def unmask(tok, subs):
 def has_subst(s):
     """The same test classify_operand uses, so the two never disagree."""
     return "$(" in s or "`" in s
+
+
+def split_operators(masked):
+    """-> masked with each unquoted run of operator characters spaced into
+    the shell operators it holds, longest first: `(true);$B` reads as `(`,
+    `true`, `)`, `;`, `$B`. shlex's punctuation_chars keeps such a run as
+    one token, and segment_bounds then started no command after it.
+
+    Quoting is shlex's own, so the tokens line up with its reading: `'...'`
+    holds everything, `"..."` and an unquoted `\\` escape the next
+    character, and a run inside either stays whole -- `rm -rf ./a ');' x`
+    deletes a file named `);`.
+    """
+    out, i, n, quote = [], 0, len(masked), None
+    while i < n:
+        c = masked[i]
+        if quote is not None:
+            if c == "\\" and quote == '"' and i + 1 < n:
+                out.append(masked[i:i + 2])
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            out.append(c)
+            i += 1
+            continue
+        if c in "'\"":
+            quote = c
+        elif c == "\\" and i + 1 < n:
+            out.append(masked[i:i + 2])
+            i += 2
+            continue
+        elif c in OPERATOR_CHARS:
+            j = i
+            while j < n and masked[j] in OPERATOR_CHARS:
+                j += 1
+            run, ops = masked[i:j], []
+            while run:
+                op = next(o for o in SHELL_OPERATORS if run.startswith(o))
+                ops.append(op)
+                run = run[len(op):]
+            out.append(" ".join(ops))
+            i = j
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+# True while _analyse reads a line as the guard read it before tokenize split
+# glued operators and command_name stopped reading assignment words; see
+# there.
+_GLUED_READING = [False]
 
 
 def tokenize(cmd):
@@ -2263,12 +2357,69 @@ def tokenize(cmd):
     _indirection_present does, as the second of the two readings it unions.
     """
     masked, subs = mask_opaque(cmd)
+    if not _GLUED_READING[0]:
+        masked = split_operators(masked)
+    if not _TILDE_AS_HOME[0]:
+        masked = _mark_literal_tildes(masked)
     lex = shlex.shlex(masked, posix=True, punctuation_chars=True)
     lex.whitespace_split = True
     lex.commenters = ""   # mask_opaque already removed real comments; leaving
                           # this at its default `#` would also cut `./build#x`
                           # mid-word, which bash treats as a filename.
-    return [unmask(t, subs) for t in lex]
+    return [_literal_tilde_word(unmask(t, subs)) for t in lex]
+
+
+# A quoted or escaped `~` is literal text: bash and zsh expand only a tilde
+# that starts a word unquoted. `rm -rf "~/temp/x"` deletes ./~/temp/x, and
+# read as $HOME it cleared under ~/temp. tokenize marks each such `~` before
+# lexing, and a word that starts with one -- or whose assignment value does,
+# `W='~/x'` -- comes back as `./~...`, the path the shell names. Elsewhere
+# the mark goes back to `~`. _TILDE_AS_HOME turns it off for the deny-only
+# reading of the line as $HOME; see _analyse.
+LITERAL_TILDE = chr(0xE003)
+_TILDE_AS_HOME = [False]
+_LITERAL_TILDE_WORD_RE = re.compile(r"^((?:[A-Za-z_][A-Za-z0-9_]*\+?=)?)" + LITERAL_TILDE)
+
+
+def _mark_literal_tildes(text):
+    """text with every quoted or backslash-escaped `~` as LITERAL_TILDE,
+    quoting read as shlex reads it."""
+    if "~" not in text:
+        return text
+    out, i, n, q = [], 0, len(text), None
+    while i < n:
+        c = text[i]
+        if c == "\\" and q != "'" and i + 1 < n:
+            nxt = text[i + 1]
+            out += [c, LITERAL_TILDE if nxt == "~" else nxt]
+            i += 2
+            continue
+        if q is None and c in "'\"":
+            q = c
+        elif c == q:
+            q = None
+        out.append(LITERAL_TILDE if c == "~" and q is not None else c)
+        i += 1
+    return "".join(out)
+
+
+def _literal_tilde_word(t):
+    if LITERAL_TILDE not in t:
+        return t
+    t = _LITERAL_TILDE_WORD_RE.sub(lambda m: m.group(1) + "./~", t, count=1)
+    return t.replace(LITERAL_TILDE, "~")
+
+
+def _literal_tildes(cmd):
+    """Does the line hold a quoted or escaped `~`?"""
+    try:
+        return LITERAL_TILDE in _mark_literal_tildes(mask_opaque(cmd)[0])
+    except ValueError:
+        return False
+
+
+# zsh's ${(flags)NAME}: group 1 is the flags.
+ZSH_E_FLAG_RE = re.compile(r"\$\{\(([^)]*)\)")
 
 
 # --- segmentation ------------------------------------------------------------
@@ -2292,9 +2443,16 @@ def command_name(t):
     zsh's EQUALS expansion replaces a word `=rm` with the full path of rm, in
     any position, so `=rm -rf /` is rm and `find / -exec =rm -rf {} +` runs it.
     Read as a basename, `=rm` was a word naming nothing.
+
+    An assignment word names no command: `(B=$R/bin/rm); $B -rf ./build`
+    runs whatever B holds, and its basename read the assignment as an rm
+    with `$B`, `-rf` and `./build` for operands. The glued reading keeps the
+    old basename; see _analyse.
     """
     if t[:1] == "=" and BARE_NAME_RE.match(t[1:]):
         return t[1:]
+    if ENV_ASSIGN_RE.match(t) and not _GLUED_READING[0]:
+        return t
     return os.path.basename(t)
 
 
@@ -2831,7 +2989,7 @@ def line_values_at(toks, bounds, i, name, refused=frozenset(), unassigned=frozen
     if stop is not None:
         rest = toks[stop:]
         text = " ".join(rest)
-        if (any(t in ("()", "function") for t in rest)
+        if (defines_function(rest)
                 or not _read_only_mentions(name, text)
                 or not _read_only_mentions("IFS", text)
                 or any(command_name(t) in OPAQUE for t in rest)):
@@ -3327,8 +3485,7 @@ def _rebinding_possible(toks, text=""):
             break
         if ENV_ASSIGN_RE.match(t):
             continue
-        if t in ("function", "()") or (
-                t == "(" and i + 1 < len(toks) and toks[i + 1] == ")"):
+        if function_parens(toks, i):
             at, reason = i, "a function definition can rebind when called"
             break
         if i not in in_cmd_pos:
@@ -3458,7 +3615,7 @@ def loop_bodies(toks, masked=""):
     for i, t in enumerate(toks):
         if stack:
             body.add(i)
-        if t in ("function", "()") or (t == "(" and toks[i + 1:i + 2] == [")"]):
+        if function_parens(toks, i):
             return body | set(range(i, len(toks)))
         if i in quoted or i not in starts:
             continue
@@ -3490,8 +3647,23 @@ def loop_spans(toks, masked=""):
 
 def defines_function(toks):
     """Does the line define a function, whose body runs at every call?"""
-    return any(t in ("function", "()") or (t == "(" and toks[i + 1:i + 2] == [")"])
-               for i, t in enumerate(toks))
+    return any(function_parens(toks, i) for i in range(len(toks)))
+
+
+# The word that opens an array assignment, `a=(...)` or `a+=(...)`.
+ARRAY_OPEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=$")
+
+
+def function_parens(toks, i):
+    """Does a function definition start at toks[i]: the word `function`, or
+    `()` -- one token where tokenize left a glued run whole, `(` and `)`
+    where it split it? An array's `a=()` defines none."""
+    t = toks[i]
+    if t == "function":
+        return True
+    if not (t == "()" or (t == "(" and toks[i + 1:i + 2] == [")"])):
+        return False
+    return not (i and ARRAY_OPEN_RE.match(toks[i - 1]))
 
 
 def loop_scopes(toks, masked=""):
@@ -3930,9 +4102,9 @@ def cwd_readings(toks, cwd, resolve=None, searches=False, masked="", marks=None)
     runs. masked is the line as mask_opaque leaves it; see loop_bodies.
 
     A cd the segments do not read as one -- in a one-line function body,
-    `f() { cd /; }`, or behind a `);` shlex keeps as one token, `x=(a); cd
-    /` -- still moves the shell, to a place this does not read, so every
-    relative operand on the line asks.
+    `f() { cd /; }` -- still moves the shell, to a place this does not
+    read, so every relative operand on the line asks. One behind a glued
+    `);` is read: tokenize splits the run, so `x=(a); cd /` is a cd.
     """
     searches = searches or _cdpath_set()
     repeats = loop_bodies(toks, masked)
@@ -4090,7 +4262,8 @@ ZOXIDE_MOVERS = {"z", "zi", "__zoxide_z", "__zoxide_zi"}
 CD_LEADERS = {"(", "{", "do", "then", "else", "elif", "if", "while", "until",
               "builtin"}
 CHAIN_OPS = ("&&", "||", "|", "|&")
-# A run of the punctuation shlex glues into one token: `)&&`, `;;`, `);`.
+# A token of operator punctuation alone: one tokenize split out, or, in the
+# glued reading, a whole run such as `)&&` or `);`.
 GLUED_OP_RE = re.compile(r"^[();<>|&]+$")
 
 
@@ -4556,7 +4729,7 @@ def shell_stdin_script(toks, bounds, k, bodies):
     own = [t for t in seg[at + 1:] if t in bodies]
     if own:
         return own[0], here
-    if k > 0 and toks[bounds[k - 1][1]] == "|":
+    if k > 0 and toks[bounds[k - 1][1]] in ("|", "|&"):
         ps, pe = bounds[k - 1]
         prev = toks[ps:pe]
         if len(prev) == 2 and os.path.basename(prev[0]) == "cat" and prev[1] in bodies:
@@ -5003,8 +5176,9 @@ def _quiet_redirects(seg):
     Input redirections only read, a duplication onto 0, 1, 2 or - only moves a
     stream the line already has, and /dev/null swallows one. Anything else
     writes the text somewhere a later command could run it from -- `>&60`
-    reaches a coprocess. `|&` is a pipe to the shell but not a separator to
-    segment_bounds, so it is refused here outright.
+    reaches a coprocess. `|&` is a pipe to the shell, and a separator now;
+    the glued reading has it inside a segment, so it is refused here
+    outright.
     """
     j = 0
     while j < len(seg):
@@ -5215,7 +5389,15 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
     -- after a cd that may fail, or quoted, `"B=rm"` -- may hold that
     literal too: the line is read with each in its place, and only the denies
     of that reading count, beside the ask the unproven word keeps.
+
+    A line tokenize reads differently since it split glued operators -- one
+    with a run like `);` or `|&` in it, or a `;;` -- is read again as it was
+    read before, and only that reading's denies count. The old reading ran
+    an rm's operands on past the end of its command: `(rm -rf ./a); ls /`
+    denied on ls's `/`, a false deny, but the price of never losing one. It
+    also read an assignment word by its basename, `B=/bin/rm -rf /` as an rm.
     """
+    global SEPARATORS, REDIRECTS
     resolved = []
     findings = _analyse_line(cmd, cwd, depth, trusted, outer_danger, reread,
                              local, resolved)
@@ -5237,7 +5419,51 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
                                        reread, local, [], picks, True)
         _WITHDRAWN[0], _CD_SEARCHES[0] = state
         findings = findings + [f for f in extra if f.decision == "deny"]
+    if (not _GLUED_READING[0] and not any(f.decision == "deny" for f in findings)
+            and reads_glued_differently(cmd)):
+        state = _WITHDRAWN[0], _CD_SEARCHES[0]
+        saved = SEPARATORS, REDIRECTS
+        SEPARATORS, REDIRECTS = GLUED_SEPARATORS, GLUED_REDIRECTS
+        _GLUED_READING[0] = True
+        try:
+            glued = _analyse(cmd, cwd, depth, trusted, outer_danger, reread, local)
+        finally:
+            SEPARATORS, REDIRECTS = saved
+            _GLUED_READING[0] = False
+            _WITHDRAWN[0], _CD_SEARCHES[0] = state
+        findings = findings + [f for f in glued if f.decision == "deny"]
+    # A quoted or escaped `~` is literal, and tokenize reads it as ./~. Read
+    # as $HOME it names a worse path, and that reading's denies stand: base
+    # denied `rm -rf "~"` as the home directory, and no deny may weaken.
+    if (not _TILDE_AS_HOME[0] and not any(f.decision == "deny" for f in findings)
+            and _literal_tildes(cmd)):
+        state = _WITHDRAWN[0], _CD_SEARCHES[0]
+        _TILDE_AS_HOME[0] = True
+        try:
+            as_home = _analyse(cmd, cwd, depth, trusted, outer_danger, reread, local)
+        finally:
+            _TILDE_AS_HOME[0] = False
+            _WITHDRAWN[0], _CD_SEARCHES[0] = state
+        findings = findings + [f for f in as_home if f.decision == "deny"]
     return findings
+
+
+def reads_glued_differently(cmd):
+    """Does the line read differently from the glued reading: a run of
+    operators split into two or more, a separator the glued reading lacked,
+    or an assignment word whose basename names a command some rule reads?"""
+    try:
+        if "${(" in cmd:
+            return True
+        masked = mask_opaque(cmd)[0]
+        if split_operators(masked) != masked:
+            return True
+        names = RM_NAMES | SHELLS | HANDLED | ZOXIDE_MOVERS | OPAQUE | set(CD_WORDS)
+        return any((t in SEPARATORS and t not in GLUED_SEPARATORS)
+                   or (ENV_ASSIGN_RE.match(t) and os.path.basename(t) in names)
+                   for t in tokenize(cmd))
+    except ValueError:
+        return False
 
 
 # Marks a reading that left a command word unproven though the line assigns
@@ -5423,6 +5649,12 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
     xargs_regions = [(start + at, end, rep) for start, end in bounds
                      for at, rep in effective[start][4] if start + at < end]
 
+    # zsh's (e) flag runs its value's substitutions, as eval would:
+    # `X='$(rm -rf /)'; echo ${(e)X}` runs rm -rf /. Wherever it stands.
+    if danger and any("e" in m.group(1) for m in ZSH_E_FLAG_RE.finditer(cmd)):
+        unreadable.append(bare("ask", "zsh's (e) flag runs the value's substitutions, "
+                                      "as eval does, so what it runs is not in "
+                                      "the command"))
     # Opaque constructs bail -- but only in *command position*. `.` is the POSIX
     # source builtin at the start of a segment and a jq filter in `jq -r . f`;
     # matching it positionally is the difference between the two. Position is
@@ -5910,15 +6142,16 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
         # still judged, but only for a deny: `&>` at / read as /&> and
         # denied, and a deny is not given up. A listed one's target is
         # judged for a deny too. `|&` is a pipe, not a redirection, and eats
-        # no word. A word read past where the rm really ends -- after a glued
-        # `);` or `;;` -- is still judged in full: the end may be misread, as
-        # zsh's `rm -rf (a|b)` deletes both.
+        # no word; tokenize has made it a separator, and `);`, `;;` and the
+        # rest the operators they hold, so the rm ends at the one it reaches.
+        # A `)` is still judged as a word: zsh's `rm -rf (a|b)` deletes both.
         # A quoted word is a word whatever it spells -- `rm -rf ./a '>' x`
-        # deletes a file named `>` -- and without the line's quoted set every
-        # target is judged in full.
+        # deletes a file named `>`, and `rm -rf ./a ';' /` deletes / -- and
+        # without the line's quoted set every target is judged in full.
         targets = []
         quoted = quoted_starts[0] if quoted_starts else None
-        while i < len(toks) and toks[i] not in SEPARATORS:
+        while i < len(toks) and (toks[i] not in SEPARATORS
+                                 or (quoted is not None and i in quoted)):
             t = toks[i]
             if (t != "|&" and (t in REDIRECTS or REDIRECT_TOKEN_RE.match(t))
                     and (quoted is None or i not in quoted)):
@@ -6063,9 +6296,17 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
 
     # --- everything else, one segment at a time.
     git_relocated = git_relocates(text, toks, bounds)
+    quoted_toks = quoted_starts[0] if quoted_starts else set()
     for start, end in bounds:
+        # A quoted separator is a word, so a command's arguments run on past
+        # it to the next real one: `find ./a ';' / -delete` searches / too.
+        stop = end
+        while stop < len(toks) and stop in quoted_toks:
+            stop += 1
+            while stop < len(toks) and toks[stop] not in SEPARATORS:
+                stop += 1
         findings.extend(
-            analyse_segment(toks[start:end], cwds_at(start)[0], depth, assigned,
+            analyse_segment(toks[start:stop], cwds_at(start)[0], depth, assigned,
                             loops_at(loops, scopes, start),
                             start < rebind_at, git_relocated, trusted,
                             opaque_names=opaque_names, rebuilt_names=rebuilt_names,
@@ -6121,7 +6362,7 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
             if base not in SHELLS or j >= len(words):
                 continue
             fed = [t for t in toks[s:e] if t in bodies]
-            if k > 0 and toks[bounds[k - 1][1]] == "|":
+            if k > 0 and toks[bounds[k - 1][1]] in ("|", "|&"):
                 fed += [t for t in toks[bounds[k - 1][0]:bounds[k - 1][1]]
                         if t in bodies]
             if any(ph not in read_bodies and danger_hint(bodies[ph]) for ph in fed):
@@ -6151,6 +6392,8 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
                 for ph, m in _masked_heredocs(clean)]
     msgs = [m.span() for m in MSG_FLAG_RE.finditer(masked)]
     for ph, original in subs.items():
+        if original.startswith("${"):
+            continue    # a zsh ${(flags)NAME}: an expansion, not a script
         at = masked.find(ph)
         in_message = any(s <= at < e for s, e in msgs)
         if original.startswith("`"):

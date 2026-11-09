@@ -1553,7 +1553,7 @@ CASES = [
      "cd /tmp/a && cd ../../u/project/w && rm -rf z", "ask"),
     # A cd the segments do not read as a command still moves the shell.
     ("relative: a cd in a one-line function body", "f() { cd /; }; f; rm -rf usr", "ask"),
-    ("relative: a cd behind a glued );", "x=(a); cd /; rm -rf usr", "ask"),
+    ("relative: a cd behind a glued ); is read", "x=(a); cd /; rm -rf usr", "deny"),
     # --- CDPATH and cdable_vars send a relative cd elsewhere -----------------
     ("CDPATH on the line", "CDPATH=/; cd usr; rm -rf ./bin", "ask"),
     ("...as the cd's own prefix", "CDPATH=/ cd usr && rm -rf bin", "ask"),
@@ -1850,14 +1850,75 @@ CASES = [
     ("rm ends: ...a quoted (", "rm -rf ./a '(' ../../y", "ask"),
     ("rm ends: ...a quoted &>", "rm -rf ./a '&>' ../../y", "ask"),
     ("rm ends: ...a quoted ) first", "rm -rf ')' ../../x", "ask"),
-    # A word read past the real end keeps the ask it gives: the end may be
-    # misread -- zsh's `rm -rf (a|b)` deletes both.
-    ("rm ends: a word past a glued ); keeps its ask", "(rm -rf ./a); ls /usr/x", "ask"),
-    ("rm ends: ...past |&", "rm -rf ./a |& grep /usr/x", "ask"),
-    ("rm ends: ...past ;;", "case x in a) rm -rf ./a;; b) ls /usr/x;; esac", "ask"),
-    ("rm ends: |& eats no word", "rm -rf |& /", "deny"),
-    ("rm ends: a deny read past the end still stands", "(rm -rf ./a); ls /", "deny"),
+    # A glued run of operators is the operators it holds, so the rm ends at
+    # the separator in it.
+    ("rm ends: at a glued );", "(rm -rf ./a); ls /usr/x", "allow"),
+    ("rm ends: ...at |&", "rm -rf ./a |& grep /usr/x", "allow"),
+    ("rm ends: ...at ;;", "case x in a) rm -rf ./a;; b) ls /usr/x;; esac", "allow"),
+    # ...but a deny the glued reading gave still stands.
+    ("rm ends: the glued reading's deny past |&", "rm -rf |& /", "deny"),
+    ("rm ends: ...past );", "(rm -rf ./a); ls /", "deny"),
     ("rm ends: ...and one a flag past it made", "(rm ./a); ls -R /", "deny"),
+    # A quoted separator is a word: it does not end the rm.
+    ("rm ends: not at a quoted ;", "rm -rf ./a ';' /", "deny"),
+    ("rm ends: ...nor a quoted ;;", "rm -rf ./a ';;' /", "deny"),
+    ("rm ends: ...nor a quoted |&", "rm -rf ./a '|&' /", "deny"),
+    # zsh's ${(flags)NAME} is one word, an expansion the guard cannot read.
+    ("zsh flags: an indirect operand", "N=D; D=/; rm -rf ${(P)N}", "ask"),
+    ("zsh flags: ...with a suffix", "rm -rf ${(P)N}/x", "ask"),
+    ("zsh flags: an indirect command word on /", "N=B; B=rm; ${(P)N} -rf /; rm -rf ./x", "ask"),
+    ("zsh flags: ...case flags", "X=rm; ${(U)X} -rf /; rm -rf ./x", "ask"),
+    # The glued reading masks as before, so a deny the mask swallows stands.
+    ("zsh flags: an unclosed span keeps the deny it hid", 'echo "${("; rm -rf /; echo "}"',
+     "deny"),
+    ("zsh flags: ...unquoted", "echo ${(x; rm -rf /; echo }", "deny"),
+    # zsh's glob flags: `(#i)` is no comment.
+    ("zsh flags: a glob flag before a path", "rm -rf (#i)/usr/share", "ask"),
+    ("zsh flags: ...before the root", "rm -rf (#i)/", "deny"),
+    # find's roots run on past a quoted separator, as rm's operands do.
+    ("find roots: past a quoted ;", "find ./a ';' / -delete", "deny"),
+    ("find roots: ...an escaped one", "find ./a \\; / -delete", "deny"),
+    # A command word after a glued operator starts a command.
+    ("glued ops: a subshell's assignment does not reach past );",
+     "(B=/x); $B -rf ./build", "ask"),
+    ("glued ops: ...nor is ); a path", "(B=$R/bin/rm); $B -rf ./build", "ask"),
+    ("glued ops: an assignment word names no command", "B=$R/bin/rm; $B -rf ./build", "ask"),
+    ("glued ops: ...but the glued reading's deny stands", "B=/bin/rm -rf /", "deny"),
+    ("glued ops: a command word after |&", "true |& $B -rf /", "ask"),
+    ("glued ops: ...a proven one", "B=rm; true |& $B -rf /", "deny"),
+    ("glued ops: ...after ;(", "true;($B -rf /)", "ask"),
+    ("glued ops: ...after );", "(true);$B -rf /", "ask"),
+    ("glued ops: ...after ));", "((x=1));$B -rf /", "ask"),
+    ("glued ops: ...after &&(", "true&&($B -rf /)", "ask"),
+    ("glued ops: ...after )|", "(true)|$B -rf /", "ask"),
+    ("glued ops: ...after &)", "(true&)&&$B -rf /", "ask"),
+    ("glued ops: a subshell's set leaves the name maybe set",
+     '(X=sub); D=${X:-$HOME}; rm -rf "${D:?}"/*', "deny"),
+    # Known gaps, pinned: no separator starts these command words, and a
+    # literal rm in the same place is read.
+    ("glued ops: known gap, a function body", "f() { $B -rf /; }; f", "pass"),
+    ("glued ops: ...whose literal rm is read", "f() { rm -rf /; }; f", "deny"),
+    ("glued ops: known gap, zsh's repeat", "repeat 2 do $B -rf /; done", "pass"),
+    ("glued ops: known gap, a case arm", "case x in a) $B -rf /;; esac", "pass"),
+    # Redirections keep their shape.
+    ("glued ops: >& is one operator", "rm -rf ./x 2>&1", "allow"),
+    ("glued ops: ...and >&|, >>| and &>", "rm -rf ./x >&|l >>|m &>n", "allow"),
+    ("glued ops: a quoted run is one word", "rm -rf ./a ');' ../../y", "ask"),
+    ("glued ops: a heredoc piped through |& to a shell",
+     "cat <<EOF |& bash\nrm -rf /\nEOF", "deny"),
+    # An array's parentheses are no function definition.
+    ("glued ops: an empty array is no function", 'W=/tmp/x; a=(); rm -rf "$W"/y', "allow"),
+    ("glued ops: ...spaced", 'W=/tmp/x; a=() ; rm -rf "$W"/y', "allow"),
+    ("glued ops: a function still is", 'W=/tmp/x; f() { :; }; rm -rf "$W"/y', "ask"),
+    ("glued ops: ...glued", 'W=/tmp/x; f(){ :; };rm -rf "$W"/y', "ask"),
+    # A quoted or escaped `~` is literal: the shell deletes ./~ here. Read
+    # as $HOME it named a worse path, and that reading's denies stand.
+    ("literal tilde: a quoted ~/x is ./~/x", 'rm -rf "~/x"', "allow"),
+    ("literal tilde: ...a quoted ~ alone still denies", 'rm -rf "~"', "deny"),
+    ("literal tilde: ...and '~/'", "rm -rf '~/'", "deny"),
+    ("literal tilde: ...and its glob", 'rm -rf "~"/*', "deny"),
+    # zsh's (e) flag runs the value's substitutions, as eval would.
+    ("zsh flags: (e) runs the value", "X='$(rm -rf /)'; rm -rf ./a; echo ${(e)X}", "ask"),
     # The word in a default or alternate is read as the value is.
     ("default word: $HOME", 'D=${X:-$HOME}; rm -rf "${D:?}"/*', "deny"),
     ("default word: ...a bare use", 'D=${X:-$HOME}; rm -rf "$D"', "deny"),
@@ -2436,6 +2497,16 @@ def check_home_roots():
                 ("lands on a parent of a clone", "rm -rf proj/repo/vendor", h, "ask", {}),
                 ("lands in a hidden top-level tree", "rm -rf .dotfiles/x", h, "ask", {}),
                 ("lands in ~/temp", "rm -rf temp/rec", h, "allow", {}),
+                ("a quoted ~ is literal at $HOME", 'rm -rf "~/temp/rec"', h, "ask", {}),
+                ("...escaped", "rm -rf \\~/temp/rec", h, "ask", {}),
+                ("...single-quoted", "rm -rf '~/temp/rec'", h, "ask", {}),
+                ("...only the ~ quoted", 'rm -rf "~"/temp/rec', h, "ask", {}),
+                ("...a quoted loop word", 'for d in "~/temp/rec"; do rm -rf "$d"; done',
+                 h, "ask", {}),
+                ("...a quoted value", "W='~/temp/rec'; rm -rf $W", h, "ask", {}),
+                ("...elsewhere it lands under that cwd, as ./~ does", 'rm -rf "~/temp/rec"',
+                 "/usr", "allow", {}),
+                ("an unquoted ~ is $HOME", "rm -rf ~/temp/rec", h, "allow", {}),
                 ("lands through a symlink out of ~/temp", "rm -rf temp/link/x", h, "ask", {}),
                 ("a glob landing in ~/temp", "rm -rf temp/rec/*", h, "allow", {}),
                 ("a glob mid-path, landing in ~/temp", "rm -rf temp/rec/*/x", h, "ask", {}),
@@ -2557,7 +2628,7 @@ def check_home_roots():
         shutil.rmtree(h)
 
 
-HOME_ROOT_CHECKS = 143
+HOME_ROOT_CHECKS = 151
 
 
 def check_bindings():
