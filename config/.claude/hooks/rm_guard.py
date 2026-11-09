@@ -2279,7 +2279,18 @@ def mask_opaque(cmd):
         # lives here. A `\` + newline never reaches this branch, because the
         # escape arm above consumed both characters and left the join intact.
         if quote is None and c == "\n":
-            out.append(" ; ")
+            # ...except after `|`, `|&`, `&&` or `||`, which the shell
+            # continues onto the next line, a comment between or not:
+            # `echo x |<newline>bash` is one pipeline.
+            # out holds a character a piece, and an escaped pair as one, so
+            # walk back over the blanks and read the operator's pieces: `\|`
+            # is one piece, an escaped pipe, and `\\|` ends in a real one.
+            k = len(out) - 1
+            while k >= 0 and out[k] in (" ", "\t"):
+                k -= 1
+            last, prev = (out[k] if k >= 0 else ""), (out[k - 1] if k >= 1 else "")
+            joins = last == "|" or (last == "&" and prev in ("&", "|"))
+            out.append(" " if joins else " ; ")
             i += 1
             continue
         # Unquoted or inside double quotes -- substitution is live in both.
@@ -5470,66 +5481,130 @@ def _quiet_redirects(seg):
     return True
 
 
-def _inert_line(toks, bounds, text):
-    """Is this whole line a plain read-and-print command list?
+# An assignment in front of a reader that changes nothing it runs: the
+# locale, the terminal, colours. Any other -- PATH, LD_PRELOAD,
+# RIPGREP_CONFIG_PATH -- may make the name run something else.
+QUIET_ENV_RE = re.compile(
+    r"^(?:LC_[A-Z]+|LANG|LANGUAGE|TERM|NO_COLOR|COLUMNS|LINES|TZ|GREP_COLORS?)=[^$`]*$")
+# Builtins that change what a command name runs, and zsh's tables of
+# functions and aliases, which an assignment rewrites: `functions[grep]=...`.
+RENAMERS = {"alias", "hash", "enable", "autoload", "functions"}
+RENAMING_TABLE_RE = re.compile(
+    r"^(?:functions|aliases|galiases|saliases|dis_functions|dis_aliases)(?:\[|\+?=)")
+# What each opener of a group, subshell, loop or branch is closed by.
+GROUP_CLOSER_FOR = {"(": ")", "{": "}", "if": "fi", "case": "esac", "for": "done",
+                    "while": "done", "until": "done", "select": "done",
+                    "repeat": "done", "foreach": "end"}
+
+
+def _group_depths(toks, quoted, starts):
+    """-> each token's depth inside groups, subshells, loops, branches and
+    function bodies. `(` and `)` count anywhere unquoted -- a process
+    substitution or an array is a parenthesis too -- and a reserved word
+    only where a command starts. A closer that matches no open group is
+    ignored: a case pattern's `)` closes nothing."""
+    stack, out = [], []
+    for i, t in enumerate(toks):
+        word = i not in quoted
+        if word and stack and t == stack[-1] and (t == ")" or i in starts):
+            stack.pop()
+        out.append(len(stack))
+        if word and t in GROUP_CLOSER_FOR and (t == "(" or i in starts):
+            stack.append(GROUP_CLOSER_FOR[t])
+    return out
+
+
+def _inert_matches(toks, bounds, text, read):
+    """Does every recursive-rm match on the line sit where nothing runs it?
 
     The backstop asks "did a real recursive rm fail to parse?". It may answer
-    no only for a line that is an allowlist end to end: every command on it is
-    a reader, a safe sink, cd/ls/pwd/true or a bare assignment, and every
-    `rm -rf` the pattern finds sits in an argument of a reader. It is judged
-    on the line, not on the hit's segment, because a pipe or redirect on a
-    group (`{ echo '...'; } | sh`) sits outside any one segment. Each clause
-    shuts a shape that ran the text although the per-token rule passed it:
+    no, match by match, only where the text is printed or searched and goes
+    nowhere a shell could take it. The rest of the line is judged as it
+    is, and this runs only when that judgement found nothing, so a yes
+    leaves the line silent, never allowed. For every match:
 
-    1. Every match is a hit -- `grep -n 'rm -rf' f; =rm -rf d` has a match
-       (zsh's =rm is /usr/bin/rm) that no hit token holds.
-    2. Each hit is an argument of a bare-named reader, with no substitution --
-       `./grep` is a path to some other binary and `grep() { eval ..; }` a
-       function, so the command word must be exactly the name.
-    3. Every segment is an allowed command or pure assignments -- a wrapper,
-       env prefix (`LESSOPEN='|-sh %s' less`), shell or path makes it False.
-       sort (`-o`, `--compress-program`), uniq (`- file`) and less are absent.
-    4. No grouping, compound or function word, and no `<(`, `>(`, `>>(` or
-       `()` token -- zsh's `echo '...' >>(sh)` pipes into a shell.
-    5. Every redirection is quiet: input, /dev/null, or a duplication onto
-       0, 1, 2 or - (not `>&60`, a coprocess).
-    6. No executing option: `rg --pre=sh` and `--hostname-bin` run a program,
-       `printf -v c '...'; $c` stores the text for the shell to run.
+    1. It is a token's -- `grep -n 'rm -rf' f; =rm -rf d` has a match (zsh's
+       =rm is /usr/bin/rm) that no token holds.
+    2. It is an argument of grep, egrep, fgrep, rg, echo or printf, named
+       bare (`./grep` is some other binary), reached through wrappers whose
+       options the guard can read, with nothing in front but a quiet
+       assignment (`PATH=/x grep` runs another grep), and no function,
+       alias, hash, autoload or zsh `functions[...]`/`aliases[...]` entry on
+       the line renames it.
+    3. It is in no substitution, no group, subshell, loop, branch, function
+       body or process substitution (`{ echo '...'; } | sh`), and no
+       heredoc body (`cat <<EOF | sh`), and no line rewrite of PATH.
+    4. Its pipeline is plain commands only -- readers, safe sinks, cd, ls,
+       pwd, true -- with every redirection quiet: input, /dev/null, or a
+       duplication onto 0, 1, 2 or -. No `rg --pre`, `--hostname-bin` or
+       `printf -v` in it.
+
+    A match in sed or awk, a shell's -c, python -c, ssh, eval, an unknown
+    command, or a pipeline into any of them keeps the ask.
     """
     hits = [i for i, t in enumerate(toks) if RM_RECURSIVE_RE.search(t)]
-    if not hits:
+    if not hits or read is None:
         return False
     if (len(RM_RECURSIVE_RE.findall(text))
             > sum(len(RM_RECURSIVE_RE.findall(toks[i])) for i in hits)):
         return False
-    for t in toks:
-        if t in GROUPING_WORDS:
+    quoted, starts = read
+    if not all(_read_only_mentions(n, text) for n in ("PATH", "path", "RIPGREP_CONFIG_PATH")):
+        return False
+    # The command at every start, read past wrappers, prefixes and leading
+    # redirections, quoted or not: `\\hash`, `command hash`, `A=1 hash`,
+    # `noglob hash` all run the builtin.
+    if any(command_name(toks[k]) in RENAMERS for k in starts
+           if k < len(toks) and k not in quoted):
+        return False
+    for st, end in list(bounds) + inner_starts(toks, bounds, read):
+        if effective_command(toks[st:end])[1] in RENAMERS:
             return False
-        if PUNCT_ONLY_RE.match(t) and ("(" in t or ")" in t):
-            return False
-    for s, e in bounds:
-        seg = toks[s:e]
-        first = seg[0]
-        if all(ENV_ASSIGN_RE.match(t) and not has_subst(t) for t in seg):
-            continue
-        if "/" in first or first not in INERT_COMMANDS:
-            return False
-        if not _quiet_redirects(seg):
-            return False
-        if first == "rg" and any(
-                t in ("--pre", "--hostname-bin")
-                or t.startswith(("--pre=", "--hostname-bin=")) for t in seg):
-            return False
-        if first == "printf" and any(t.startswith("-v") for t in seg):
-            return False
+    if any(RENAMING_TABLE_RE.match(t) for t in toks):
+        return False
+    defined = ({toks[i - 1] for i in range(1, len(toks))
+                if toks[i] != "function" and function_parens(toks, i)}
+               | {toks[i + 1] for i in range(len(toks) - 1) if toks[i] == "function"})
+    depths = _group_depths(toks, quoted, starts)
+    heredoc = next((i for i, t in enumerate(toks)
+                    if t in ("<<", "<<-") and i not in quoted), len(toks))
     for i in hits:
+        if i > heredoc or depths[i] or has_subst(toks[i]):
+            return False
         k = next((n for n, (s, e) in enumerate(bounds) if s <= i < e), None)
         if k is None:
             return False
-        s = bounds[k][0]
-        if (toks[s] not in INERT_READERS or "/" in toks[s] or i == s
-                or has_subst(toks[i])):
-            return False
+        lo = hi = k
+        while (lo > 0 and toks[bounds[lo - 1][1]] in ("|", "|&")
+               and bounds[lo][0] == bounds[lo - 1][1] + 1):
+            lo -= 1
+        while (hi + 1 < len(bounds) and bounds[hi][1] < len(toks)
+               and toks[bounds[hi][1]] in ("|", "|&")
+               and bounds[hi + 1][0] == bounds[hi][1] + 1):
+            hi += 1
+        for m in range(lo, hi + 1):
+            s, e = bounds[m]
+            seg = toks[s:e]
+            j, base, _, known = command_word_detail(seg)
+            if not known or j >= len(seg) or seg[j] != base:
+                return False
+            if base not in INERT_COMMANDS or base in defined:
+                return False
+            if any(t in GROUPING_WORDS or (PUNCT_ONLY_RE.match(t) and ("(" in t or ")" in t))
+                   for t in seg):
+                return False
+            if any(ENV_ASSIGN_RE.match(t) and not QUIET_ENV_RE.match(t) for t in seg[:j]):
+                return False
+            if not _quiet_redirects(seg):
+                return False
+            if base == "rg" and any(
+                    t in ("--pre", "--hostname-bin")
+                    or t.startswith(("--pre=", "--hostname-bin=")) for t in seg):
+                return False
+            if base == "printf" and any(t.startswith("-v") for t in seg[j + 1:]):
+                return False
+            if m == k and (base not in INERT_READERS or i <= s + j):
+                return False
     return True
 
 
@@ -6945,9 +7020,9 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
         # exempted `git -C /path rm -r` does not read as unparsed.
         m = RM_RECURSIVE_RE.search(text)
         if m:
-            # The whole line is plain readers and every match is their text:
-            # there is no rm here to have failed to parse.
-            if _inert_line(toks, bounds, text):
+            # Every match is a plain reader's text, going nowhere a shell
+            # could take it: there is no rm here to have failed to parse.
+            if _inert_matches(toks, bounds, text, quoted_starts):
                 return findings
             frag = " ".join(m.group(0).split())  # the match may span a newline
             reason = (f"{mark(frag)} reads as a recursive rm, but no rm command "
