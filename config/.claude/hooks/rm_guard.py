@@ -152,6 +152,18 @@ Known gaps, left open on purpose:
                                this rule is exactly as good as command_word, and
                                command_word is a heuristic.
 
+    hidden cwd movers          where a relative operand lands is read off the
+                               cd (chdir in zsh), pushd and popd on the line,
+                               a trap action that holds one, and zoxide's z,
+                               zi, __zoxide_z and __zoxide_zi, which the shell
+                               snapshot defines and which move the shell to a
+                               place no text names. A shell function, a trap or
+                               an alias from an earlier tool call can move it
+                               too, with nothing on the line to show it. zsh's
+                               AUTO_CD is not read: it applies only to a zsh
+                               reading commands from stdin, and Claude Code
+                               runs `zsh -c`.
+
 A third approach was built and withdrawn: prepending a runtime validator to the
 command through the hook's `updatedInput`, so that approving a prompt would be
 safe against an empty variable. Three designs, four review rounds, a Critical in
@@ -773,7 +785,10 @@ INERT_READERS = {"grep", "egrep", "fgrep", "rg", "echo", "printf"}
 # less are absent on purpose: each can write a file or run a program.
 SAFE_SINKS = {"head", "tail", "wc", "cut", "tr", "grep", "egrep", "fgrep", "rg",
               "cat", "column", "nl"}
-INERT_COMMANDS = INERT_READERS | SAFE_SINKS | {"cd", "ls", "pwd", "true"}
+# The builtins that move the shell to a directory they name. zsh's chdir is
+# its cd under another name, and Claude Code's shell is zsh.
+CD_WORDS = ("cd", "chdir", "pushd", "popd")
+INERT_COMMANDS = INERT_READERS | SAFE_SINKS | {"cd", "chdir", "ls", "pwd", "true"}
 # Words that open or close a group, loop, function or coprocess. A pipe or
 # redirect on one sits outside every segment, so none may appear at all.
 GROUPING_WORDS = {"(", ")", "{", "}", "do", "done", "then", "fi", "else", "elif",
@@ -969,13 +984,40 @@ def strip_heredocs(text):
         if m.span() in masked else m.group(0), text)
 
 
+def _covers_home(d):
+    """Is d the home directory, one of its ancestors, or /? A directory like
+    that is no safe root: everything the user owns would sit under it.
+
+    Read as written and, unless --no-disk, through every symlink too: a cwd
+    that is a link to / or to the home covers it as surely as the path. A
+    disk error counts as covering.
+    """
+    def covers(d, h):
+        return not d.strip("/") or (bool(h) and (d == h or _under(h, d)))
+    d, h = posixpath.normpath(d), _home()
+    if covers(d, h):
+        return True
+    if NO_DISK:
+        return False
+    try:
+        return covers(os.path.realpath(d), h and os.path.realpath(h))
+    except (OSError, ValueError):
+        return True
+
+
 def safe_roots(cwd, home=None):
+    """-> the directories anything strictly below which clears.
+
+    cwd is the session's own -- the hook payload's -- and never a cd target;
+    see classify_path. It and TMPDIR are roots only when they do not hold
+    the home: a session started in ~ would otherwise clear ~/Documents.
+    """
     roots = ["/tmp", "/var/tmp"]
     for var in ("TMPDIR",):
         v = os.environ.get(var)
-        if v:
+        if v and posixpath.isabs(v) and not _covers_home(v):
             roots.append(posixpath.normpath(v))
-    if cwd and posixpath.isabs(cwd):
+    if cwd and posixpath.isabs(cwd) and not _covers_home(cwd):
         roots.append(posixpath.normpath(cwd))
     roots.extend(home_roots(home))
     return roots
@@ -1393,17 +1435,21 @@ def nested_work_tree(p, home):
     return None
 
 
-def classify_path(p, cwd, home=None, through_glob=False):
+def classify_path(p, cwd, home=None, through_glob=False, base=None):
     """Classify a fully-literal path. -> (decision, reason)
 
+    cwd is where the shell stands when this runs: the session's own, or a cd
+    target on the line. base is the session's own, which the safe roots are
+    built from, so a cd moves where a relative path lands but never makes its
+    own target a root. None takes cwd, for a caller with one cwd and no cd.
     home is the local $HOME, or None for a far end; see analyse.
     through_glob is True for a glob's literal prefix when a `/` follows the
     wildcard: the shell may then walk through a link no one can see yet, so
     neither home root nor work tree may clear it.
     """
     if not posixpath.isabs(p):
-        # A literal relative path cannot become "/" at any cwd. Bounded blast
-        # radius, so it does not need cd-tracking to clear.
+        # A literal relative path is resolved against the cwd it runs in and
+        # then judged as the absolute path it becomes.
         if ".." in p.split("/"):
             return "ask", "relative path escapes upward via '..'"
         if cwd == UNKNOWN_CWD:
@@ -1411,10 +1457,9 @@ def classify_path(p, cwd, home=None, through_glob=False):
                            "directory option such as `env -C`, in this command "
                            "goes somewhere the guard cannot resolve, so where "
                            "this lands is unknown")
-        # A named subdirectory is bounded wherever cwd happens to be. An operand
-        # that IS cwd -- `.`, `./`, or the `.` a `./*` glob strips down to --
-        # takes the whole tree you are standing in, which is a different thing
-        # to agree to and gets its own prompt.
+        # An operand that IS cwd -- `.`, `./`, or the `.` a `./*` glob strips
+        # down to -- takes the whole tree you are standing in, which is a
+        # different thing to agree to and gets its own prompt.
         whole_cwd = posixpath.normpath(p) == "."
         # `.` IS cwd, and `./x` is one level under it. Harmless in a project
         # directory, catastrophic at / or $HOME. cwd is in the hook payload, so
@@ -1430,12 +1475,21 @@ def classify_path(p, cwd, home=None, through_glob=False):
             if whole_cwd:
                 return "ask", ("operand is the working directory itself "
                                f"({resolved}), so everything under it goes")
-            return "allow", "literal relative path"
-        # No cwd to resolve against -- this is the far side of an ssh, where the
-        # working directory is whatever the remote login lands in, usually $HOME.
+            # Where the operand LANDS is judged, against the roots an
+            # absolute path faces. "A named subdirectory is bounded wherever
+            # cwd happens to be" was true of its depth and not of what it
+            # was: `cd && rm -rf ./Documents` cleared as a relative path.
+            d, r = classify_path(resolved, cwd, home, through_glob,
+                                 cwd if base is None else base)
+            return d, f"lands at {resolved}; {r}"
+        # No cwd to resolve against -- the far side of an ssh, or a container,
+        # where the working directory is whatever the login or the image
+        # starts in, usually a $HOME no rule here can see. `ssh h 'rm -rf
+        # ./Documents'` is `cd && rm -rf ./Documents` there.
         if whole_cwd:
             return "ask", "operand is the working directory, unknown on the far end"
-        return "allow", "literal relative path"
+        return "ask", ("a relative path on the far end lands in whatever directory "
+                       "it starts in, usually its $HOME, which nothing here can place")
 
     norm = posixpath.normpath(p)
     if norm == "/":
@@ -1447,7 +1501,7 @@ def classify_path(p, cwd, home=None, through_glob=False):
         return "deny", "operand is the home directory"
     parts = [x for x in norm.split("/") if x]
     homes = home_roots(home)
-    for root in safe_roots(cwd, home):
+    for root in safe_roots(cwd if base is None else base, home):
         rp = [x for x in posixpath.normpath(root).split("/") if x]
         if parts[:len(rp)] == rp and len(parts) >= len(rp) + 1:
             if root in homes and through_glob:
@@ -1479,7 +1533,8 @@ def worst_of(results):
 
 def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                      may_clear=False, loops_may_clear=True, opaque_names=frozenset(),
-                     line_literals=None, reread=False, glued=False, home=None):
+                     line_literals=None, reread=False, glued=False, home=None,
+                     base=None, condemn_cwds=()):
     """-> (decision, reason), over every path this operand can actually become.
 
     Two things multiply a single written operand into several real ones, and
@@ -1500,18 +1555,32 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     loops_may_clear is False inside a string another shell re-reads; see
     analyse's `trusted`. opaque_names, line_literals, reread, glued and home
     are carried through to classify_one.
+
+    cwd is one directory or candidate_cwds' list, whose first is the
+    session's own. That one, and never a cd target, is what the safe roots
+    are built from; see classify_path. base names it when the list no longer
+    starts with it -- a command that runs only after a cd succeeded is never
+    in the session's cwd; see cd_must_have_run.
+
+    condemn_cwds are readings the command cannot run in but that the
+    line-wide reading counted: the session's cwd after such a cd, and a cd
+    that comes after the command; see _analyse's cwds_at. Each is still
+    judged, and only a deny it finds stands, so no deny is lost.
     """
     cwds = [cwd] if isinstance(cwd, str) else list(cwd) or [""]
+    base = cwds[0] if base is None else base
     products = expand_braces(op)
     if len(products) >= MAX_BRACE_PRODUCTS:
         return "ask", "brace expansion produces too many paths to check"
     results = []
     for p in products:
-        for c in cwds:
+        for c in cwds + [c for c in condemn_cwds if c not in cwds]:
             d, r = classify_one(p, c, bare_var_ok, assigned, loops, may_clear,
                                 loops_may_clear, opaque_names=opaque_names,
                                 line_literals=line_literals, reread=reread,
-                                glued=glued, home=home)
+                                glued=glued, home=home, base=base)
+            if c not in cwds and d != "deny":
+                continue
             if p != op:
                 r = f"brace expansion produces {p}; {r}"
             results.append((d, r))
@@ -1520,7 +1589,8 @@ def classify_operand(op, cwd, bare_var_ok=True, assigned=None, loops=None,
 
 def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                  may_clear=False, loops_may_clear=True, opaque_names=frozenset(),
-                 line_literals=None, reread=False, glued=False, home=None):
+                 line_literals=None, reread=False, glued=False, home=None,
+                 base=None):
     """-> (decision, reason). Anything not provably safe returns ask/deny.
 
     bare_var_ok encodes an rm-specific fact: `rm -rf $X` with X unset or empty
@@ -1559,7 +1629,8 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
     pass holds either.
 
     home is the local $HOME, or None on a far end; see analyse. A `~` there
-    reads as the HOME binding analyse adds, when it adds one.
+    reads as the HOME binding analyse adds, when it adds one. base is the
+    session's cwd, which the safe roots come from; see classify_path.
     """
     if XARGS_INPUT in op:
         return "ask", ("xargs supplies this operand from its input, which is "
@@ -1610,7 +1681,7 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                 d, r = classify_one(sub, cwd, bare_var_ok, assigned,
                                     may_clear=may_clear, opaque_names=opaque_names,
                                     line_literals=rest, reread=reread, glued=glued,
-                                    home=home)
+                                    home=home, base=base)
                 out.append((d, f"{n}={val} on this line, so this may read as "
                                f"{sub}; {r}"))
             d, r = worst_of(out) if out else ("allow", "")
@@ -1642,7 +1713,7 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
             return val
         resolved = SUBST_NAME_RE.sub(bound, op)
         if resolved != op and not EXPANSION_RE.search(resolved):
-            d, r = classify_one(resolved, cwd, bare_var_ok, home=home)
+            d, r = classify_one(resolved, cwd, bare_var_ok, home=home, base=base)
             used = [n for n in dict.fromkeys(
                 m.group(1) or m.group(2) for m in SUBST_NAME_RE.finditer(op))
                 if n in assigned]
@@ -1700,7 +1771,7 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
                 d, r = classify_one(sub, cwd, bare_var_ok, assigned,
                                     may_clear=may_clear, opaque_names=opaque_names,
                                     line_literals=line_literals, reread=reread,
-                                    glued=glued, home=home)
+                                    glued=glued, home=home, base=base)
                 out.append((d, f"the loop sets ${name} to {val}; {r}"))
             d, r = worst_of(out)
             # The same misread as the binding block above: the loop's name is
@@ -1850,9 +1921,10 @@ def classify_one(op, cwd, bare_var_ok=True, assigned=None, loops=None,
         prefix = prefix.rsplit("/", 1)[0]
         if prefix in ("", "/"):
             return "deny", "glob directly under the filesystem root"
-        return classify_path(prefix, cwd, home, through_glob="/" in op[idx:])
+        return classify_path(prefix, cwd, home, through_glob="/" in op[idx:],
+                             base=base)
 
-    return classify_path(op, cwd, home)
+    return classify_path(op, cwd, home, base=base)
 
 
 # --- spans the tokenizer must not read ---------------------------------------
@@ -2427,15 +2499,15 @@ BINDING_RE = re.compile(
 # it, because none can write a variable: the empty one mask_opaque leaves for a
 # comment or blank line; `set` with flag-only arguments (an `o` bundle takes
 # the option name after it, and zsh's `A` is left out: `set -AW` empties the
-# array W); and `cd` to a literal -- which writes only PWD and OLDPWD, both
-# DANGEROUS_VARS. Each must be followed by `;`. After `cd X && S=/x; rm -rf
+# array W); and `cd` (or zsh's chdir) to a literal -- which writes only PWD
+# and OLDPWD, both DANGEROUS_VARS. Each must be followed by `;`. After `cd X && S=/x; rm -rf
 # $S/y`, a failed cd skips the assignment and the `;` still runs the rm with S
 # unset, as `rm -rf /y` -- and `set` fails too, on a letter or an option name
 # the shell does not know (`set -Q`, `set -o nosuch`).
 PRELUDE_RE = re.compile(
     r"[ \t]*(?:"
     r"set(?:[ \t]+(?:[-+][B-Za-z]*o[ \t]+[A-Za-z]+|[-+][B-Za-z]+))+[ \t]*;"
-    r"|cd[ \t]+[^\s'\"\\;&|()<>$`~*?\[{}" + SENTINEL + r"]+[ \t]*;"
+    r"|(?:cd|chdir)[ \t]+[^\s'\"\\;&|()<>$`~*?\[{}" + SENTINEL + r"]+[ \t]*;"
     r"|;)")
 # ...and the same charset over an assignment TOKEN's value, for the names a line
 # assigns outside the leading run. Those values may condemn and never clear.
@@ -2937,19 +3009,9 @@ class SplitWords(list):
     """
 
 
-def loop_scopes(toks, masked=""):
-    """-> {name: [(opener, closer)]}: the span of each `for` or `select` loop
-    that binds name.
-
-    The two ends fail in opposite directions, so they are read differently. An
-    opener counts only where a command starts -- the line's start, after a
-    separator, or after a keyword or grouping word -- because a phantom one
-    (`echo for d in /tmp/y`) pairs with a real closer and widens a span. A
-    closer of the open loop's kind counts anywhere: one that is really data
-    (`echo done`) only ends a span early, while one the shells accept after
-    `esac`, `fi`, `done` or `)` in the same segment, missed, would let the
-    inner span run on into its parent's body.
-    """
+def _quoted_and_starts(toks, masked=""):
+    """-> (the tokens quoting touched, the tokens a command starts at), or
+    None when the masked text does not re-tokenize to the same tokens."""
     # shlex erases quotes, so `";"`, `\(`, `\;` and `"do"` arrive as bare
     # separators and keywords. Re-tokenizing the masked text with every quoted
     # or escaped span replaced by a plain word keeps the token boundaries and
@@ -2957,9 +3019,9 @@ def loop_scopes(toks, masked=""):
     try:
         qtoks = (tokenize(QUOTED_SPAN_RE.sub("QQQ", masked)) if masked else toks)
     except ValueError:
-        return {}
+        return None
     if len(qtoks) != len(toks):
-        return {}
+        return None
     quoted = {i for i, (a, b) in enumerate(zip(toks, qtoks)) if a != b}
     # Where a command starts: the line's start, after a separator or a
     # grouping token, or after a keyword (or `time`) that itself sits at a
@@ -2973,6 +3035,56 @@ def loop_scopes(toks, masked=""):
                 or (prev == "{" and i >= 3 and toks[i - 3] == "function"
                     and i - 3 in starts and i - 3 not in quoted)):
             starts.add(i)
+    return quoted, starts
+
+
+def loop_bodies(toks, masked=""):
+    """-> the tokens that may run more than once: inside a loop of any kind,
+    or after a function definition, which runs its body at every call.
+
+    The opposite reading to loop_scopes', because a missed end costs the
+    other way here. A loop opens and closes only on an unquoted word where a
+    command starts, so `echo done` and `"done"` close nothing; a closer that
+    is missed -- one written straight after `fi` -- keeps the body open to
+    the line's end, which costs a prompt. Text that will not re-tokenize
+    reads as all body.
+    """
+    read = _quoted_and_starts(toks, masked)
+    if read is None:
+        return set(range(len(toks)))
+    quoted, starts = read
+    body, stack = set(), []
+    for i, t in enumerate(toks):
+        if stack:
+            body.add(i)
+        if t in ("function", "()") or (t == "(" and toks[i + 1:i + 2] == [")"]):
+            return body | set(range(i, len(toks)))
+        if i in quoted or i not in starts:
+            continue
+        if t in LOOP_OPENERS:
+            stack.append(LOOP_CLOSER_FOR[t])
+        elif stack and t == stack[-1]:
+            stack.pop()
+    return body
+
+
+def loop_scopes(toks, masked=""):
+    """-> {name: [(opener, closer)]}: the span of each `for` or `select` loop
+    that binds name.
+
+    The two ends fail in opposite directions, so they are read differently. An
+    opener counts only where a command starts -- the line's start, after a
+    separator, or after a keyword or grouping word -- because a phantom one
+    (`echo for d in /tmp/y`) pairs with a real closer and widens a span. A
+    closer of the open loop's kind counts anywhere: one that is really data
+    (`echo done`) only ends a span early, while one the shells accept after
+    `esac`, `fi`, `done` or `)` in the same segment, missed, would let the
+    inner span run on into its parent's body.
+    """
+    read = _quoted_and_starts(toks, masked)
+    if read is None:
+        return {}
+    quoted, starts = read
     scopes, stack = {}, []
     for i, t in enumerate(toks):
         if t in LOOP_OPENERS:
@@ -3299,20 +3411,82 @@ def print_v_word(args):
     return None
 
 
-def candidate_cwds(toks, cwd, resolve=None):
-    """-> every directory a relative operand in this command can resolve against.
+# A relative cd target is looked up on CDPATH -- zsh's cdpath, tied to it --
+# and under bash's cdable_vars or zsh's CDABLE_VARS (`set -T` there) a target
+# that is no directory reads as a variable naming one: `CDPATH=/; cd usr` is
+# in /usr. A line that names either, or sets zsh's -T flag, may search.
+CD_SEARCH_NAME_RE = re.compile(r"(?<![A-Za-z0-9_])(?:CDPATH|cdpath)(?![A-Za-z0-9_])")
+CDABLE_FLAG_RE = re.compile(r"^[-+][A-Za-z]*T[A-Za-z]*$")
+OPTION_SETTERS = {"set", "setopt", "unsetopt", "emulate"}
+# More places than this for the shell to stand, and the next relative cd
+# leaves it unplaceable rather than multiplying them again.
+MAX_CWDS = 64
 
-    `cd`, `pushd` and `popd` are the only things in a pipeline that move the
-    shell this rm runs in, and not tracking them is why `cd /; rm -rf build`
-    and `pushd / && rm -rf usr` cleared: the operand was judged against the
-    *hook's* cwd, where it is bounded, instead of against `/`. A child process
-    cannot move us, so every one of them in the command text is a candidate
-    and nothing else is.
+
+def cd_may_search(cmd, toks):
+    """Can a relative cd target on this line be looked up somewhere other
+    than the working directory? See CD_SEARCH_NAME_RE.
+
+    Read off the text with its quotes and backslashes gone, as the shell
+    reads `export C""DPATH=/`; zsh ignores case and underscores in an option
+    name. An option setter or a shell handed an expansion may be handed -T.
+    A mention that only reads CDPATH counts too, which costs a prompt.
+    """
+    plain = re.sub(r"['\"\\]", "", cmd)
+    if (CD_SEARCH_NAME_RE.search(plain)
+            or "cdablevars" in plain.replace("_", "").lower()):
+        return True
+    for start, end in segment_bounds(toks):
+        argv = [t for t in toks[start:end] if t not in GROUPING]
+        j, base = command_word(argv)
+        if base not in OPTION_SETTERS and base not in SHELLS:
+            continue
+        for t in argv[j + 1:]:
+            if t == "--":
+                break
+            if CDABLE_FLAG_RE.match(t) or (base in OPTION_SETTERS and (
+                    has_subst(t) or EXPANSION_RE.search(t))):
+                return True
+    return False
+
+
+def _cdpath_set():
+    """Does the hook's own environment hold a CDPATH with an entry other
+    than the working directory (empty or `.`)?"""
+    return any(e and posixpath.normpath(e) != "."
+               for e in os.environ.get("CDPATH", "").split(":"))
+
+
+def candidate_cwds(toks, cwd, resolve=None, searches=False, masked=""):
+    """-> every directory a relative operand in this command can resolve
+    against: cwd_readings, each once."""
+    return list(dict.fromkeys(cwd_readings(toks, cwd, resolve, searches, masked)))
+
+
+def cwd_readings(toks, cwd, resolve=None, searches=False, masked="", marks=None):
+    """-> every directory a relative operand in this command can resolve
+    against, the session's own cwd first and alone as the reading that no cd
+    has run. A cd whose target is that cwd adds it again, as its own reading.
+    marks, when given, is filled with len(out) as each segment_bounds
+    segment starts and once after the last, so a caller can tell which
+    readings the cds before a command added; see _analyse's cwds_at.
+
+    `cd` (and zsh's `chdir`, the same builtin), `pushd` and `popd` are the
+    only builtins in a pipeline that move the shell this rm runs in, and not
+    tracking them is why `cd /; rm -rf
+    build` and `pushd / && rm -rf usr` cleared: the operand was judged
+    against the *hook's* cwd, where it is bounded, instead of against `/`. A
+    child process cannot move us, so every one of them in the command text is
+    a candidate. Zoxide's functions move it too, somewhere no text names, so
+    each one where a command starts makes the shell unplaceable; see
+    ZOXIDE_MOVERS. Other hidden movers are a known gap.
 
     Both the before and the after are candidates, not only the after --
-    `x && cd /tmp && rm -rf ./y` runs the rm where it started if the cd never
-    happens. classify_operand judges all of them and takes the worst, which
-    covers the conditional case without having to decide whether it fires.
+    `cd /tmp; rm -rf ./y` runs the rm where it started if the cd fails.
+    classify_operand judges all of them and takes the worst, which covers
+    the conditional case without having to decide whether it fires. The one
+    exception is decided per command, by the caller: one that runs only if
+    a cd succeeded drops the before; see cd_must_have_run.
 
     resolve(word, index) is loop_bindings': a target built from bindings that
     hold at the cd -- `S=/tmp/s; cd $S` -- places the shell. Only an absolute
@@ -3320,11 +3494,40 @@ def candidate_cwds(toks, cwd, resolve=None):
     `cd` go to $HOME, which places the shell only through a HOME binding; a
     `~` target keeps its literal reading too, as a directory named `~` -- what
     `cd "~"` means, and shlex has removed the quotes.
+
+    A relative target is joined to every place the shell may stand by then,
+    not only to where it started: `cd /tmp/a && cd ../../etc` is in /etc.
+    Those readings stay, and the shell is unplaceable as well, when the
+    target may be looked up elsewhere -- searches is cd_may_search's finding,
+    and the hook's own CDPATH counts too -- or when it climbs with `..` and
+    may run more than once: `while ...; do cd ..; done` climbs as far as it
+    runs. masked is the line as mask_opaque leaves it; see loop_bodies.
+
+    A cd the segments do not read as one -- in a one-line function body,
+    `f() { cd /; }`, or behind a `);` shlex keeps as one token, `x=(a); cd
+    /` -- still moves the shell, to a place this does not read, so every
+    relative operand on the line asks.
     """
+    searches = searches or _cdpath_set()
+    repeats = loop_bodies(toks, masked)
+    read_starts = _quoted_and_starts(toks, masked)
+    starts = read_starts[1] if read_starts else set(range(len(toks)))
     out = [cwd]
+    read = set()
+    marks = [] if marks is None else marks
     for start, end in segment_bounds(toks):
-        argv = [t for t in toks[start:end] if t not in GROUPING]
+        marks.append(len(out))
+        at = [k for k in range(start, end) if toks[k] not in GROUPING]
+        argv = [toks[k] for k in at]
         idx, base, moved, _ = command_word_detail(argv)
+        if idx < len(at):
+            read.add(at[idx])
+        # zoxide's z goes wherever its database says. Its command word, or
+        # one where a command starts inside the segment -- `f() { z p; }`.
+        if base in ZOXIDE_MOVERS or any(
+                k in starts and command_name(toks[k]) in ZOXIDE_MOVERS
+                for k in range(start, end)):
+            out.append(UNKNOWN_CWD)
         # ...and one behind xargs moves what xargs runs: `xargs env -C / rm`.
         moved = moved or effective_command(argv)[2]
         if moved:
@@ -3333,7 +3536,12 @@ def candidate_cwds(toks, cwd, resolve=None):
             # every relative operand on it asks: a false ask on `env -C / ls;
             # rm -rf ./b`, which is rare.
             out.append(UNKNOWN_CWD)
-        if base not in ("cd", "pushd", "popd"):
+        # A trap's action runs later, at a signal -- DEBUG before every
+        # command -- so one that may move the shell leaves it unplaceable.
+        if base == "trap" and _trap_may_move(argv[idx + 1:]):
+            out.append(UNKNOWN_CWD)
+            continue
+        if base not in CD_WORDS:
             continue
         # Options first. One the guard does not know -- `pushd -n`, a typo --
         # may change what the next word means, so the shell is unplaceable.
@@ -3385,11 +3593,168 @@ def candidate_cwds(toks, cwd, resolve=None):
             out.append(UNKNOWN_CWD)
         elif posixpath.isabs(target):
             out.append(posixpath.normpath(target))
-        elif cwd and posixpath.isabs(cwd):
-            out.append(posixpath.normpath(posixpath.join(cwd, target)))
         else:
-            out.append(UNKNOWN_CWD)
-    return list(dict.fromkeys(out))
+            # Each reading only adds a candidate, so a deny one of them finds
+            # still stands beside the unknown.
+            here = list(dict.fromkeys(out))
+            moved_to = [posixpath.normpath(posixpath.join(c, target))
+                        if c and posixpath.isabs(c) else UNKNOWN_CWD for c in here]
+            if len(here) + len(moved_to) > MAX_CWDS:
+                moved_to = moved_to[:1] + [UNKNOWN_CWD]
+            out.extend(moved_to)
+            # Only a target whose first component is `.` or `..` is never
+            # looked up: `./usr` and `../usr` stay put, `usr/bin` and `.hid`
+            # do not.
+            if searches and target.split("/", 1)[0] not in (".", ".."):
+                out.append(UNKNOWN_CWD)
+            elif ".." in target.split("/") and idx < len(at) and at[idx] in repeats:
+                out.append(UNKNOWN_CWD)
+    marks.append(len(out))
+    if any(command_name(t) in CD_WORDS and k not in read
+           for k, t in enumerate(toks)):
+        out.append(UNKNOWN_CWD)
+    return out
+
+
+def _trap_may_move(args):
+    """Could the action of `trap ACTION SIGNAL...` move the shell?
+
+    It may when it holds a cd, chdir, pushd, popd or a zoxide jump anywhere,
+    or when its text cannot be read: an expansion or a substitution where a
+    command starts, eval, source or `.`, or text that will not tokenize.
+    `trap - SIG`, `trap '' SIG`, `trap -p` and an action that only runs
+    commands -- `trap 'rm -rf "${T:?}"' EXIT`, `trap cleanup EXIT` -- move
+    nothing. A function defined elsewhere is the documented gap.
+    """
+    args = [a for a in strip_redirections(args) if a not in ("-l", "-p", "--")]
+    if not args or args[0] in ("", "-"):
+        return False
+    action = args[0]
+    if has_subst(action) or SENTINEL in action:
+        return True
+    try:
+        toks = tokenize(action)
+    except ValueError:
+        return True
+    if any(command_name(t) in CD_WORDS or command_name(t) in ZOXIDE_MOVERS
+           for t in toks):
+        return True
+    for s, e in segment_bounds(toks):
+        j, base, _, known = command_word_detail(toks[s:e])
+        if s + j >= e:
+            continue
+        word = toks[s + j]
+        if not known or base in OPAQUE or "$" in word or has_subst(word):
+            return True
+    return False
+
+
+# Functions the shell snapshot defines that move the shell: zoxide's, from
+# `zoxide init zsh` in ~/.zshrc. `cd` itself stays the builtin in Claude
+# Code's shell, but these are still defined, and go wherever zoxide's
+# database ranks a match highest.
+ZOXIDE_MOVERS = {"z", "zi", "__zoxide_z", "__zoxide_zi"}
+
+
+# What may stand before a cd in its own segment and leave it a cd this shell
+# runs, whose failure the `&&` after it sees: the start of a group or of a
+# compound command's list, and `builtin`. Assignments too. Not `!`, which
+# turns a failed cd into success, and no other wrapper -- `command -v cd`
+# succeeds without moving anything.
+CD_LEADERS = {"(", "{", "do", "then", "else", "elif", "if", "while", "until",
+              "builtin"}
+CHAIN_OPS = ("&&", "||", "|", "|&")
+# A run of the punctuation shlex glues into one token: `)&&`, `;;`, `);`.
+GLUED_OP_RE = re.compile(r"^[();<>|&]+$")
+
+
+def _op_before(toks, s, quoted=frozenset()):
+    """-> (the list operator in front of the segment starting at s, its
+    index): `&&`, `||`, `|`, `;`, `&`, or ("", -1) at the line's start. A
+    newline after `&&`, `||` or `|` continues the line, and tokenize has
+    made it a `;`. A quoted token is a word, not an operator, whatever shlex
+    made of it: ("quoted", index) then, which is no operator at all."""
+    j = s - 1
+    while j >= 0 and toks[j] in (";", "\n") and j not in quoted:
+        j -= 1
+    if j >= 0 and toks[j] in CHAIN_OPS and j not in quoted:
+        return toks[j], j
+    if s == 0 or j < 0:
+        return "", -1
+    if s - 1 in quoted:
+        return "quoted", s - 1
+    return toks[s - 1], s - 1
+
+
+def _plain_cd(toks, s, e, quoted, starts):
+    """Is toks[s:e] a cd, pushd or popd this shell runs, and nothing else?
+
+    The cd word must be unquoted, and it or the assignments and `builtin`
+    in front of it must stand where a command really starts: `echo ';' cd
+    x` reads as two segments once shlex has dropped the quotes, and runs no
+    cd. An option it does not know -- `pushd -n`, which moves nothing --
+    makes it no plain cd either.
+    """
+    c = s
+    while c < e and (toks[c] in CD_LEADERS or ENV_ASSIGN_RE.match(toks[c])):
+        c += 1
+    if c >= e or toks[c] not in CD_WORDS or c in quoted:
+        return False
+    j = c
+    while j > s and (toks[j - 1] == "builtin" or ENV_ASSIGN_RE.match(toks[j - 1])):
+        j -= 1
+    if j not in starts or any(k in quoted for k in range(j, c + 1)):
+        return False
+    for t in toks[c + 1:e]:
+        if t == "--":
+            break
+        if (t.startswith("-") and t != "-" and not CD_FLAGS_RE.match(t)
+                and not DIR_STACK_INDEX_RE.match(t)):
+            return False
+    return _simple(toks[c + 1:e])
+
+
+def _simple(seg):
+    """No group opens or closes in it, and no operator shlex glued to a
+    parenthesis hides one -- `cd /tmp/x)&&` is one token."""
+    return not any(t in GROUPING or (GLUED_OP_RE.match(t) and not
+                                     REDIRECT_TOKEN_RE.match(t)) for t in seg)
+
+
+def cd_must_have_run(toks, bounds, k, read=None):
+    """Does segment k run only if a cd before it succeeded?
+
+    Then the shell is not where the session started -- that reading is the
+    cd failing and the rest running anyway -- so it is dropped. Proven only
+    for one shape: k is reached from a plain cd (_plain_cd) through `&&`
+    alone, every command in between simple, and the cd itself starts its
+    list or follows an `&&`. `a && cd x && rm` qualifies, since the cd runs
+    and succeeds before rm can, whatever a did. None of these does, and each
+    keeps the session's cwd: `cd x; rm`, `cd x | rm`, `cd x && a || rm`, `a
+    || cd x && rm` (a succeeds, the cd never runs), `! cd x && rm`, `(cd x)
+    && rm`, a cd behind any wrapper but `builtin` or with an option it does
+    not know, a cd a quoted separator only appears to start (`echo ';' cd
+    x && rm`), and a chain with a zoxide mover in it, `cd x && z p && rm`.
+
+    read is _quoted_and_starts' (quoted, starts) for the line, which decides
+    which separators and command starts are real; without it, False.
+    """
+    if read is None:
+        return False
+    quoted, starts = read
+    i = k
+    while True:
+        op, at = _op_before(toks, bounds[i][0], quoted)
+        if op != "&&" or i == 0 or bounds[i - 1][1] != at:
+            return False
+        i -= 1
+        s, e = bounds[i]
+        if any(command_name(t) in ZOXIDE_MOVERS for t in toks[s:e]):
+            return False
+        if _plain_cd(toks, s, e, quoted, starts):
+            return _op_before(toks, s, quoted)[0] in ("", ";", "\n", "&", "&&")
+        if not _simple(toks[s:e]):
+            return False
 
 
 # --- per-command target extraction -------------------------------------------
@@ -3593,6 +3958,16 @@ def git_subcommand(argv):
             continue
         i += 1
     return (i, argv[i]) if i < len(argv) else (i, "")
+
+
+# Commands that run their arguments in a container, under exec or run.
+CONTAINER_RUNNERS = {"docker", "podman", "nerdctl", "kubectl"}
+
+
+def _in_container(prefix):
+    """Do the words before an rm hand it to a container's exec or run?"""
+    j, base = command_word(prefix)
+    return base in CONTAINER_RUNNERS and any(t in ("exec", "run") for t in prefix[j + 1:])
 
 
 def ssh_remote_command(argv):
@@ -3803,7 +4178,8 @@ _SOURCED_VALUE = (r"(?:[A-Za-z0-9_./:@%+,-]|" + _NAME_REF
 SOURCED_LINE_RE = re.compile(
     r"^[ \t]*(?:"
     r"(?:export[ \t]+)?[A-Z_][A-Z0-9_]*=" + _SOURCED_VALUE + r"*"
-    r"|cd[ \t]+" + _SOURCED_VALUE + r"+(?:[ \t]*\|\|[ \t]*return(?:[ \t]+[0-9]+)?)?"
+    r"|(?:cd|chdir)[ \t]+" + _SOURCED_VALUE
+    + r"+(?:[ \t]*\|\|[ \t]*return(?:[ \t]+[0-9]+)?)?"
     r")?[ \t]*(?:(?<=[ \t])#.*|^[ \t]*#.*)?$")
 # The name an env-file line assigns. Upper case only, as env files are written:
 # zsh's lower-case specials (status, pipestatus, the zsh/parameter arrays)
@@ -3971,7 +4347,7 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                     may_clear=False, git_relocated=False, trusted=True,
                     opaque_names=frozenset(), line_literals=None,
                     reread=False, outer_danger=False, glued=False,
-                    read_xargs=True, home=None):
+                    read_xargs=True, home=None, session_cwd=None, condemn_cwds=()):
     """-> [Finding] for the non-rm commands in one segment.
 
     may_clear is decided per SEGMENT by analyse, because that is the unit a
@@ -3983,6 +4359,9 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
     danger, which an ssh remote string is read with, as reread_findings
     reads a script. read_xargs False reads an xargs segment's words as
     written, never through the xargs: one level, so nesting stays linear.
+    session_cwd is the session's cwd when cwd, the candidates, no longer
+    starts with it, and condemn_cwds the readings that may only condemn; see
+    classify_operand's base and condemn_cwds.
     """
     out = []
     segment = argv
@@ -4003,7 +4382,8 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                     trusted)
             kw = dict(opaque_names=opaque_names, line_literals=line_literals,
                       reread=reread, outer_danger=outer_danger, glued=glued,
-                      home=home)
+                      home=home, session_cwd=session_cwd,
+                      condemn_cwds=condemn_cwds)
             return (analyse_segment(argv, *same, read_xargs=False, **kw)
                     + analyse_segment(with_xargs_input(argv[p[0]:], p[1]),
                                       *same, **kw))
@@ -4042,7 +4422,8 @@ def analyse_segment(argv, cwd, depth, assigned=None, loops=None,
                                     loops_may_clear=trusted,
                                     opaque_names=opaque_names,
                                     line_literals=line_literals, reread=reread,
-                                    glued=glued, home=home)
+                                    glued=glued, home=home, base=session_cwd,
+                                    condemn_cwds=condemn_cwds)
             if follows and d == "allow":
                 d, r = "ask", (f"{follows} follows symlinks below {t}, so what it "
                                f"deletes is not bounded by it ({r})")
@@ -4173,6 +4554,11 @@ def ssh_command_as_base_read(argv):
 # string, one level down, where a `return []` would read to the caller as
 # "nothing found". Only "was anything recorded" is visible, not what.
 _WITHDRAWN = [False]
+# Analysis at any depth sets this when its text may send a relative cd
+# elsewhere (cd_may_search), and every candidate_cwds after it reads it. Each
+# text read below a line is part of that line's own text, except a sourced
+# file, which is read in its place and tested there.
+_CD_SEARCHES = [False]
 
 
 def _note_unread_heredocs(cmd, read=()):
@@ -4304,6 +4690,7 @@ def analyse(cmd, cwd, depth=0, trusted=True, outer_danger=False, reread=False,
     # ask or a deny. Decided here, once, over what every depth recorded.
     if depth == 0:
         _WITHDRAWN[0] = False
+        _CD_SEARCHES[0] = False
     findings = _analyse(cmd, cwd, depth, trusted, outer_danger, reread, local)
     if (depth == 0 and _WITHDRAWN[0] and findings
             and all(f.decision == "allow" for f in findings)):
@@ -4709,8 +5096,38 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
     # rebind_at does not gate a loop's words; see SplitWords.
     if not _read_only_mentions("IFS", cmd):
         loops = {n: (ws if ws is None else SplitWords(ws)) for n, ws in loops.items()}
-    scopes = loop_scopes(toks, mask_opaque(cmd)[0])
-    cwds = candidate_cwds(toks, cwd, resolve)
+    masked = mask_opaque(cmd)[0]
+    scopes = loop_scopes(toks, masked)
+    # A line that may look a cd target up elsewhere says so for every text
+    # read below it too: `zsh -T -c '...'` sets the flag the script obeys.
+    if cd_may_search(cmd, toks):
+        _CD_SEARCHES[0] = True
+    marks = []
+    readings = cwd_readings(toks, cwd, resolve, _CD_SEARCHES[0], masked, marks)
+    cwds = list(dict.fromkeys(readings))
+    repeats = loop_bodies(toks, masked)
+    quoted_starts = _quoted_and_starts(toks, masked)
+
+    def cwds_at(seg_start):
+        """-> (the cwds a command at seg_start may run in, condemn-only ones).
+
+        Two readings are dropped, both the user's decision: those of a cd
+        that comes after the command, unless a loop or a function may run
+        it again; and, for a command that runs only if a cd succeeded, the
+        session's own cwd. That cwd still builds the safe roots (base,
+        below). Every dropped reading may still condemn, so no deny the
+        line-wide reading gave is lost.
+        """
+        k = next(n for n, (s, _) in enumerate(bounds) if s == seg_start)
+        here = readings
+        # Any word of the segment, not its first: `repeat 2 do rm -rf x`
+        # opens its loop inside the segment, and `f() { rm` its body.
+        if not any(t in repeats for t in range(*bounds[k])):
+            here = readings[:marks[k + 1]] + readings[marks[-1]:]
+        if cd_must_have_run(toks, bounds, k, quoted_starts):
+            here = here[1:]
+        here = list(dict.fromkeys(here)) or cwds
+        return here, [c for c in cwds if c not in here]
 
     in_git = git_segments(toks)
     findings = list(unreadable)
@@ -4770,13 +5187,22 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
             continue
         if not operands:
             continue
+        here, gone = cwds_at(seg_start)
+        # docker, podman or kubectl running the rm inside a container: it
+        # starts in whatever directory the image sets, which nothing here
+        # places, as a far end's is. The host cwd is read too, and the worse
+        # verdict stands: base read `.` there and denied it at $HOME, and
+        # `docker run -v ~:/h -w /h img rm -rf .` does delete $HOME.
+        if _in_container(toks[seg_start:rm_at]):
+            here = ([here] if isinstance(here, str) else list(here)) + [""]
         for op in operands:
-            d, r = classify_operand(op, cwds, assigned=assigned,
+            d, r = classify_operand(op, here, assigned=assigned,
                                     loops=loops_at(loops, scopes, seg_start),
                                     may_clear=may_clear, loops_may_clear=trusted,
                                     opaque_names=opaque_names,
                                     line_literals=lits, reread=reread,
-                                    glued=glued, home=home)
+                                    glued=glued, home=home, base=cwd,
+                                    condemn_cwds=gone)
             # No label: for rm every operand is a target, which the echoed
             # command already makes obvious.
             findings.append(Finding(d, segment, None, op, r))
@@ -4785,12 +5211,13 @@ def _analyse(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
     git_relocated = git_relocates(text, toks, bounds)
     for start, end in bounds:
         findings.extend(
-            analyse_segment(toks[start:end], cwds, depth, assigned,
+            analyse_segment(toks[start:end], cwds_at(start)[0], depth, assigned,
                             loops_at(loops, scopes, start),
                             start < rebind_at, git_relocated, trusted,
                             opaque_names=opaque_names,
                             line_literals=literals_at(start), reread=reread,
-                            outer_danger=danger, glued=glued, home=home))
+                            outer_danger=danger, glued=glued, home=home,
+                            session_cwd=cwd, condemn_cwds=cwds_at(start)[1]))
 
     # Scripts collected above, and quoted heredocs a shell reads from stdin.
     # A -c script is untrusted: its double quotes may have let the OUTER shell

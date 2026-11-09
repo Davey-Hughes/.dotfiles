@@ -13,6 +13,8 @@ Four outcomes, and the difference between the first two matters:
 cwd is a fixed synthetic path rather than the real one, so a verdict never
 depends on where the suite happens to be run from -- safe_roots() folds cwd in,
 and a run from /tmp would quietly clear operands a run from $HOME would not.
+CDPATH is dropped for the same reason: the guard reads its own, and one set
+where the suite runs would make every relative cd here unplaceable.
 """
 import json
 import os
@@ -20,6 +22,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+os.environ.pop("CDPATH", None)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GUARD = os.path.join(HERE, "rm_guard.py")
@@ -304,8 +308,9 @@ CASES = [
     ("a cd to a deep literal still clears", "cd /tmp/build && rm -rf ./sub", "allow"),
 
     # --- the operand that IS the working directory ---------------------------
-    # A named subdirectory is bounded wherever you stand. `.` is not: it takes
-    # the whole tree you are in, which is a different thing to agree to.
+    # A named subdirectory clears when it lands under a root -- here, the
+    # session's cwd. `.` takes the whole tree you are in, which is a different
+    # thing to agree to.
     ("rm -rf . takes everything under cwd", "rm -rf .", "ask"),
     ("...and so does ./", "rm -rf ./", "ask"),
     ("...and so does ./*", "rm -rf ./*", "ask"),
@@ -1502,6 +1507,66 @@ CASES = [
      "ask"),
     ("a loop word with no space still clears", 'for C in /tmp/x /tmp/y; do rm -rf $C; done',
      "allow"),
+    # --- a relative operand is judged by where it lands ----------------------
+    ("relative: cd home, then a relative delete", "cd && rm -rf ./Documents", "ask"),
+    ("relative: cd ~, then a relative delete", "cd ~ && rm -rf Documents", "ask"),
+    ("relative: cd somewhere outside every root", "cd /opt/app && rm -rf build", "ask"),
+    # A far end starts in a directory no rule here can see -- usually the
+    # remote $HOME -- so a relative path there is placed nowhere.
+    ("relative: ...on an ssh far end", "ssh h 'rm -rf ./x'", "ask"),
+    ("relative: ...a -c script there", "ssh h 'bash -c \"rm -rf ./x\"'", "ask"),
+    ("relative: ...in a container", "docker exec c rm -rf ./etc", "ask"),
+    ("relative: ...an absolute one there is judged as before",
+     "ssh h 'rm -rf /opt/x'", "ask"),
+    ("relative: cd into the session's own tree", "cd sub && rm -rf build", "allow"),
+    # find and rsync face the session's roots too, not their own command name.
+    ("relative: find under the session's cwd", "find build -delete", "allow"),
+    ("relative: rsync --delete under the session's cwd", "rsync -a --delete src/ dst/",
+     "allow"),
+    ("absolute: under the session's cwd, beside a cd",
+     "cd /tmp/x && rm -rf /home/u/project/build", "allow"),
+    # A relative cd is joined to wherever the shell stands by then: this one
+    # is in /u/project/w, not under the session's cwd.
+    ("relative: a relative cd after another",
+     "cd /tmp/a && cd ../../u/project/w && rm -rf z", "ask"),
+    # A cd the segments do not read as a command still moves the shell.
+    ("relative: a cd in a one-line function body", "f() { cd /; }; f; rm -rf usr", "ask"),
+    ("relative: a cd behind a glued );", "x=(a); cd /; rm -rf usr", "ask"),
+    # --- CDPATH and cdable_vars send a relative cd elsewhere -----------------
+    ("CDPATH on the line", "CDPATH=/; cd usr; rm -rf ./bin", "ask"),
+    ("...as the cd's own prefix", "CDPATH=/ cd usr && rm -rf bin", "ask"),
+    ("...exported through quotes", 'export C""DPATH=/; cd usr && rm -rf bin', "ask"),
+    ("...zsh's cdpath", "set -A cdpath /; cd usr && rm -rf bin", "ask"),
+    ("...a dot-named target is looked up too", "CDPATH=/tmp; cd .hid && rm -rf build",
+     "ask"),
+    ("...a ./ target never is", "CDPATH=/; cd ./sub && rm -rf build", "allow"),
+    ("...nor an absolute one", "CDPATH=/; cd /tmp/x && rm -rf build", "allow"),
+    ("bash's cdable_vars", "shopt -s cdable_vars; x=/; cd x && rm -rf usr", "ask"),
+    ("zsh's CDABLE_VARS, spelled any way", "setopt C_dAbLe_VaRs; x=/; cd x && rm -rf usr",
+     "ask"),
+    ("zsh's set -T", "set -T; x=/; cd x && rm -rf usr", "ask"),
+    ("...on the shell that runs the script", "zsh -T -c 'x=/; cd x && rm -rf usr'", "ask"),
+    ("...or an option handed to set by an expansion", 'set $O; cd x && rm -rf usr', "ask"),
+    # --- zsh's chdir is cd ----------------------------------------------------
+    ("chdir: moves the shell as cd does", "chdir / && rm -rf ./x", "deny"),
+    ("chdir: ...after a ;", "chdir /; rm -rf ./x", "deny"),
+    ("chdir: ...behind builtin", "builtin chdir / && rm -rf ./x", "deny"),
+    ("chdir: ...behind command", "command chdir / && rm -rf ./x", "deny"),
+    ("chdir: a bounded one places the shell", "chdir /tmp/x && rm -rf ./y", "allow"),
+    # --- a trap action can move the shell before a later command -------------
+    ("trap: a DEBUG trap that cds", "trap 'cd /' DEBUG; rm -rf ./x", "ask"),
+    ("trap: ...an ERR trap", "trap 'cd /' ERR; rm -rf ./x", "ask"),
+    ("trap: ...pushd", "trap 'pushd / >/dev/null' DEBUG; rm -rf ./x", "ask"),
+    ("trap: ...chdir", "trap 'chdir /' DEBUG; rm -rf ./x", "ask"),
+    ("trap: an action held in a variable", 'trap "$A" DEBUG; rm -rf ./x', "ask"),
+    ("trap: ...run by eval", "trap 'eval \"$A\"' DEBUG; rm -rf ./x", "ask"),
+    ("trap: an absolute operand is not moved", "trap 'cd /' DEBUG; rm -rf /tmp/x/y", "allow"),
+    ("trap: a reset moves nothing", "trap - DEBUG; rm -rf ./x", "allow"),
+    ("trap: ...nor an ignored signal", "trap '' INT; rm -rf ./x", "allow"),
+    ("trap: an EXIT cleanup stays cheap",
+     "T=$(mktemp -d); trap 'rm -rf \"${T:?}\"' EXIT; rm -rf ./x", "allow"),
+    ("trap: ...and a signal cleanup", "trap 'rm -f \"$tmp\"' INT TERM; rm -rf ./x", "allow"),
+    ("trap: ...and a function named as the action", "trap cleanup EXIT; rm -rf ./x", "allow"),
     # --- a nameref writes the name it refers to -----------------------------
     ("nameref: a target written through its reference",
      'declare -n R=W; R=/; rm -rf "${W:?}"/x', "ask"),
@@ -1941,6 +2006,130 @@ def check_home_roots():
             got, reason = run([sys.executable, GUARD], cmd, env=env)
             if got != want:
                 fails.append((name, cmd, want, got, reason))
+        # A relative operand is judged where it lands, and a session started
+        # in $HOME -- or above it -- does not make $HOME a root.
+        link("/dev/shm/../shm/" + os.path.basename(h), "proj", "homelink")
+        put("#!/bin/sh\n", "proj", "repo", "run.sh")
+        repo_cwd = f"{h}/proj/repo"
+        for name, cmd, cwd, want, more in (
+                ("cwd is $HOME: a relative delete", "rm -rf build", h, "ask", {}),
+                ("cwd is a repo: a relative delete", "rm -rf build",
+                 f"{h}/proj/repo", "allow", {}),
+                ("cwd is $HOME: an absolute delete", f"rm -rf {h}/Documents", h, "ask", {}),
+                ("cwd holds $HOME", f"rm -rf {h}/Documents", base, "ask", {}),
+                ("cwd is a link to $HOME", "rm -rf Documents", f"{h}/proj/homelink",
+                 "ask", {}),
+                ("cwd is /: an absolute delete", "rm -rf /etc/x", "/", "ask", {}),
+                ("cwd is /: a relative delete", "rm -rf etc/x", "/", "ask", {}),
+                ("cwd is /: a top-level delete still denies", "rm -rf etc", "/", "deny", {}),
+                # In a container the rm starts where the image says, but read
+                # against the host cwd it is base's deny, and `-v ~:/h -w /h`
+                # makes it the same directory.
+                ("container: . at $HOME still denies", "docker exec c rm -rf .", h, "deny",
+                 {}),
+                ("...with $HOME mounted as the workdir", "docker run -v ~:/h -w /h img rm -rf .",
+                 h, "deny", {}),
+                ("..../*", "docker exec c rm -rf ./*", h, "deny", {}),
+                ("...kubectl exec", "kubectl exec p -- rm -rf .", h, "deny", {}),
+                ("...at /", "docker exec c rm -rf .", "/", "deny", {}),
+                ("...at /tmp", "podman exec c rm -rf .", "/tmp", "deny", {}),
+                ("...a named relative path still asks", "docker exec c rm -rf ./x", h, "ask", {}),
+                ("lands in a work tree", "rm -rf proj/repo/build", h, "allow", {}),
+                ("lands on a work tree's top", "rm -rf proj/repo", h, "ask", {}),
+                ("lands in the repository", "cd proj/repo && rm -rf .git", h, "ask", {}),
+                ("...spelled out", "rm -rf proj/repo/.git", h, "ask", {}),
+                ("lands through a symlink out of a tree", "rm -rf proj/repo/data/x", h,
+                 "ask", {}),
+                ("lands on a nested tree", "rm -rf proj/repo/sub", h, "ask", {}),
+                ("lands on a parent of a clone", "rm -rf proj/repo/vendor", h, "ask", {}),
+                ("lands in a hidden top-level tree", "rm -rf .dotfiles/x", h, "ask", {}),
+                ("lands in ~/temp", "rm -rf temp/rec", h, "allow", {}),
+                ("lands through a symlink out of ~/temp", "rm -rf temp/link/x", h, "ask", {}),
+                ("a glob landing in ~/temp", "rm -rf temp/rec/*", h, "allow", {}),
+                ("a glob mid-path, landing in ~/temp", "rm -rf temp/rec/*/x", h, "ask", {}),
+                # A cd that may run more than once climbs as far as it runs.
+                ("a cd in a loop", "for i in 1 2 3 4; do cd ..; done; rm -rf etc",
+                 "/tmp/a/b/c", "ask", {}),
+                ("a cd in a function", "f() {\ncd ..\n}\nf; f; f; f; rm -rf etc",
+                 "/tmp/a/b/c", "ask", {}),
+                ("...and one that runs once still clears", "cd .. && rm -rf etc",
+                 "/tmp/a/b/c", "allow", {}),
+                # A command that runs only if a cd succeeded is not where the
+                # session started: the user's decision. Only `&&` proves it.
+                ("&&: a cd that must succeed places the shell", "cd /tmp/x && rm -rf ./y",
+                 h, "allow", {}),
+                ("...but not across a ;", "cd /tmp/x; rm -rf ./y", h, "ask", {}),
+                ("...nor behind an ||", "cd /tmp/x && true || rm -rf ./y", h, "ask", {}),
+                ("...nor through a pipe", "cd /tmp/x | rm -rf ./y", h, "ask", {}),
+                ("...nor out of a subshell", "(cd /tmp/x) && rm -rf ./y", h, "ask", {}),
+                ("...and where it lands still denies", "cd / && rm -rf ./usr", h, "deny", {}),
+                ("...nor after a cd an || may skip", "a || cd /tmp/x && rm -rf ./y", h,
+                 "ask", {}),
+                ("...nor after a negated cd", "! cd /tmp/x && rm -rf ./y", h, "ask", {}),
+                ("...nor after a cd a wrapper runs", "command -v cd /tmp/x && rm -rf ./y", h,
+                 "ask", {}),
+                ("...through simple commands and a newline after &&",
+                 "cd /tmp/x && [ -d y ] &&\nrm -rf ./y", h, "allow", {}),
+                ("...inside one subshell", "(cd /tmp/x && rm -rf ./y)", h, "allow", {}),
+                ("...for find too", "cd /tmp/x && find y -delete", h, "allow", {}),
+                ("...a cd to $HOME lands in it", "cd ~ && rm -rf ./y", h, "ask", {}),
+                ("...a cd into a work tree from $HOME", "cd proj/repo && rm -rf build", h,
+                 "allow", {}),
+                # A cd after the delete cannot move it -- unless a loop or a
+                # function runs the delete again after the cd.
+                ("a cd after the delete", "cd /tmp/x && rm -rf ./y && cd sub", h, "allow", {}),
+                ("...in a loop", "for i in 1 2; do rm -rf ./y; cd /; done", h, "deny", {}),
+                ("...in a function", "f() { rm -rf ./usr; }; cd /; f", h, "deny", {}),
+                # A reading that cannot apply may still condemn: no deny the
+                # guard gave is lost, this false one included.
+                ("...and a later cd still condemns", "rm -rf ./usr; cd /", h, "deny", {}),
+                # zoxide's functions, which the shell snapshot still defines,
+                # move the shell to a place no text names.
+                ("a zoxide jump after a cd", "cd /tmp/x && z proj && rm -rf build", h,
+                 "ask", {}),
+                ("...a zoxide jump alone", "z proj && rm -rf ./build", h, "ask", {}),
+                ("...in a one-line function body",
+                 "f() { z proj; }; cd /tmp/x && f && rm -rf build", h, "ask", {}),
+                ("...leaves an absolute operand alone", "z proj; rm -rf /tmp/x/y", h,
+                 "allow", {}),
+                # A quoted separator is a word: no cd runs after it, and the
+                # delete runs where the session started.
+                ("a quoted && before the cd", ": '&&' cd /tmp/x && rm -rf ./y", h, "ask", {}),
+                ("...a quoted ;", "echo ';' cd /tmp/x && rm -rf ./y", h, "ask", {}),
+                ("...behind an ||", "true || echo '&&' cd /tmp/x && rm -rf ./y", h,
+                 "ask", {}),
+                ("...a quoted &", ": '&' cd /tmp/x && rm -rf ./y", h, "ask", {}),
+                ("...a quoted newline", ": '\n' cd /tmp/x && rm -rf ./y", h, "ask", {}),
+                ("...double-quoted", 'echo "&&" cd /tmp/x && rm -rf ./y', h, "ask", {}),
+                ("...escaped", "echo \\; cd /tmp/x && rm -rf ./y", h, "ask", {}),
+                ("...among printf's words", "printf '%s\\n' ';' cd /tmp/x && rm -rf ./y",
+                 h, "ask", {}),
+                ("...a quoted && after the cd", "cd /tmp/x '&&' rm -rf ./y", h, "ask", {}),
+                # zsh's AUTO_CD applies only to a zsh reading stdin, and
+                # Claude Code runs `zsh -c`: a command word moves nothing.
+                ("no AUTO_CD: a script between the cd and the delete",
+                 "cd proj/repo && ./run.sh && rm -rf build", h, "allow", {}),
+                ("no AUTO_CD: a word naming a directory", ".. && rm -rf ./build", repo_cwd,
+                 "allow", {}),
+                ("no AUTO_CD: ...in a cd's && chain", "cd /tmp/x && .. && rm -rf ./y", h,
+                 "allow", {}),
+                ("no AUTO_CD: ...in a one-line function body",
+                 "f() { ..; }; f; rm -rf ./build", repo_cwd, "allow", {}),
+                # pushd -n pushes without moving.
+                ("pushd -n moves nothing", "pushd -n /tmp/x && rm -rf ./y", h, "ask", {}),
+                # The hook's own CDPATH sends a relative cd elsewhere too.
+                ("CDPATH in the hook's environment", "cd usr && rm -rf bin",
+                 f"{h}/proj/repo", "ask", {"CDPATH": "/"}),
+                ("...unless it names only the working directory", "cd usr && rm -rf bin",
+                 f"{h}/proj/repo", "allow", {"CDPATH": ":."}),
+                # A TMPDIR that holds $HOME is no root either.
+                ("a TMPDIR of $HOME", f"rm -rf {h}/Documents", CWD, "ask", {"TMPDIR": h}),
+                ("a TMPDIR of /", "rm -rf /etc/x", CWD, "ask", {"TMPDIR": "/"}),
+                ("a TMPDIR below $HOME is still a root", f"rm -rf {h}/proj/loose", CWD,
+                 "allow", {"TMPDIR": f"{h}/proj"})):
+            got, reason = run([sys.executable, GUARD], cmd, cwd=cwd, env=dict(env, **more))
+            if got != want:
+                fails.append((name, cmd, want, got, reason))
         cmd = f"rm -rf {h}/proj/repo/build"
         got, reason = run([sys.executable, GUARD, "--no-disk"], cmd, env=env)
         if got != "ask":
@@ -1968,7 +2157,7 @@ def check_home_roots():
         shutil.rmtree(h)
 
 
-HOME_ROOT_CHECKS = 61
+HOME_ROOT_CHECKS = 132
 
 
 def check_bindings():

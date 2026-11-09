@@ -76,7 +76,8 @@ grows stops finding new shapes -- which is exactly what it is for. So:
 
 $HOME and $TMPDIR are pinned for every run. safe_roots() folds both in, so a
 fixture recorded under one $HOME and replayed under another is not testing the
-same thing -- and CI's $HOME is not this machine's.
+same thing -- and CI's $HOME is not this machine's. CDPATH is dropped too: no
+relative cd can be placed under one.
 """
 import json
 import os
@@ -126,6 +127,7 @@ def run_guard(cmd, cwd, home):
     """
     env = dict(os.environ, HOME=home)
     env.pop("TMPDIR", None)
+    env.pop("CDPATH", None)
     payload = json.dumps({"tool_name": "Bash", "cwd": cwd,
                           "tool_input": {"command": cmd}})
     p = subprocess.run([sys.executable, GUARD, "--no-disk"], input=payload,
