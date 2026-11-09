@@ -18,6 +18,25 @@ Loaded from ~/.config/.claude/CLAUDE.md. Fill in as needed.
 
 ## Shell
 
+- Give a delete its own Bash call, and name each target by its full absolute
+  path: `rm -rf /abs/path/build /abs/path/dist`, not `cd x && rm -rf build`,
+  not a variable, not a loop. The rm guard can prove a literal path safe; a
+  path it has to work out costs a permission prompt. List several paths in one
+  `rm` instead of looping, and keep `source`, `.`, `eval` and `cd` out of the
+  call.
+
+  Reach for a variable only when the path is not known in advance, and then
+  guard it as the `"${VAR:?}"` rule below says.
+
+- When a command only searches for or prints delete text, such as a `grep`
+  for `rm -rf`, give it its own Bash call made of `grep` or `rg` piped into
+  nothing but `head`, `tail`, `wc`, `cut` or `cat`. Handed to `sed`,
+  `python3`, `git` or a script, or piped into one, the same text costs a
+  permission prompt. Edit files with the Edit tool rather than `sed -i`.
+
+- Never reshape a delete, or its text, to get past the guard. If the guard
+  asks, the ask is the point.
+
 - When a shell variable feeds a command that deletes recursively — `rm -r`,
   `find -delete`, `find -exec rm`, `fd -x rm`, `rsync --delete`, `rclone sync`,
   `git clean -f` — write it as `"${VAR:?}"`, never as `"$VAR"`.
