@@ -172,17 +172,50 @@ Known gaps, left open on purpose:
                                reading commands from stdin, and Claude Code
                                runs `zsh -c`.
 
-    a word segment_bounds      segment_bounds starts a command only after a
-    does not start             separator, so a command word after zsh's
-                               `repeat N do`, inside a function body, after
-                               a case pattern's `)` or after `coproc` is no
-                               segment's command word. An expansion there --
-                               `f() { $B -rf /; }; f` -- is neither bailed on
-                               nor resolved, and the line may be silent; a
-                               literal `rm` there is read, since the rm scan
-                               reads every token. tokenize splits a glued
-                               run of operators (`);`, `;(`, `));`, `|&`),
-                               so a word after one of those starts a command.
+    a word no separator        segment_bounds starts a command only after a
+    starts                     separator. A command after a case pattern's
+                               `)`, in a function body, behind `repeat N do`
+                               or `coproc`, or run by find -exec or fd -x is
+                               found by inner_starts and checked and resolved
+                               as a segment's is, and so is one behind zsh's
+                               `while x {`, `if x {`, `} always {` and bash's
+                               `coproc NAME {`. An array's `(` and an
+                               arithmetic `((` read the same as a subshell's,
+                               so an expansion there costs a silence. A
+                               command reached any other way -- an alias, a
+                               function from an earlier tool call, `hash
+                               ls=/bin/rm; ls -rf /` -- is not seen, and a
+                               literal `rm` anywhere is read, since the rm
+                               scan reads every token.
+
+    text run some other way    The guard reads a script handed to a shell by
+                               -c, a heredoc, or a here-string -- every one a
+                               shell reads, since zsh's MULTIOS feeds it them
+                               all, asking when a file or fd comes last -- and
+                               asks on a pipe into a shell from any producer,
+                               whose output it does not read. Not: a trap's
+                               action (`trap 'rm -rf /' EXIT`), text spelled
+                               so no `rm` word shows (`'r''m' -rf /`, `\\x20`
+                               escapes, ANSI-C `$'\\x72m'`), `$B` as the
+                               argument of a command the guard does not know
+                               runs it (`chroot / $B`, `strace $B`, `watch
+                               $B`), fd's `--exec=CMD`, `git clean` through a
+                               variable, a value read through more than one
+                               unproven name, and a process substitution in a
+                               command left to normal permissions (`git
+                               commit -F <(rm -rf /)`).
+
+    words read too plainly     A nameref behind an assignment word
+                               (`X=/x/declare -n R=W`); a lone digit operand
+                               before a redirection, taken for its fd (`rm
+                               -rf 1 >/dev/null`); a flag variable split by
+                               zsh's `${=Y}` or quoted `$'...'`; a find or
+                               fd flag held in a variable (`Y='-delete /';
+                               find ./x $Y`, `a=-x; fd . / $a rm -rf {}`); an
+                               ANSI-C `$'...'` word read as written (`cd $'/'
+                               && rm -rf usr`); find under another name
+                               (`gfind`, `bfs`); an `LD_PRELOAD` exported
+                               before a reader.
 
 A third approach was built and withdrawn: prepending a runtime validator to the
 command through the hook's `updatedInput`, so that approving a prompt would be
@@ -225,6 +258,13 @@ are refused outright:
 
 The second costs a prompt on `rm $(ls *.tmp)`, which cannot descend. That is
 the allowlist doing its job: unprovable reads as unsafe.
+
+An unproven variable in command position -- `$B -rf ./x`, `"$B"`, `${=B}`,
+`$V/x` -- names no command until B is known, and the guard cannot know it.
+Unless something else on the line denies or asks, that line is left silent:
+never allowed, and not asked about either, so auto mode's classifier decides
+it, as it did before the guard read command words at all. A deny anywhere on
+it still stands. See UnreadCommandWord for where the ask is kept.
 
 Output shape: every dangerous operand becomes a Finding, and the verdict names
 the segment it came from rather than the whole command line, so `deploy.sh &&
@@ -659,7 +699,7 @@ WRAPPER_POSITIONALS = {"timeout": 1}
 WRAPPER_CHDIR = {"env": ("C", {"--chdir"}),
                  "sudo": ("DR", {"--chdir", "--chroot"})}
 # ...and the keywords and grouping that can stand in front of one.
-KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!",
+KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "coproc",
             "(", "{", ")", "}"}
 
 # Commands that, handed to find -exec / fd -x, destroy what they are given.
@@ -3113,7 +3153,7 @@ def _later_word(toks, bounds, i, refused, quoted, assigned=None, home=None,
 
 def resolve_command_words(toks, bounds, assigned, home, rebind_at, text="",
                           refused=frozenset(), quoted=frozenset(), picks=None,
-                          unassigned=frozenset(), loose=False):
+                          unassigned=frozenset(), loose=False, inner=()):
     """-> (toks, rebind_at, alts): each segment's command word that is a
     plain $B whose binding holds there replaced by B's literal, where the
     line's bindings stop being provable once the words it runs are known,
@@ -3152,7 +3192,11 @@ def resolve_command_words(toks, bounds, assigned, home, rebind_at, text="",
     if rebind_at <= 0 and not loose:
         return toks, rebind_at, {}, False
     out, done, alts, hint = list(toks), {}, {}, False
-    for start, end in bounds:
+    loops = loop_bindings(toks)
+    scopes = loop_scopes(toks, mask_opaque(text)[0] if text else "")
+    spans = loop_spans(toks, mask_opaque(text)[0] if text else "")
+    # Each segment's command, and each one that starts inside a segment.
+    for start, end in list(bounds) + list(inner):
         while True:
             i = start + effective_command(out[start:end])[0]
             if i >= end or (i > rebind_at and not loose) or i in done:
@@ -3167,6 +3211,17 @@ def resolve_command_words(toks, bounds, assigned, home, rebind_at, text="",
                     t.split("=", 1)[1] for t in toks
                     if ENV_ASSIGN_RE.match(t) and t.split("=", 1)[0] == name
                     and _typed_as_run(t.split("=", 1)[1])))
+                # In the body of a loop that binds the name, its words are
+                # what it runs: `for B in rm ls; do $B -rf /` is rm -rf / once.
+                # Every literal the line assigns it may stand there too.
+                # Only where nothing in the body before the use -- or after
+                # it, in a loop inside that runs it again -- may rewrite the
+                # name: `for B in ls; do B=$X; $B -rf /` runs $X.
+                words = loops.get(name)
+                if (not cands and words and name not in refused
+                        and all(_typed_as_run(w) for w in words)
+                        and _loop_word_holds(toks, i, name, scopes, spans)):
+                    cands = list(dict.fromkeys(list(words) + seen))
                 hint = hint or (not cands and bool(seen))
                 if loose and not cands:
                     cands = seen
@@ -3196,6 +3251,26 @@ def resolve_command_words(toks, bounds, assigned, home, rebind_at, text="",
     if all(k > rebind_at for k in done):
         return toks, rebind_at, {}, hint
     return out, rebind_at, alts, hint
+
+
+def _loop_word_holds(toks, i, name, scopes, spans):
+    """Does the name hold one of its loop's words at token i?
+
+    i must sit in the body of a loop that binds it, and nothing from the
+    body's start to i may rewrite it -- an assignment, read, export, a
+    substitution's or eval's reach, a function -- nor anything after i in a
+    loop inside the body, which runs again before i does."""
+    opener = max((a for a, b in scopes.get(name, ()) if a < i < b), default=None)
+    if opener is None or defines_function(toks):
+        return False
+    body = next((k + 1 for k in range(opener, i) if toks[k] in ("do", "{")), None)
+    if body is None:
+        return False
+    end = max([i] + [c for o, c in spans if opener < o < i < c])
+    region = toks[body:end + 1]
+    return (_read_only_mentions(name, " ".join(t for k, t in enumerate(region, body)
+                                                if k != i))
+            and not any(command_name(t) in INDIRECTION for t in region))
 
 
 def _literal_export(toks, i):
@@ -3590,10 +3665,158 @@ def _quoted_and_starts(toks, masked=""):
         prev = toks[i - 1] if i and i - 1 not in quoted else None
         if (i == 0 or prev in SEPARATORS or prev in ("(", ")", "()")
                 or ((prev in KEYWORDS or prev == "time") and i - 1 in starts)
-                or (prev == "{" and i >= 3 and toks[i - 3] == "function"
-                    and i - 3 in starts and i - 3 not in quoted)):
+                # An unquoted `{` opens a group behind a word that takes one,
+                # where that word starts a command: `function f {`, zsh's
+                # `while x {`, `if x {`, `} always {`, bash's `coproc NAME {`.
+                # `echo function x {` opens nothing.
+                or (prev == "{" and _brace_opens(toks, i - 1, quoted, starts))
+                or (prev is not None and i >= 2 and toks[i - 2] == "repeat"
+                    and i - 2 in starts and i - 2 not in quoted)):
             starts.add(i)
     return quoted, starts
+
+
+def stdin_redirections(toks, s, e, quoted):
+    """-> the indexes of the unquoted redirections in toks[s:e] that set the
+    command's stdin, in order: `<<<`, `<`, `<&`, `<<`, `<<-`, `<>`, bare or
+    on fd 0. The last one is what the command reads."""
+    out = []
+    for k in range(s, e):
+        if k in quoted or toks[k] not in ("<<<", "<", "<&", "<<", "<<-", "<>"):
+            continue
+        fd = toks[k - 1] if _fd_prefix(toks, k, s, quoted) else None
+        if fd in (None, "0"):
+            out.append(k)
+    return out
+
+
+def _fd_prefix(toks, k, s, quoted):
+    """Is toks[k-1] the fd digit of the redirection at k? Not when it is
+    the target of the redirection before it: in `2>&1 <<<x` the 1 is 2's."""
+    if not (k > s and toks[k - 1].isdigit()):
+        return False
+    p = k - 2
+    return not (p >= s and p not in quoted
+                and (toks[p] in REDIRECTS or REDIRECT_TOKEN_RE.match(toks[p])))
+
+
+def redirection_words(toks, s, e, quoted):
+    """-> the indexes in toks[s:e] that belong to a redirection: the
+    operator, its target, and an fd digit before it."""
+    out = set()
+    for k in range(s, e):
+        if k in quoted or not (toks[k] in REDIRECTS or REDIRECT_TOKEN_RE.match(toks[k])):
+            continue
+        out |= {k, k + 1}
+        if _fd_prefix(toks, k, s, quoted):
+            out.add(k - 1)
+    return out
+
+
+def exec_starts(toks, bounds, read):
+    """-> [(start, segment end)] for each command find's -exec, -execdir,
+    -ok or -okdir, or fd's -x or -X, runs. find's arguments run on past a
+    quoted separator -- an escaped `\\;` ends one -exec and not find -- so a
+    second -exec after it is found too."""
+    quoted = read[0] if read is not None else set()
+    out = []
+    for s, e in bounds:
+        j, base = effective_command(toks[s:e])[:2]
+        acts = (FIND_EXEC_ACTIONS if base == "find" else
+                FD_EXEC_FLAGS if base in ("fd", "fdfind") else ())
+        if not acts:
+            continue
+        stop = e
+        while stop < len(toks) and stop in quoted:
+            stop += 1
+            while stop < len(toks) and toks[stop] not in SEPARATORS:
+                stop += 1
+        # The action word however it is quoted -- find and fd never see the
+        # quotes: `'-exec'`, `-exe'c'` and `\-exec` all run the command.
+        for k in range(s + j + 1, stop - 1):
+            if toks[k] in acts:
+                end = next((ee for ss, ee in bounds if ss <= k + 1 < ee), None)
+                if end is not None:
+                    out.append((k + 1, end))
+    return out
+
+
+def fed_heredoc_start(toks, bounds, read):
+    """-> the index of the first unquoted `<<` or `<<-` whose heredoc a
+    shell or ssh reads -- its own command, or one its pipeline feeds --
+    or None. The body of an unquoted heredoc arrives as the line's words."""
+    quoted = read[0] if read is not None else None
+    for h, t in enumerate(toks):
+        if t not in ("<<", "<<-") or (quoted is not None and h in quoted):
+            continue
+        k = next((n for n, (s, e) in enumerate(bounds) if s <= h < e), None)
+        if k is None:
+            continue
+        lo = hi = k
+        while (lo > 0 and toks[bounds[lo - 1][1]] in ("|", "|&")
+               and bounds[lo][0] == bounds[lo - 1][1] + 1):
+            lo -= 1
+        while (hi + 1 < len(bounds) and bounds[hi][1] < len(toks)
+               and toks[bounds[hi][1]] in ("|", "|&")
+               and bounds[hi + 1][0] == bounds[hi][1] + 1):
+            hi += 1
+        for m in range(lo, hi + 1):
+            s, e = bounds[m]
+            base = effective_command(toks[s:e])[1]
+            if base in SHELLS or base == "ssh":
+                return h
+    return None
+
+
+# The words a `{` group may follow in the same list: zsh's short forms, a
+# function, bash's coproc NAME.
+BRACE_HEADS = {"while", "until", "if", "elif", "else", "for", "foreach", "select",
+               "repeat", "function", "coproc"}
+
+
+def _brace_opens(toks, b, quoted, starts):
+    """Does the unquoted `{` at toks[b] open a group? It does at a command
+    start, after `} always`, and behind a BRACE_HEADS word that starts a
+    command earlier in the same list."""
+    if b in starts or (b >= 2 and toks[b - 1] == "always" and toks[b - 2] == "}"):
+        return True
+    for k in range(b - 1, -1, -1):
+        if toks[k] in SEPARATORS and k not in quoted:
+            return False
+        if toks[k] in BRACE_HEADS and k in starts and k not in quoted:
+            return True
+    return False
+
+
+def inner_starts(toks, bounds, read):
+    """-> [(start, segment end)] for each command that starts inside a
+    segment rather than at its front: after a case pattern's `)`, a `(` or a
+    `{`, a function's `()`, `do` or `then`, `coproc`, `repeat N` -- the
+    places segment_bounds starts nothing. Not a word inside `[[ ... ]]`.
+    The command word itself may be quoted (`"$B"`) or a substitution; the
+    word before it must not be. An array's `(` is read as a subshell's,
+    since `a=(x)` and `a= ( x )` arrive as the same tokens, and so is an
+    arithmetic `((`: both may cost a silence, never an allow."""
+    if read is None:
+        return []
+    quoted, starts = read
+    fronts = {s for s, _ in bounds}
+    test, out = False, []
+    for i, t in enumerate(toks):
+        # A test opens only where a command starts -- `echo [[` prints one --
+        # and closes at its `]]`.
+        if i not in quoted and t == "[[" and i in starts:
+            test = True
+            continue
+        if i not in quoted and t == "]]" and test:
+            test = False
+            continue
+        if test or i not in starts or i in fronts:
+            continue
+        end = next((e for s, e in bounds if s < i < e), None)
+        if end is not None:
+            out.append((i, end))
+    return out
 
 
 def loop_bodies(toks, masked=""):
@@ -4398,7 +4621,14 @@ def fd_targets(argv):
         if t in FD_EXEC_FLAGS:
             if i + 1 < len(argv) and command_name(argv[i + 1]) in DESTRUCTIVE_EXEC:
                 destructive = True
-            break  # everything after this is the exec'd command, not a path
+            # Everything after it is the exec'd command, not a path -- up to
+            # a `;` ending that command, after which fd reads on: `fd . / -x
+            # ls {} \; -x rm -rf {}` runs the second command too.
+            end = next((k for k in range(i + 1, len(argv)) if argv[k] == ";"), None)
+            if end is None:
+                break
+            i = end + 1
+            continue
         head = t.split("=", 1)[0]
         if t == "--follow":
             follows = "fd --follow"
@@ -4675,14 +4905,22 @@ def _reads_stdin(seg, j, bodies):
     """Does the shell at seg[j] read its stdin as its script?
 
     Only with no -c and nothing after it but short flags and heredocs. With a
-    script operand, stdin is that script's data, not code. After `-s` every
-    word is an argument and stdin is still the script. A `-` or `--` ends the
-    options, as bash and zsh treat it: a word after one is the script FILE
-    (`bash - x` runs x), and only with none is stdin read. fish is never
-    read; see shell_script.
+    script operand, stdin is that script's data, not code -- unless the
+    operand is /dev/stdin itself. After `-s` every word is an argument and
+    stdin is still the script. A `-` or `--` ends the options, as bash and zsh
+    treat it: a word after one is the script FILE (`bash - x` runs x), and
+    only with none is stdin read. fish is never read; see shell_script.
+
+    A -c script reads no stdin itself, but a shell it runs inherits it:
+    `bash -c sh`, `bash -c 'exec sh'` and `sh -c 'bash /dev/stdin'` run the
+    pipe or the here-string as code. That is "nested": read, but from
+    wherever the script has moved to by then.
     """
-    if command_name(seg[j]) == "fish" or shell_script(seg, j) is not None:
+    if command_name(seg[j]) == "fish":
         return False
+    si = shell_script(seg, j)
+    if si is not None:
+        return "nested" if si is not False and script_reads_stdin(seg[si]) else False
     args, opts_done, names = False, False, 0
     for t in seg[j + 1:]:
         if t in bodies or args:
@@ -4697,8 +4935,37 @@ def _reads_stdin(seg, j, bodies):
             args = t[0] == "-" and "s" in t[1:]
             names = t[1:].count("o") + t[1:].count("O")
             continue
-        return False
+        return t in STDIN_PATHS
     return True
+
+
+# A script operand that is the shell's own stdin.
+STDIN_PATHS = {"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
+
+
+def script_reads_stdin(script):
+    """Does a -c script run something that reads the outer shell's stdin as
+    code -- a shell that reads its stdin, by _reads_stdin, or a `.` or source
+    of /dev/stdin? A script the guard cannot tokenize may."""
+    try:
+        toks = tokenize(script)
+    except ValueError:
+        return True
+    for s, e in segment_bounds(toks):
+        seg = toks[s:e]
+        j, base = command_word(seg)
+        if j >= len(seg):
+            continue
+        if base in SHELLS and _reads_stdin(seg, j, ()):
+            return True
+        # fish reads stdin too, as fish rather than POSIX shell.
+        if base == "fish" and not any(
+                a in ("-c", "--command") or a.startswith("--command=")
+                or not a.startswith("-") for a in seg[j + 1:]):
+            return True
+        if base in (".", "source") and seg[j + 1:j + 2] and seg[j + 1] in STDIN_PATHS:
+            return True
+    return False
 
 
 def shell_stdin_script(toks, bounds, k, bodies):
@@ -4716,9 +4983,10 @@ def shell_stdin_script(toks, bounds, k, bodies):
     seg = toks[s:e]
     j, base = command_word(seg)
     if base in SHELLS:
-        if not _reads_stdin(seg, j, bodies):
+        reads = _reads_stdin(seg, j, bodies)
+        if not reads:
             return None
-        here, at = True, j
+        here, at = reads is True, j
     else:
         at = next((n for n in range(j + 1, len(seg))
                    if command_name(seg[n]) in SHELLS
@@ -5298,7 +5566,109 @@ def analyse(cmd, cwd, depth=0, trusted=True, outer_danger=False, reread=False,
     if (depth == 0 and _WITHDRAWN[0] and findings
             and all(f.decision == "allow" for f in findings)):
         return []
+    # A command word the guard cannot read leaves the line silent, never
+    # allowed, unless something else on it denies or asks -- or it would
+    # deny itself, read as rm.
+    unread = [f for f in findings if isinstance(f.reason, UnreadCommandWord)]
+    if (depth == 0 and unread
+            and not any(f.decision != "allow" and not isinstance(f.reason, UnreadCommandWord)
+                        for f in findings)
+            and not any(denies_as_rm(cmd, cwd, f.reason.word, trusted, local)
+                        for f in unread)):
+        return []
     return findings
+
+
+# The name an expansion word reads: `$X`, `${X}`, `${=X}`, zsh's `${(z)X}`.
+WORD_NAME_RE = re.compile(r"^\$\{?(?:\([^)]*\))?[=~^]*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def denies_as_rm(cmd, cwd, word, trusted=True, local=True):
+    """Would the line deny with the command word read as rm, or as a value
+    the line assigns its name?
+
+    `$B -rf /`, `$B -rf ~` and `cd / && $B -rf usr` name targets an rm
+    would be denied on, and B may well be rm. `X='rm -rf /'; ${(z)X}` runs
+    the value the line spells out. Every spelling of the word in the text
+    is read each way in turn, so the line's cds and bindings still place
+    what it names; only a deny counts, and nothing it finds is reported."""
+    if not word:
+        return False
+    pattern = re.escape(word) + (r"(?![A-Za-z0-9_])" if re.search(r"\w$", word) else "")
+    readings = ["rm"]
+    m = WORD_NAME_RE.match(word)
+    if m:
+        try:
+            toks = tokenize(cmd)
+        except ValueError:
+            toks = []
+        readings += [t.split("=", 1)[1] for t in toks
+                     if ENV_ASSIGN_RE.match(t) and t.split("=", 1)[0] == m.group(1)
+                     and t.split("=", 1)[1] and not has_subst(t)]
+    for reading in list(dict.fromkeys(readings))[:MAX_DEPTH + 5]:
+        variant = re.sub(pattern, lambda _: reading, cmd)
+        if variant == cmd:
+            continue
+        state = _WITHDRAWN[0], _CD_SEARCHES[0]
+        try:
+            found = _analyse(variant, cwd, 0, trusted, False, False, local)
+        except ValueError:
+            found = []
+        finally:
+            _WITHDRAWN[0], _CD_SEARCHES[0] = state
+        if any(f.decision == "deny" for f in found):
+            return True
+    return False
+
+
+class UnreadCommandWord(str):
+    """The reason for an ask on a command word built from an unproven
+    expansion -- `$B`, `${B}`, `"$B"`, `${=B}`, `$V/x`, `.$V` -- that the
+    guard cannot read, so which command runs is unknowable.
+
+    Alone on a line, that ask leaves it silent: no allow, no ask. The user's
+    live guard was silent on these lines, and auto mode's classifier
+    decides them there, while an ask stopped the session on every
+    `"$EDITOR" file` beside a cleanup. The guard still never auto-allows
+    such a line, since any allow on it is withdrawn with the ask. A deny
+    anywhere on it stands -- a proven word's (`B=rm; $B -rf ~`), the
+    as-written and loose readings', another segment's -- and so does any
+    other ask. A word proven by the leading run or a later literal resolves
+    as before, and `$(...)` in command position still asks.
+
+    The ask is kept where the guard asked before it read command words, so
+    no line is looser than it was then: in text another reader runs (a
+    `bash -c` script, a heredoc, an ssh string), behind exec or xargs, on a
+    line once_unreadable finds, and beside a recursive rm that no rm command
+    survived parsing to show. It is kept too where the arguments would deny
+    as an rm's (denies_as_rm): `$B -rf /` asks, `$B -rf ./x` is silent.
+
+    word is the command word as the tokens hold it."""
+
+    def __new__(cls, text, word=""):
+        reason = super().__new__(cls, text)
+        reason.word = word
+        return reason
+
+
+# What the guard once bailed on, whole line, as hiding its arguments: one of
+# these in command position, or a shell given -c anywhere.
+ONCE_OPAQUE = {"eval", "exec", "source", "xargs", "."}
+
+
+def once_unreadable(toks):
+    """Would the guard of 21163ee have asked on this line for hiding what it
+    runs? It did for eval, exec, source, xargs or `.` where a command starts,
+    and for `<shell> -c` anywhere. The guard reads most of those now, but
+    the line must stay no looser than it was, so a command word it cannot
+    read keeps its ask there."""
+    for i, t in enumerate(toks):
+        name = os.path.basename(t)
+        if name in ONCE_OPAQUE and (i == 0 or toks[i - 1] in SEPARATORS):
+            return True
+        if name in SHELLS and toks[i + 1:i + 2] == ["-c"]:
+            return True
+    return False
 
 
 def expansion_runs_recursive(cmd):
@@ -5595,7 +5965,8 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
             toks, bounds, assigned, home, rebind_at, cmd,
             refused=frozenset(n for _, n, _ in unread_sets(toks)),
             quoted=read[0] if read else frozenset(), picks=picks,
-            unassigned=quoted_assignments(toks, masked0), loose=loose)
+            unassigned=quoted_assignments(toks, masked0), loose=loose,
+            inner=inner_starts(toks, bounds, read) + exec_starts(toks, bounds, read))
         if hint:
             resolved.append(LOOSE)
         if words is not toks:
@@ -5648,6 +6019,26 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
                  for start, end in bounds}
     xargs_regions = [(start + at, end, rep) for start, end in bounds
                      for at, rep in effective[start][4] if start + at < end]
+    # ...and each command that starts inside a segment, where segment_bounds
+    # starts nothing: a case arm after its pattern's `)`, a function body, a
+    # `( ... )`, `repeat N do`, `coproc`. Its word is checked as a segment's
+    # is, once, unless the segment's own command word is that same word.
+    qread = _quoted_and_starts(toks, mask_opaque(cmd)[0])
+    inner = inner_starts(toks, bounds, qread)
+    # The command find's -exec or fd's -x runs starts a command too.
+    inner += exec_starts(toks, bounds, qread)
+    # An unquoted heredoc's body arrives as the line's own words; where a
+    # shell or ssh reads it, it is text another reader runs.
+    fed_from = fed_heredoc_start(toks, bounds, qread)
+    for start, end in inner:
+        effective[start] = effective_command(toks[start:end])
+    seen = {start + effective[start][0] for start, _ in bounds}
+    kept = []
+    for start, end in inner:
+        if start + effective[start][0] not in seen:
+            seen.add(start + effective[start][0])
+            kept.append((start, end))
+    inner = kept
 
     # zsh's (e) flag runs its value's substitutions, as eval would:
     # `X='$(rm -rf /)'; echo ${(e)X}` runs rm -rf /. Wherever it stands.
@@ -5663,7 +6054,7 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
     # in front of it is read through: `xargs eval` runs eval. Each one adds an
     # ask and the analysis goes on, so a deny elsewhere on the line still wins.
     if danger:
-        for start, end in bounds:
+        for start, end in list(bounds) + inner:
             j, base, _, known, runs = effective[start]
             i = start + j
             # An -I string is replaced inside every word xargs runs, so one in
@@ -5747,10 +6138,19 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
             elif EXPANSION_WORD_RE.match(word) or EXPANSION_RE.search(base):
                 # A command name built from an expansion is the same hole:
                 # `X="rm -rf /usr"; $X` runs what X holds, and `${X}rm -rf /*`
-                # names no rm until X is known. `$X/bin/rm` is still rm.
-                unreadable.extend(bail(
-                    "ask", i, f"{mark(word)} runs in command position, so "
-                              "which command runs is unknowable"))
+                # names no rm until X is known. `$X/bin/rm` is still rm. On
+                # the line itself, this ask leaves it silent instead; see
+                # UnreadCommandWord. Not in text another reader runs, not
+                # behind exec or xargs, and not on a line the guard once
+                # asked on whole because it could not read it at all.
+                why = (f"{mark(word)} runs in command position, so which "
+                       "command runs is unknowable")
+                if (depth == 0 and not reread and not once_unreadable(toks)
+                        and not any(command_name(t) in ("exec", "xargs")
+                                    for t in toks[start:i])
+                        and not (fed_from is not None and i > fed_from)):
+                    why = UnreadCommandWord(why, word)
+                unreadable.extend(bail("ask", i, why))
             elif computed_target(toks[start:end], j) is not None:
                 # `N=W; declare "$N"=/usr` sets W with no W in the text, so
                 # nothing below can say W was set.
@@ -5764,14 +6164,51 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
     # the shell IS its segment's command: then the script runs in this shell's
     # cwd. As anyone else's argument -- docker exec, find -exec, kubectl --
     # it may run in another filesystem, and is judged as the ssh far end is.
-    scripts = []
+    scripts, herestrings = [], []
     for i, t in enumerate(toks):
         base = command_name(t)
         if base not in SHELLS:
             continue
         si = shell_script(toks, i)
-        if si is None:
-            continue
+        if si is None or (si is not False and script_reads_stdin(toks[si])):
+            # `bash <<<'rm -rf /'`: a here-string is a script on stdin, and so
+            # it is for a -c script that runs a shell reading stdin (`bash -c
+            # 'sh -s' <<<...`), from wherever that script has moved to. bash
+            # reads the segment's LAST stdin redirection, wherever it stands
+            # -- it applies them left to right, and `<<<'x' bash` is the same
+            # command. zsh's MULTIOS, on in this shell, feeds it every one in
+            # turn. So each here-string a shell reads is read in full, and a
+            # later `<`, `<&` or heredoc asks. fish reads stdin too, but not
+            # as POSIX shell. The first here-string after the shell, with only
+            # flags between, is read in full whatever follows: `bash <<<'rm
+            # -rf /' ./f` denies. Every other one on the segment -- fish's,
+            # one beside a script file -- is read for its denies only.
+            s0, e0 = next(((a, b) for a, b in bounds if a <= i < b), (i, len(toks)))
+            quoted_set = qread[0] if qread else set()
+            ins = stdin_redirections(toks, s0, e0, quoted_set)
+            if any(toks[k] == "<<<" for k in ins):
+                skip = redirection_words(toks, s0, e0, quoted_set)
+                plain = [toks[n] for n in range(i, e0)
+                         if n not in skip and toks[n] not in (")", "}")]
+                reads = (not any(a in ("-c", "--command") or a.startswith("--command=")
+                                 or not a.startswith("-") for a in plain[1:])
+                         if base == "fish" else _reads_stdin(plain, 0, ()))
+                here = s0 + command_word(toks[s0:e0])[0] == i and reads is True
+                full = bool(reads) and base != "fish"
+                last = toks[ins[-1]] == "<<<" and ins[-1] + 1 < e0
+                first = next((k for k in range(i + 1, e0) if toks[k] == "<<<"), None)
+                if first is not None and not _reads_stdin(toks[i:first], 0, ()):
+                    first = None
+                herestrings.extend((i, k + 1, here, not full and k != first) for k in ins
+                                   if toks[k] == "<<<" and k + 1 < e0)
+                if reads and not (full and last) and danger:
+                    why = ("reads its here-string as fish, not POSIX shell, so it is "
+                           "not read" if base == "fish" else
+                           "reads its stdin from a later redirection, not the "
+                           "here-string, so what it runs is not in the command")
+                    unreadable.extend(bail("ask", i, f"{mark(base)} {why}"))
+            if si is None:
+                continue
         if si is False:
             if danger:
                 why = ("runs fish, not POSIX shell, so its script is not read"
@@ -6330,6 +6767,14 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
             toks[si], here_cwd if here else UNKNOWN_CWD, depth, False,
             f"{command_name(toks[i])} -c re-reads this", danger,
             local=here and home_holds_at(segment_start(i))))
+    for i, si, here, unread in herestrings:
+        how = (f"{command_name(toks[i])} is fed this here-string, and may run it"
+               if unread else
+               f"{command_name(toks[i])} reads this here-string as its script")
+        findings.extend(f for f in reread_findings(
+            toks[si], here_cwd if here else UNKNOWN_CWD, depth, False, how, danger,
+            local=here and home_holds_at(segment_start(i)))
+            if not unread or f.decision == "deny")
     bodies = heredoc_bodies(cmd)
     read_bodies = set()
     if bodies:
@@ -6370,6 +6815,67 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
                     "ask", words[j], f"{mark(base)} reads a heredoc whose body "
                                      "is destructive, and the guard cannot read "
                                      "it as that shell's script"))
+    # A shell that reads its script from a pipe runs whatever the command
+    # before it prints -- `echo '$B -rf /' | bash`, `ls | sh -s`, `xargs |
+    # sh`, `base64 -d | sh`, a download -- which the guard does not read as a
+    # script, so it asks. Only a body the guard reads is exempt: a quoted
+    # heredoc cat prints, read above, or an unquoted one cat prints, whose
+    # body is on the line already. A heredoc or here-string of the shell's
+    # own exempts nothing: zsh's MULTIOS feeds the shell the pipe as well.
+    # The shell is the next segment's command, past a `(`, `{` or wrapper,
+    # with output redirections and closing words dropped (`| bash
+    # 2>/dev/null`, `| (bash)`); fish with no -c or file, ssh with no command,
+    # and a -c script that runs a shell reading stdin, here or over ssh, read
+    # stdin too. The producer is the last command starting in the segment
+    # before -- a case arm's, a function body's -- read back through any tee.
+    if danger:
+        cstarts = quoted_starts[1] if quoted_starts else {s for s, _ in bounds}
+
+        def producer(k):
+            while True:
+                ps, pe = bounds[k]
+                st = max((x for x in cstarts if ps <= x < pe), default=ps)
+                name = effective_command(toks[st:pe])[1]
+                if (name != "tee" or k == 0 or bounds[k - 1][1] >= len(toks)
+                        or toks[bounds[k - 1][1]] not in ("|", "|&")):
+                    return name
+                k -= 1
+
+        for k in range(1, len(bounds)):
+            s, e = bounds[k]
+            ps, pe = bounds[k - 1]
+            if pe >= len(toks) or toks[pe] not in ("|", "|&") or s != pe + 1:
+                continue
+            j, base = effective_command(toks[s:e])[:2]
+            dropped = redirection_words(toks, s, e, quoted_starts[0] if quoted_starts
+                                        else set())
+            seg = [toks[n] for n in range(s, e)
+                   if n not in dropped and toks[n] not in (")", "}")]
+            name = base
+            if base == "busybox":
+                # `busybox sh` and `busybox ash` are shells too.
+                name = next((command_name(t) for t in seg[seg.index("busybox") + 1:]
+                             if not t.startswith("-")), "") if "busybox" in seg else ""
+                base = "sh" if name in ("ash", "hush") else name
+            jj = next((n for n, t in enumerate(seg) if command_name(t) == name), None)
+            if jj is None:
+                continue
+            if base == "fish":
+                reads = not any(t in ("-c", "--command") or t.startswith("--command=")
+                                or not t.startswith("-") for t in seg[jj + 1:])
+            elif base == "ssh":
+                rc = ssh_remote_command(seg[jj:])
+                reads = not rc.strip() or script_reads_stdin(rc)
+            else:
+                reads = base in SHELLS and _reads_stdin(seg, jj, bodies)
+            got = shell_stdin_script(toks, bounds, k, bodies)
+            if (not reads or (got is not None and got[0] in toks[ps:pe])
+                    or (producer(k - 1) == "cat"
+                        and any(t in ("<<", "<<-") for t in toks[ps:pe]))):
+                continue
+            findings.extend(bail(
+                "ask", s + j, f"{mark(base)} reads its script from a pipe, so what "
+                              "it runs is not in the command"))
     # A command substitution's body is a script the shell runs, so it is read
     # as one. Untrusted: inside double quotes the outer shell's own expansions
     # reach it first. Three things are undone first, so the body reads as the
@@ -6426,7 +6932,9 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
 
     _note_unread_heredocs(cmd, read_bodies)
 
-    if not found_rm and not findings:
+    # A command word the guard cannot read is nothing parsed either: its ask
+    # may leave the line silent, so the backstop still runs beside it.
+    if not found_rm and all(isinstance(f.reason, UnreadCommandWord) for f in findings):
         # Nothing survived parsing. Of the constructs that could execute a
         # string, eval bailed above, xargs's command was read as the command it
         # is, and a <shell> -c script, a heredoc a shell reads and a
@@ -6440,7 +6948,7 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
             # The whole line is plain readers and every match is their text:
             # there is no rm here to have failed to parse.
             if _inert_line(toks, bounds, text):
-                return []
+                return findings
             frag = " ".join(m.group(0).split())  # the match may span a newline
             reason = (f"{mark(frag)} reads as a recursive rm, but no rm command "
                       "survived parsing")
@@ -6451,9 +6959,9 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
             # prints rather than as something anything is about to run.
             for i, t in enumerate(toks):
                 if RM_RECURSIVE_RE.search(t):
-                    return bail("ask", i, reason, hi=i)
-            return [bare("ask", reason)]
-        return []
+                    return findings + bail("ask", i, reason, hi=i)
+            return findings + [bare("ask", reason)]
+        return findings
     return findings
 
 
