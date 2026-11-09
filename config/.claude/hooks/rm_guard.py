@@ -5903,12 +5903,33 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
         rm_at = i
         i += 1
         recursive, operands, flags, maybe_flag = False, [], [], False
+        # A redirection's target is no operand. REDIRECTS misses zsh's and
+        # bash's `&>`, `&>>`, `>|`, `<>` and `<<<`, so `&>/dev/null` asked on
+        # /dev/null. Each is stepped over now, and, as every word they were
+        # read as -- the operator, its target, an fd digit before it -- is
+        # still judged, but only for a deny: `&>` at / read as /&> and
+        # denied, and a deny is not given up. A listed one's target is
+        # judged for a deny too. `|&` is a pipe, not a redirection, and eats
+        # no word. A word read past where the rm really ends -- after a glued
+        # `);` or `;;` -- is still judged in full: the end may be misread, as
+        # zsh's `rm -rf (a|b)` deletes both.
+        # A quoted word is a word whatever it spells -- `rm -rf ./a '>' x`
+        # deletes a file named `>` -- and without the line's quoted set every
+        # target is judged in full.
+        targets = []
+        quoted = quoted_starts[0] if quoted_starts else None
         while i < len(toks) and toks[i] not in SEPARATORS:
             t = toks[i]
-            if t in REDIRECTS:
+            if (t != "|&" and (t in REDIRECTS or REDIRECT_TOKEN_RE.match(t))
+                    and (quoted is None or i not in quoted)):
+                if t in REDIRECTS:
+                    if operands and operands[-1].isdigit():
+                        operands.pop()  # that was an fd, not an operand
+                    words = toks[i + 1:i + 2]
+                else:
+                    words = toks[i:i + 2]
+                (operands if quoted is None else targets).extend(words)
                 i += 2  # skip redirect target
-                if operands and operands[-1].isdigit():
-                    operands.pop()  # that was an fd, not an operand
                 continue
             # A flag may be held in a variable: `C=-rf; rm $C /` is rm -rf /.
             # A proven one is read as written there, and a literal the line
@@ -5932,7 +5953,7 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
                     # bash, and zsh under SH_WORD_SPLIT): `Y='-rf /'; rm $Y`
                     # is rm -rf /. Its flags count, and the words after them
                     # are operands as written.
-                    if not quoted_starts or i not in quoted_starts[0]:
+                    if quoted is None or i not in quoted:
                         for v in seen:
                             if not re.search(r"\s", v):
                                 continue
@@ -5998,6 +6019,8 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
                 continue
             condemn_only = True
             operands = [o for o in operands if not EXPANSION_WORD_RE.match(o)]
+        deny_only = set(targets) - set(operands)
+        operands = list(dict.fromkeys(operands + targets))
         if not operands:
             continue
         here, gone = cwds_at(seg_start)
@@ -6018,9 +6041,9 @@ def _analyse_line(cmd, cwd, depth, trusted, outer_danger=False, reread=False,
                                     glued=glued, home=home, base=cwd,
                                     condemn_cwds=gone,
                                     pwd_here=pwd_ok and may_clear)
-            if condemn_only and d != "deny":
+            if (condemn_only or op in deny_only) and d != "deny":
                 continue
-            if condemn_only:
+            if condemn_only and op not in deny_only:
                 r = (f"an expansion in this rm's arguments may hold a recursive "
                      f"flag; {r}")
             # No label: for rm every operand is a target, which the echoed

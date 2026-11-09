@@ -1832,6 +1832,32 @@ CASES = [
     ("name only: ...an empty one", 'B=$ROOT/; rm -rf ./build; "$B" a', "ask"),
     ("name only: ...an expansion in it", 'B=$ROOT/bin/${T}x; rm -rf ./build; "$B" a', "ask"),
     ("name only: ...only where proven", 'cd x && B=$R/bin/tool; rm -rf ./build; "$B" a', "ask"),
+    # --- where an rm's arguments end ---------------------------------------------
+    ("rm ends: &> is a redirection, not an operand", "rm -rf ./a &>/dev/null", "allow"),
+    ("rm ends: ...and so are &>>, >|, <> and <<<", "rm -rf ./a &>>l >|m 3<>n <<<o", "allow"),
+    ("rm ends: ...a deny in a redirection's target still stands", "rm -rf ./a &> /", "deny"),
+    ("rm ends: ...an fd digit before an unlisted one reads as it did", "rm -rf 3<>x", "allow"),
+    # An operand after one is still an operand.
+    ("rm ends: an operand after &>", "rm -rf ./a &>/dev/null ../../y", "ask"),
+    ("rm ends: ...after &> and a space", "rm -rf ./a &> x ../../y", "ask"),
+    ("rm ends: ...after >|", "rm -rf ./a >|x ../../y", "ask"),
+    ("rm ends: ...after <<<", "rm -rf ./a <<<x ../../y", "ask"),
+    ("rm ends: ...after N<>", "rm -rf ./a 3<>f ../../y", "ask"),
+    ("rm ends: ...with &> first", "rm -rf &>/dev/null ../../x", "ask"),
+    ("rm ends: ...with >| first", "rm -rf >|log ../../x", "ask"),
+    # A quoted word is a word, whatever punctuation it holds.
+    ("rm ends: after a quoted )", "rm -rf ./a ')' ../../y", "ask"),
+    ("rm ends: ...a quoted (", "rm -rf ./a '(' ../../y", "ask"),
+    ("rm ends: ...a quoted &>", "rm -rf ./a '&>' ../../y", "ask"),
+    ("rm ends: ...a quoted ) first", "rm -rf ')' ../../x", "ask"),
+    # A word read past the real end keeps the ask it gives: the end may be
+    # misread -- zsh's `rm -rf (a|b)` deletes both.
+    ("rm ends: a word past a glued ); keeps its ask", "(rm -rf ./a); ls /usr/x", "ask"),
+    ("rm ends: ...past |&", "rm -rf ./a |& grep /usr/x", "ask"),
+    ("rm ends: ...past ;;", "case x in a) rm -rf ./a;; b) ls /usr/x;; esac", "ask"),
+    ("rm ends: |& eats no word", "rm -rf |& /", "deny"),
+    ("rm ends: a deny read past the end still stands", "(rm -rf ./a); ls /", "deny"),
+    ("rm ends: ...and one a flag past it made", "(rm ./a); ls -R /", "deny"),
     # The word in a default or alternate is read as the value is.
     ("default word: $HOME", 'D=${X:-$HOME}; rm -rf "${D:?}"/*', "deny"),
     ("default word: ...a bare use", 'D=${X:-$HOME}; rm -rf "$D"', "deny"),
