@@ -18,6 +18,7 @@ where the suite runs would make every relative cd here unplaceable.
 """
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
@@ -1797,7 +1798,7 @@ CASES = [
     ("readable value: an unknown's default may be /", 'W=${X:-/}; rm -rf "${W:?}"', "deny"),
     ("readable value: ~", 'D=~; rm -rf "${D:?}"', "deny"),
     ("readable value: ...and a glob under it", 'W=~; rm -rf "${W:?}"/*', "deny"),
-    ("readable value: ~user", 'W=~root; rm -rf "${W:?}"', "ask"),
+    # ~user is check_tilde_user's: whose home it names depends on $HOME.
     ("readable value: $PWD", 'D=$PWD; rm -rf "${D:?}"', "ask"),
     ("readable value: $PWD/..", 'W=$PWD/..; rm -rf "${W:?}"', "ask"),
     ("readable value: $PWD/../..", 'W=$PWD/../..; rm -rf "${W:?}"', "ask"),
@@ -2899,6 +2900,35 @@ def check_home_roots():
 HOME_ROOT_CHECKS = 151
 
 
+def check_tilde_user():
+    """`~root` under two pinned homes, since whose home it is decides the verdict.
+
+    The guard reads `~user` through the passwd file, so `W=~root` names root's
+    home: a critical directory to anyone else, and the home itself to root. The
+    table runs under the caller's $HOME, which is a user's home on a laptop and
+    /root in CI's archlinux container, so a row there could only ever check one
+    of the two answers -- and failed in CI, asking for `ask` and getting `deny`.
+    """
+    cmd = 'W=~root; rm -rf "${W:?}"'
+    try:
+        root_home = pwd.getpwnam("root").pw_dir
+    except KeyError:
+        return [("readable value: ~user", cmd, "a passwd entry for root", "none",
+                 "cannot tell whose home ~root names")]
+    fails = []
+    for name, home, want in (
+            ("readable value: ~user", "/home/tester", "ask"),
+            ("readable value: ~user that is $HOME", root_home, "deny")):
+        got, reason = run([sys.executable, GUARD], cmd,
+                          env=dict(os.environ, HOME=home))
+        if got != want:
+            fails.append((name, cmd, want, got, reason))
+    return fails
+
+
+TILDE_USER_CHECKS = 2
+
+
 def check_bindings():
     """proven_bindings() in isolation. Nothing here is executed -- see module doc."""
     fails = []
@@ -3130,6 +3160,7 @@ def main():
     fails += check_bindings()
     fails += check_sourced()
     fails += check_home_roots()
+    fails += check_tilde_user()
 
     for name, cmd, expected, got, reason in fails:
         first = reason.replace("\x1b", "\\e").splitlines()[0][:160] if reason else ""
@@ -3142,7 +3173,7 @@ def main():
         print()
 
     total = (len(CASES) + WRAPPER_CHECKS + RENDER_CHECKS + len(BINDING_CASES)
-             + SOURCED_CHECKS + HOME_ROOT_CHECKS)
+             + SOURCED_CHECKS + HOME_ROOT_CHECKS + TILDE_USER_CHECKS)
     print(f"{total - len(fails)}/{total} passed")
     return 1 if fails else 0
 
