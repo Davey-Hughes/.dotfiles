@@ -231,6 +231,24 @@ The plugin records the session in `@oc_session`, and
 `python3 tests/test-opencode-tmux.py` checks the plugin's state handling, the
 renderer and the save hook against a fake tmux.
 
+## herdr
+
+`config/herdr/config.toml` stows into `~/.config/herdr`, where herdr also keeps
+its sockets, logs and session state, so only that file is tracked.
+
+### tmux
+
+A tmux window running herdr gets the same activity glyph as a Claude window:
+red when any agent in that herdr session has a dialog up, the spinner while
+any is working, plain otherwise. herdr's "done" (finished, not looked at yet)
+stays plain. herdr starts its agents without `TMUX_PANE`, so their hooks cannot
+reach tmux; `home/.tmux/herdr-status.sh` polls `herdr agent list` once a
+second instead and paints each tmux pane showing that session through the
+shared renderer. `~/.tmux.conf` starts it. prefix-`u` lands on a waiting herdr
+window, and herdr's sidebar shows which agent it is.
+`python3 tests/test-herdr-tmux.py` checks it against a private tmux server and a
+stand-in herdr CLI.
+
 ## KDE Plasma (desktop only)
 
 KDE Plasma settings (theme, shortcuts, panels, Dolphin/Konsole/Kate) are curated

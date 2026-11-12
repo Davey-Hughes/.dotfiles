@@ -33,6 +33,8 @@
 # for OpenClaw panes (`label`), from the session label in the TUI footer.
 # OpenCode's is a CLI plugin, ~/.config/opencode/plugins/tmux-status, which runs
 # in the TUI and calls this whenever the state of the session on screen changes.
+# herdr's is ~/.tmux/herdr-status.sh, which polls herdr for its agents and
+# paints the tmux pane running herdr with the most urgent of their states.
 #
 # Never exits non-zero: a PreToolUse hook returning 2 would block the tool call.
 #
@@ -246,7 +248,7 @@ run_ticker() {
             # without SessionEnd, or the pane was reused. Drop the stale state
             # rather than animate a tab nobody is working in.
             case "$cmd" in
-                claude|codex|openclaw|opencode) ;;
+                claude|codex|openclaw|opencode|herdr) ;;
                 *) clear_pane "$pane"; continue ;;
             esac
             working=1
@@ -268,11 +270,12 @@ run_ticker() {
     return 0
 }
 
-# Jump to the next Claude, Codex, OpenClaw or OpenCode session that wants you: blocked first (a prompt is
+# Jump to the next Claude, Codex, OpenClaw, OpenCode or herdr session that wants you: blocked first (a prompt is
 # actually up, and a turn is stalled behind it), then asked (its turn ended on
 # a question), then idle (its turn finished). Cycles from wherever you are, so
 # repeated presses walk the whole set. Panes with no state are skipped -- those
-# are sessions that have never fired a hook, not sessions waiting on you.
+# are sessions that have never fired a hook, not sessions waiting on you. A
+# herdr pane lands you on herdr; its sidebar shows which agent is waiting.
 run_next() {
     local here targets sess win i found state
     here="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
@@ -280,7 +283,7 @@ run_next() {
     mapfile -t targets < <(
         for state in blocked asked idle; do
             tmux list-panes -a -F '#{pane_id} #{@cc_state} #{pane_current_command}' 2>/dev/null |
-            awk -v s="$state" '($3=="claude" || $3=="codex" || $3=="openclaw" || $3=="opencode") && $2==s {print $1}'
+            awk -v s="$state" '($3=="claude" || $3=="codex" || $3=="openclaw" || $3=="opencode" || $3=="herdr") && $2==s {print $1}'
         done
     )
 

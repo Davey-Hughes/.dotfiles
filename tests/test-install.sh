@@ -158,6 +158,8 @@ fi
 resolves_into_repo "$FAKE/.config/opencode/opencode.jsonc" "config/opencode/opencode.jsonc"
 resolves_into_repo "$FAKE/.config/opencode/plugins/tmux-status/tui.ts" "config/opencode/plugins/tmux-status/tui.ts"
 resolves_into_repo "$FAKE/.tmux/resurrect-opencode.sh" "home/.tmux/resurrect-opencode.sh"
+# herdr-status.sh finds tmux-status.sh through the repo, from its resolved path.
+resolves_into_repo "$FAKE/.tmux/herdr-status.sh"   "home/.tmux/herdr-status.sh"
 resolves_into_repo "$FAKE/.tmux.conf"              "home/.tmux.conf"
 resolves_into_repo "$FAKE/.config/starship.toml"   "config/starship.toml"
 resolves_into_repo "$FAKE/.config/fish/config.fish" "config/fish/config.fish"
