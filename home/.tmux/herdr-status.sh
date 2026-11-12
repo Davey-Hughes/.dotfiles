@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # herdr-status.sh -- show what herdr's agents are doing on the tmux tab herdr
-# runs in.
+# runs in, and name herdr's own tabs after the sessions in them.
 #
 # herdr runs its agents on its own server and starts them without TMUX or
 # TMUX_PANE, so the tmux-status.sh hooks inside it have no tmux pane to paint.
@@ -17,10 +17,27 @@
 # on purpose, like a Claude tab whose turn has ended: only a dialog reddens the
 # tab. herdr's own sidebar still marks which agents are done.
 #
+# On the same pass, each herdr tab with an agent in it is renamed after the
+# first agent there that has a name -- the name herdr's sidebar shows for it:
+#
+#   claude     its terminal title: the /rename name, or before one the topic
+#              Claude Code makes up
+#   opencode   the session title, which the herdr-session plugin in
+#              ~/.config/opencode/plugins reports as the pane token $session
+#   codex      its terminal title without the thread id ~/.tmux.conf strips
+#              from window names; nothing while the title is only the id
+#
+# A tab renamed by hand is renamed back on the next pass; tabs without a named
+# agent keep their label. Codex runs its hooks in a shared daemon that cannot
+# tell which pane it is in, so its name is reported back to herdr from here,
+# as $session, for the sidebar row in ~/.config/herdr/config.toml. Needs jq;
+# without it the tabs are left alone and the rest still works.
+#
 # Polling rather than herdr's event stream: status-change events are
 # subscribed to one pane at a time, so following agents as they come and go
-# would mean re-subscribing on every new pane. `herdr agent list` answers in
-# about a millisecond, and tmux is only touched when a tab has to change.
+# would mean re-subscribing on every new pane, and a terminal title changing
+# raises no event at all. `herdr agent list` answers in about a millisecond,
+# and tmux and herdr are only touched when something has to change.
 #
 # The pane option @herdr_session records which session a tmux pane was painted
 # for. It is how a pane is recognised after herdr quits and leaves a shell
@@ -44,10 +61,50 @@ readonly STATUS="${SELF%/*}/../../config/.claude/hooks/tmux-status.sh"
 readonly LOCK="${XDG_RUNTIME_DIR:-/tmp}/tmux-herdr-status.lock"
 readonly TICK=1   # seconds between passes while a pane is running herdr
 readonly IDLE=5   # ... and while none is
+# Who reported a Codex pane's $session, as herdr records it.
+readonly TOKEN_SOURCE=dotfiles:herdr-status
+
+# What to change in one session, from its agent list and its tab list. Prints
+# three lines per change: `tab`, a tab id and its new label, or `token`, a
+# Codex pane id and its name (empty to clear $session). Names lose control
+# characters, so each is one line.
+readonly NAMES='
+def tidy: gsub("[[:cntrl:]]"; " ") | gsub("^ +| +$"; "");
+def name:
+  if .agent == "claude" then .terminal_title_stripped // ""
+  elif .agent == "opencode" then .tokens.session // ""
+  elif .agent == "codex" then
+    (.terminal_title_stripped // "")
+    | sub(" [|] [0-9a-f]+-[0-9a-f-]+[.][.][.].*$"; "")
+    | if test("^[0-9a-f]+-[0-9a-f-]+[.][.][.]$") then "" else . end
+  else "" end
+  | tidy;
+[inputs] as [$agents, $tabs]
+| ($agents.result.agents // []) as $all
+| ( $all[] | select(.agent == "codex")
+    | name as $n | select($n != (.tokens.session // ""))
+    | ["token", .pane_id, $n] ),
+  ( $tabs.result.tabs[]? as $tab
+    | first($all[] | select(.tab_id == $tab.tab_id) | name | select(. != "")) as $n
+    | select($n != $tab.label)
+    | ["tab", $tab.tab_id, $n] )
+| .[]'
 
 # A tmux server started from inside a herdr pane passes these on to its jobs,
 # and herdr's CLI would then ask that pane's session instead of the one named.
 unset HERDR_SOCKET_PATH HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID
+
+# herdr's CLI for one session; `default` is the one a plain `herdr` asks.
+#   hd <session> <args>...
+hd() {
+    local session="$1"
+    shift
+    if [[ "$session" == default ]]; then
+        herdr "$@"
+    else
+        herdr --session "$session" "$@"
+    fi
+}
 
 # The herdr session the client in a pane shows, from the command line of the
 # pane's foreground process: `herdr`, `herdr --session NAME`, or
@@ -82,30 +139,55 @@ client_session() {
     [[ -n "$SESSION" ]]
 }
 
-# The most urgent state among a session's agents. Sets STATE. Fails when the
-# session's server cannot be asked, so a hiccup leaves the tab as it was
-# instead of flashing it plain.
+# The most urgent state among a session's agents. Sets STATE, and AGENTS to
+# the agent list for name_tabs. Fails when the session's server cannot be
+# asked, so a hiccup leaves the tab as it was instead of flashing it plain.
 #
 # Substring tests rather than jq, as tmux-status.sh does for PreToolUse: herdr
 # prints compact JSON, and inside a string value every quote is backslashed,
 # so a terminal title cannot spell an unescaped "agent_status":"blocked".
 #   query <session>
 query() {
-    local out
     STATE=''
-    if [[ "$1" == default ]]; then
-        out="$(herdr agent list 2>/dev/null)" || return 1
-    else
-        out="$(herdr --session "$1" agent list 2>/dev/null)" || return 1
-    fi
-    [[ "$out" == *'"type":"agent_list"'* ]] || return 1
-    if [[ "$out" == *'"agent_status":"blocked"'* ]]; then
+    AGENTS="$(hd "$1" agent list 2>/dev/null)" || return 1
+    [[ "$AGENTS" == *'"type":"agent_list"'* ]] || return 1
+    if [[ "$AGENTS" == *'"agent_status":"blocked"'* ]]; then
         STATE=blocked
-    elif [[ "$out" == *'"agent_status":"working"'* ]]; then
+    elif [[ "$AGENTS" == *'"agent_status":"working"'* ]]; then
         STATE=working
     else
         STATE=idle
     fi
+}
+
+# Renames a session's tabs after their agents, and reports Codex names back as
+# $session, from the AGENTS query just read. Only what differs is sent.
+#   name_tabs <session>
+name_tabs() {
+    local tabs kind id name
+    (( HAVE_JQ )) || return 0
+    [[ "$AGENTS" == *'"agent":'* ]] || return 0   # no agents, nothing to name
+    tabs="$(hd "$1" tab list 2>/dev/null)" || return 0
+    [[ "$tabs" == *'"type":"tab_list"'* ]] || return 0
+    while IFS= read -r kind && IFS= read -r id && IFS= read -r name; do
+        case "$kind" in
+            # No `--`: herdr joins every word after the id into the label,
+            # that one included.
+            tab)
+                hd "$1" tab rename "$id" "$name" ;;
+            token)
+                # `--token NAME=VALUE`, two words: herdr rejects --token=...
+                if [[ -n "$name" ]]; then
+                    hd "$1" pane report-metadata "$id" --source "$TOKEN_SOURCE" \
+                        --token "session=$name"
+                else
+                    hd "$1" pane report-metadata "$id" --source "$TOKEN_SOURCE" \
+                        --clear-token session
+                fi
+                ;;
+        esac >/dev/null 2>&1
+    done < <(printf '%s\n%s\n' "$AGENTS" "$tabs" | jq -rn "$NAMES" 2>/dev/null)
+    return 0
 }
 
 # tmux-status.sh does the painting, so a herdr tab looks exactly like a Claude
@@ -141,6 +223,7 @@ pass() {
         if [[ -z "${states[$SESSION]+x}" && -z "${unreachable[$SESSION]+x}" ]]; then
             if query "$SESSION"; then
                 states[$SESSION]="$STATE"
+                name_tabs "$SESSION"
             else
                 unreachable[$SESSION]=1
             fi
@@ -180,6 +263,9 @@ run_loop() {
 [[ -d /proc/self ]] || exit 0
 command -v tmux >/dev/null 2>&1 || exit 0
 command -v herdr >/dev/null 2>&1 || exit 0
+HAVE_JQ=0
+command -v jq >/dev/null 2>&1 && HAVE_JQ=1
+readonly HAVE_JQ
 
 case "${1:-}" in
     --run)  run_loop ;;

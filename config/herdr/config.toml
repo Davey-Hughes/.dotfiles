@@ -36,13 +36,29 @@ previous_tab = ""
 hide_tab_bar_when_single_tab = true
 # prefix+b collapses the sidebar to nothing instead of a narrow status rail.
 sidebar_collapsed_mode = "hidden"
+# A distinct glyph for each agent state rather than colored dots.
+status_indicators = "symbols"
 
-# Claude Code sets its terminal title to the /rename name (before a rename, an
-# auto-generated topic), so the second line of a Claude row is that name alone.
+# The second line of an agent's row is its session name alone, the name
+# ~/.tmux/herdr-status.sh also gives the agent's tab. Claude Code sets its
+# terminal title to the /rename name (before a rename, an auto-generated
+# topic). OpenCode titles the terminal "OC | " and the session title cut to 40
+# characters, so the herdr-session plugin in ~/.config/opencode/plugins reports
+# the whole title as the pane token $session. Codex's title ends in its thread
+# id; herdr-status.sh reports the name before it as $session. The first line
+# leaves the tab out: its label is that same name.
 [ui.sidebar.agents.rows_by_agent]
 claude = [
-  ["state_icon", "machine", "workspace", "tab"],
+  ["state_icon", "machine", "workspace"],
   ["terminal_title_stripped"],
+]
+codex = [
+  ["state_icon", "machine", "workspace"],
+  ["$session"],
+]
+opencode = [
+  ["state_icon", "machine", "workspace"],
+  ["$session"],
 ]
 
 # No notifications for now: no pop-ups and no sounds.

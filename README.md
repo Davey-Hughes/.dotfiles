@@ -236,6 +236,31 @@ renderer and the save hook against a fake tmux.
 `config/herdr/config.toml` stows into `~/.config/herdr`, where herdr also keeps
 its sockets, logs and session state, so only that file is tracked.
 
+### Tab and session names
+
+Each herdr tab with an agent in it is named after that agent's session, and is
+renamed whenever the session is. For Claude Code that is the `/rename` name, or
+before one the topic it makes up. For OpenCode it is the session title, and for
+Codex the chat name. A tab you rename by hand is renamed back, and a tab
+without a named agent keeps its label. The same name is the second line of the
+agent's row in herdr's sidebar (`rows_by_agent` in the config).
+
+herdr has no setting for this, and no event fires when a terminal title
+changes. So `home/.tmux/herdr-status.sh` (see tmux below) renames tabs on the
+pass it already makes once a second. That only happens while herdr is open in
+a tmux pane, and needs `jq`. Each name comes from a different place:
+
+- **Claude:** its terminal title.
+- **OpenCode:** it titles the terminal `OC | ` and the session title cut to
+  40 characters. Instead, the CLI plugin
+  `config/opencode/plugins/herdr-session/tui.ts` reports the whole title over
+  herdr's socket as the pane token `$session`.
+- **Codex:** its title ends in the thread id, which tmux also drops from window
+  names. The script drops it too and reports the rest as `$session`.
+
+`python3 tests/test-opencode-herdr.py` checks the plugin against a stand-in
+herdr socket. The renaming is covered in `tests/test-herdr-tmux.py`.
+
 ### tmux
 
 A tmux window running herdr gets the same activity glyph as a Claude window:

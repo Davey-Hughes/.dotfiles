@@ -89,6 +89,7 @@ config/opencode/*
 !config/opencode/themes/
 config/opencode/plugins/*
 !config/opencode/plugins/tmux-status/
+!config/opencode/plugins/herdr-session/
 
 # herdr: sockets, logs and session state (session.json, session-snapshots/,
 # and session-history.json, which holds saved pane contents) live beside

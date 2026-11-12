@@ -2,10 +2,12 @@
 """herdr's agent states on the tmux tab herdr runs in, on an isolated tmux server.
 
 home/.tmux/herdr-status.sh asks each herdr session for its agents and hands the
-most urgent state to tmux-status.sh for the tmux pane showing that session.
-These run one pass of it against a private tmux server, with a stand-in herdr
-client in the pane and a stand-in `herdr` CLI on PATH that prints canned agent
-lists, so neither the user's tmux nor their herdr server is touched.
+most urgent state to tmux-status.sh for the tmux pane showing that session. On
+the same pass it renames herdr's tabs after their agents' sessions. These run
+one pass of it against a private tmux server, with a stand-in herdr client in
+the pane and a stand-in `herdr` CLI on PATH that prints canned agent and tab
+lists and logs every change asked of it, so neither the user's tmux nor their
+herdr server is touched.
 """
 import json
 import os
@@ -21,15 +23,36 @@ ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = ROOT / 'home/.tmux/herdr-status.sh'
 STATUS = ROOT / 'config/.claude/hooks/tmux-status.sh'
 BLOCK_RED = '#f7768e'
+# What Codex puts after the chat name in its title: the thread id, cut to 32
+# characters with the last three an ellipsis (see templates/codex/config.toml).
+THREAD = ' | 01a12f98-2517-7910-a451-6c0f8...'
+REPORT = ['pane', 'report-metadata', 'w1:p1', '--source', 'dotfiles:herdr-status']
 
-# Prints $HERDR_STUB/<session>.json for `herdr [--session NAME] agent list`,
-# and fails when there is no such file, the way an unreachable server does.
-CLI_STUB = '''#!/bin/sh
-session=default
-if [ "$1" = --session ]; then session=$2; shift 2; fi
-[ "$1 $2" = "agent list" ] || exit 2
-[ -f "$HERDR_STUB/$session.json" ] || exit 1
-cat "$HERDR_STUB/$session.json"
+# Prints $HERDR_STUB/<session>.json for `herdr [--session NAME] agent list`
+# and <session>.tabs.json for `tab list`, and fails when there is no such
+# file, the way an unreachable server does. Tab renames and metadata reports
+# are appended to calls.jsonl, one JSON array of [session, *args] per call.
+CLI_STUB = '''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+stub = Path(os.environ['HERDR_STUB'])
+args = sys.argv[1:]
+session = 'default'
+if args[:1] == ['--session']:
+    session, args = args[1], args[2:]
+def show(name):
+    if not (stub / name).is_file():
+        sys.exit(1)
+    sys.stdout.write((stub / name).read_text())
+if args == ['agent', 'list']:
+    show(f'{session}.json')
+elif args == ['tab', 'list']:
+    show(f'{session}.tabs.json')
+elif args[:2] in (['tab', 'rename'], ['pane', 'report-metadata']):
+    with open(stub / 'calls.jsonl', 'a') as log:
+        log.write(json.dumps([session, *args]) + chr(10))
+else:
+    sys.exit(2)
 '''
 
 
@@ -98,6 +121,23 @@ class HerdrBridgeTests(unittest.TestCase):
              'terminal_title': title}
             for i, status in enumerate(statuses)], 'type': 'agent_list'}}
         (self.stub / f'{session}.json').write_text(json.dumps(listing, separators=(',', ':')))
+
+    def listing(self, session, *agents, tabs=()):
+        """Agents as `herdr agent list` gives them, and `tabs` as (id, label)."""
+        agents = [{'agent_status': 'idle', 'pane_id': f'w1:p{i}', 'tab_id': 'w1:t1', **a}
+                  for i, a in enumerate(agents, 1)]
+        compact = {'separators': (',', ':')}
+        (self.stub / f'{session}.json').write_text(json.dumps(
+            {'id': 'cli:agent:list', 'result': {'agents': agents, 'type': 'agent_list'}},
+            **compact))
+        (self.stub / f'{session}.tabs.json').write_text(json.dumps(
+            {'id': 'cli:tab:list', 'result': {'tabs': [
+                {'tab_id': tab, 'label': label, 'workspace_id': tab.split(':')[0]}
+                for tab, label in tabs], 'type': 'tab_list'}}, **compact))
+
+    def calls(self):
+        log = self.stub / 'calls.jsonl'
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
     def server_down(self, session):
         (self.stub / f'{session}.json').unlink()
@@ -192,6 +232,102 @@ class HerdrBridgeTests(unittest.TestCase):
         self.agents('default', 'blocked')
         self.bridge_pass()
         self.assertEqual(self.option(pane, '@cc_state'), 'idle')
+
+    # --- herdr's tab names ------------------------------------------------------
+
+    @staticmethod
+    def claude(name, **extra):
+        return {'agent': 'claude', 'terminal_title': f'* {name}',
+                'terminal_title_stripped': name, **extra}
+
+    @staticmethod
+    def codex(title, **extra):
+        return {'agent': 'codex', 'terminal_title': title,
+                'terminal_title_stripped': title, **extra}
+
+    def test_a_tab_takes_its_claude_session_name(self):
+        self.pane('herdr')
+        self.listing('default', self.claude('zink'), tabs=[('w1:t1', '1')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
+
+    def test_a_tab_already_named_is_left_alone(self):
+        self.pane('herdr')
+        self.listing('default', self.claude('zink'), tabs=[('w1:t1', 'zink')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [])
+
+    def test_a_tab_renamed_by_hand_follows_the_session_again(self):
+        self.pane('herdr')
+        self.listing('default', self.claude('zink'), tabs=[('w1:t1', 'my name')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
+
+    def test_a_tab_without_a_named_agent_keeps_its_label(self):
+        self.pane('herdr')
+        self.listing('default', self.claude('zink'), {'agent': 'opencode', 'tab_id': 'w1:t2'},
+                     tabs=[('w1:t1', 'zink'), ('w1:t2', 'scratch'), ('w1:t3', 'shell')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [])
+
+    def test_the_first_named_agent_names_a_split_tab(self):
+        self.pane('herdr')
+        self.listing('default', {'agent': 'opencode'}, self.claude('zink'),
+                     self.claude('melonds'), tabs=[('w1:t1', '1')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
+
+    def test_a_name_is_one_line(self):
+        self.pane('herdr')
+        self.listing('default', self.claude(' two\nlines\t'), tabs=[('w1:t1', '1')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [['default', 'tab', 'rename', 'w1:t1', 'two lines']])
+
+    def test_opencode_names_its_tab_with_the_title_it_reports(self):
+        # The title, not the terminal title, which OpenCode prefixes and cuts.
+        self.pane('herdr')
+        self.listing('default', {'agent': 'opencode',
+                                 'terminal_title_stripped': 'OC | Eden libretro core p...',
+                                 'tokens': {'session': 'Eden libretro core port'}},
+                     tabs=[('w1:t1', '1')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(),
+                         [['default', 'tab', 'rename', 'w1:t1', 'Eden libretro core port']])
+
+    def test_codex_drops_the_thread_id_and_reports_its_name(self):
+        self.pane('herdr')
+        self.listing('default', self.codex('Port Codex config' + THREAD), tabs=[('w1:t1', '1')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [
+            ['default', *REPORT, '--token', 'session=Port Codex config'],
+            ['default', 'tab', 'rename', 'w1:t1', 'Port Codex config']])
+
+    def test_a_codex_name_already_reported_is_not_sent_again(self):
+        self.pane('herdr')
+        self.listing('default', self.codex('Port Codex config' + THREAD,
+                                           tokens={'session': 'Port Codex config'}),
+                     tabs=[('w1:t1', 'Port Codex config')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [])
+
+    def test_codex_with_only_a_thread_id_has_no_name(self):
+        self.pane('herdr')
+        self.listing('default', self.codex(THREAD[3:]), tabs=[('w1:t1', '1')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [])
+
+    def test_a_codex_name_that_went_away_is_cleared(self):
+        self.pane('herdr')
+        self.listing('default', self.codex(THREAD[3:], tokens={'session': 'old chat'}),
+                     tabs=[('w1:t1', 'old chat')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [['default', *REPORT, '--clear-token', 'session']])
+
+    def test_a_named_session_is_renamed_through_its_own_server(self):
+        self.pane('herdr', '--session', 'beaver')
+        self.listing('beaver', self.claude('zink'), tabs=[('w1:t1', '1')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(), [['beaver', 'tab', 'rename', 'w1:t1', 'zink']])
 
     # --- the shared ticker -------------------------------------------------------
 
