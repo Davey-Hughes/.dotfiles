@@ -21,6 +21,14 @@ directory = "~/.local/share/herdr/worktrees"
 # ctrl+b is Claude Code's "background this command" key, and ctrl+a is the tmux
 # prefix. ctrl+q is free in fish, Claude Code, Neovim, tmux and Ghostty.
 prefix = "ctrl+q"
+# prefix+n / prefix+p walk agents, like the tmux keys walk windows. They are
+# next_tab / previous_tab by default; tabs keep prefix+1..9. Both have to be
+# cleared: `herdr config check` passes a key bound twice without saying which
+# action gets it.
+next_agent = "prefix+n"
+previous_agent = "prefix+p"
+next_tab = ""
+previous_tab = ""
 
 [ui]
 # The tab row, "+" button included, shows only once a workspace has a second
