@@ -136,6 +136,16 @@
             "command": "$HOME/.config/.claude/hooks/tmux-status.sh reset"
           }
         ]
+      },
+      {
+        "matcher": "^(startup|resume|clear|compact|fork)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.config/.claude/hooks/herdr-agent-state.sh\" session",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SessionEnd": [

@@ -27,7 +27,7 @@ cd_repo_root
 # repo will accept, and only the second one can fail a build.
 #
 # Space-delimited with leading/trailing spaces so `case` can match whole words.
-codex_allow=" AGENTS.md skills themes hooks.json hooks "
+codex_allow=" AGENTS.md skills themes hooks.json hooks herdr-agent-state.sh "
 codex_hooks_allow=" destructive-guard.py destructive-guard.sh tmux-status.sh tmux-session.py "
 codex_themes_allow=" tokyonight-moon.tmTheme "
 codex_skills_allow=" prep-pr "
@@ -178,5 +178,20 @@ done < <(git ls-files -z -- ':(exclude)tests/test-tracked-files.sh' | xargs -0 g
   'sk-ant-|ghp_[A-Za-z0-9]{20}|github_pat_|AKIA[0-9A-Z]{16}|xox[baprs]-|-----BEGIN [A-Z ]*PRIVATE KEY-----|ANTHROPIC_API_KEY[[:space:]]*=' \
   2>/dev/null)
 [ "$FAILURES" -eq "$before" ] && ok "no API keys, tokens or private keys found"
+
+# --- 4c. portable hook paths --------------------------------------------------
+# `herdr integration install` writes its hook entry with this machine's absolute
+# home path, and reinstalling over the portable "$HOME/..." entry appends a
+# second, absolute one instead of recognising it. Either form breaks every other
+# machine (another user, or /Users on macOS) with a missing-script error at
+# each session start, so it has to be caught before it is committed.
+section "hook configs: no machine-specific home paths"
+before=$FAILURES
+for f in config/.claude/settings.json config/codex/hooks.json; do
+  while IFS= read -r hit; do
+    [ -n "$hit" ] && fail "$f:$hit -- write the path with \$HOME"
+  done < <(grep -nE "[\"' ]/(home|Users|root)/" "$f" 2>/dev/null)
+done
+[ "$FAILURES" -eq "$before" ] && ok "hook commands reach their scripts through \$HOME"
 
 summary "tracked-files"

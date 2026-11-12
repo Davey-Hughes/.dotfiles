@@ -163,6 +163,7 @@ resolves_into_repo "$FAKE/.config/starship.toml"   "config/starship.toml"
 resolves_into_repo "$FAKE/.config/fish/config.fish" "config/fish/config.fish"
 resolves_into_repo "$FAKE/.config/git/ignore"      "config/git/ignore"
 resolves_into_repo "$FAKE/.config/herdr/config.toml" "config/herdr/config.toml"
+resolves_into_repo "$FAKE/.config/codex/herdr-agent-state.sh" "config/codex/herdr-agent-state.sh"
 
 section "the conflicting file was preserved, not clobbered"
 backup=$(find "$FAKE/.dotfiles-backup" -name '.zshrc' -type f 2>/dev/null | head -1)

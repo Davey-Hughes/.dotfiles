@@ -51,6 +51,9 @@ config/.claude/skills/synced/
 config/codex/*
 !config/codex/AGENTS.md
 !config/codex/hooks.json
+# herdr's session hook. `herdr integration install codex` rewrites it through
+# the stow link, so an integration update shows up here as a diff.
+!config/codex/herdr-agent-state.sh
 !config/codex/hooks/
 config/codex/hooks/*
 !config/codex/hooks/destructive-guard.py
