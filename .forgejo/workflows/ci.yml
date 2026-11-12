@@ -65,6 +65,14 @@ jobs:
         run: python3 tests/test-openclaw-tmux.py
       - name: Claude tmux spinner ticker
         run: python3 tests/test-claude-tmux.py
+      # Both drive their TypeScript plugin through node, from the first step.
+      - name: OpenCode tmux activity
+        run: python3 tests/test-opencode-tmux.py
+      - name: OpenCode session names in herdr
+        run: python3 tests/test-opencode-herdr.py
+      # A stand-in herdr CLI; needs tmux and jq, from the first step.
+      - name: herdr agent states and tab names in tmux
+        run: python3 tests/test-herdr-tmux.py
       # ...and the verdicts it DID produce, for commands that really ran. The
       # suite asserts what somebody thought to write down; this replays a
       # snapshot of real ones, and it is what caught every regression in the
