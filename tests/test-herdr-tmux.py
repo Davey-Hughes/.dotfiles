@@ -27,6 +27,9 @@ BLOCK_RED = '#f7768e'
 # characters with the last three an ellipsis (see templates/codex/config.toml).
 THREAD = ' | 01a12f98-2517-7910-a451-6c0f8...'
 REPORT = ['pane', 'report-metadata', 'w1:p1', '--source', 'dotfiles:herdr-status']
+# What marks a Claude sidebar name whose turn ended on a question: a zero-width
+# space, which herdr keeps and a sidebar rule turns red, but nobody sees.
+MARK = chr(0x200B)
 
 # Prints $HERDR_STUB/<session>.json for `herdr [--session NAME] agent list`
 # and <session>.tabs.json for `tab list`, and fails when there is no such
@@ -135,9 +138,11 @@ class HerdrBridgeTests(unittest.TestCase):
                 {'tab_id': tab, 'label': label, 'workspace_id': tab.split(':')[0]}
                 for tab, label in tabs], 'type': 'tab_list'}}, **compact))
 
-    def calls(self):
+    def calls(self, kind=None):
+        """What was asked of herdr; `kind` keeps only `tab` renames or `pane` reports."""
         log = self.stub / 'calls.jsonl'
-        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        return [call for call in calls if kind is None or call[1] == kind]
 
     def server_down(self, session):
         (self.stub / f'{session}.json').unlink()
@@ -289,39 +294,39 @@ class HerdrBridgeTests(unittest.TestCase):
         self.pane('herdr')
         self.listing('default', self.claude('zink'), tabs=[('w1:t1', '1')])
         self.bridge_pass()
-        self.assertEqual(self.calls(), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
+        self.assertEqual(self.calls('tab'), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
 
     def test_a_tab_already_named_is_left_alone(self):
         self.pane('herdr')
         self.listing('default', self.claude('zink'), tabs=[('w1:t1', 'zink')])
         self.bridge_pass()
-        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.calls('tab'), [])
 
     def test_a_tab_renamed_by_hand_follows_the_session_again(self):
         self.pane('herdr')
         self.listing('default', self.claude('zink'), tabs=[('w1:t1', 'my name')])
         self.bridge_pass()
-        self.assertEqual(self.calls(), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
+        self.assertEqual(self.calls('tab'), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
 
     def test_a_tab_without_a_named_agent_keeps_its_label(self):
         self.pane('herdr')
         self.listing('default', self.claude('zink'), {'agent': 'opencode', 'tab_id': 'w1:t2'},
                      tabs=[('w1:t1', 'zink'), ('w1:t2', 'scratch'), ('w1:t3', 'shell')])
         self.bridge_pass()
-        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.calls('tab'), [])
 
     def test_the_first_named_agent_names_a_split_tab(self):
         self.pane('herdr')
         self.listing('default', {'agent': 'opencode'}, self.claude('zink'),
                      self.claude('melonds'), tabs=[('w1:t1', '1')])
         self.bridge_pass()
-        self.assertEqual(self.calls(), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
+        self.assertEqual(self.calls('tab'), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
 
     def test_a_name_is_one_line(self):
         self.pane('herdr')
         self.listing('default', self.claude(' two\nlines\t'), tabs=[('w1:t1', '1')])
         self.bridge_pass()
-        self.assertEqual(self.calls(), [['default', 'tab', 'rename', 'w1:t1', 'two lines']])
+        self.assertEqual(self.calls('tab'), [['default', 'tab', 'rename', 'w1:t1', 'two lines']])
 
     def test_opencode_names_its_tab_with_the_title_it_reports(self):
         # The title, not the terminal title, which OpenCode prefixes and cuts.
@@ -367,7 +372,39 @@ class HerdrBridgeTests(unittest.TestCase):
         self.pane('herdr', '--session', 'beaver')
         self.listing('beaver', self.claude('zink'), tabs=[('w1:t1', '1')])
         self.bridge_pass()
-        self.assertEqual(self.calls(), [['beaver', 'tab', 'rename', 'w1:t1', 'zink']])
+        self.assertEqual(self.calls('tab'), [['beaver', 'tab', 'rename', 'w1:t1', 'zink']])
+
+    # --- herdr's sidebar name for Claude ($session) ------------------------------
+
+    def test_a_claude_name_is_reported_for_the_sidebar(self):
+        self.pane('herdr')
+        self.listing('default', self.claude('zink'))
+        self.bridge_pass()
+        self.assertEqual(self.calls('pane'), [['default', *REPORT, '--token', 'session=zink']])
+
+    def test_a_question_marks_the_sidebar_name_but_not_the_tab(self):
+        self.pane('herdr')
+        self.listing('default', self.claude('zink', agent_status='done',
+                                            tokens={'asked': 'asked', 'session': 'zink'}),
+                     tabs=[('w1:t1', '1')])
+        self.bridge_pass()
+        self.assertEqual(self.calls('pane'), [['default', *REPORT, '--token', 'session=' + MARK + 'zink']])
+        self.assertEqual(self.calls('tab'), [['default', 'tab', 'rename', 'w1:t1', 'zink']])
+
+    def test_an_answered_question_unmarks_the_sidebar_name(self):
+        self.pane('herdr')
+        self.listing('default', self.claude('zink', agent_status='working',
+                                            tokens={'asked': 'asked', 'session': MARK + 'zink'}))
+        self.bridge_pass()
+        self.assertEqual(self.calls('pane'), [['default', *REPORT, '--token', 'session=zink']])
+
+    def test_a_sidebar_name_already_reported_is_not_sent_again(self):
+        self.pane('herdr')
+        self.listing('default', self.claude('zink', tokens={'session': 'zink'}),
+                     self.claude('melonds', agent_status='idle',
+                                 tokens={'asked': 'asked', 'session': MARK + 'melonds'}))
+        self.bridge_pass()
+        self.assertEqual(self.calls('pane'), [])
 
     # --- the shared ticker -------------------------------------------------------
 

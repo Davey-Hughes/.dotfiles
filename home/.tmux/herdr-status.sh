@@ -34,8 +34,12 @@
 # A tab renamed by hand is renamed back on the next pass; tabs without a named
 # agent keep their label. Codex runs its hooks in a shared daemon that cannot
 # tell which pane it is in, so its name is reported back to herdr from here,
-# as $session, for the sidebar row in ~/.config/herdr/config.toml. Needs jq;
-# without it the tabs are left alone and the rest still works.
+# as $session, for the sidebar row in ~/.config/herdr/config.toml. Claude's is
+# too, with a zero-width space (U+200B) in front while its turn has ended on a
+# question, which that row turns red: herdr can colour a token only by its own
+# text, so the mark has to be in the name, and this one takes no room on
+# screen. The tab keeps the plain name. Needs jq; without it the tabs and
+# sidebar names are left alone and the rest still works.
 #
 # Polling rather than herdr's event stream: status-change events are
 # subscribed to one pane at a time, so following agents as they come and go
@@ -65,14 +69,23 @@ readonly STATUS="${SELF%/*}/../../config/.claude/hooks/tmux-status.sh"
 readonly LOCK="${XDG_RUNTIME_DIR:-/tmp}/tmux-herdr-status.lock"
 readonly TICK=1   # seconds between passes while a pane is running herdr
 readonly IDLE=5   # ... and while none is
-# Who reported a Codex pane's $session, as herdr records it.
+# Who reported a Codex or Claude pane's $session, as herdr records it.
 readonly TOKEN_SOURCE=dotfiles:herdr-status
+
+# A Claude agent whose turn ended on a question, as a jq condition on one
+# agent. Its hooks report that as the pane token $asked (tmux-status.sh,
+# report_asked). Only a Claude agent that is not working counts: a token a
+# hook failed to clear cannot outlast the next turn, and one a killed Claude
+# left on its pane -- pane metadata lives as long as the pane -- means nothing
+# for an agent started there after it.
+readonly ASKING='.agent == "claude" and .tokens.asked == "asked"
+    and (.agent_status == "done" or .agent_status == "idle")'
 
 # What to change in one session, from its agent list and its tab list. Prints
 # three lines per change: `tab`, a tab id and its new label, or `token`, a
-# Codex pane id and its name (empty to clear $session). Names lose control
-# characters, so each is one line.
-readonly NAMES='
+# Codex or Claude pane id and its sidebar name (empty to clear $session).
+# Names lose control characters, so each is one line.
+readonly NAMES="def asking: $ASKING;"'
 def tidy: gsub("[[:cntrl:]]"; " ") | gsub("^ +| +$"; "");
 def name:
   if .agent == "claude" then .terminal_title_stripped // ""
@@ -83,10 +96,12 @@ def name:
     | if test("^[0-9a-f]+-[0-9a-f-]+[.][.][.]$") then "" else . end
   else "" end
   | tidy;
+def mark: [8203] | implode;   # U+200B ZERO WIDTH SPACE
+def sidebar: name as $n | if $n != "" and asking then mark + $n else $n end;
 [inputs] as [$agents, $tabs]
 | ($agents.result.agents // []) as $all
-| ( $all[] | select(.agent == "codex")
-    | name as $n | select($n != (.tokens.session // ""))
+| ( $all[] | select(.agent == "codex" or .agent == "claude")
+    | sidebar as $n | select($n != (.tokens.session // ""))
     | ["token", .pane_id, $n] ),
   ( $tabs.result.tabs[]? as $tab
     | first($all[] | select(.tab_id == $tab.tab_id) | name | select(. != "")) as $n
@@ -143,19 +158,13 @@ client_session() {
     [[ -n "$SESSION" ]]
 }
 
-# Whether a Claude agent's turn ended on a question asked in prose, which herdr
-# itself sees as plain `done`: Claude's hooks report it as the pane token
-# $asked (tmux-status.sh, report_asked). Only a Claude agent that is not
-# working counts: a token a hook failed to clear cannot outlast the next turn,
-# and one a killed Claude left on its pane -- pane metadata lives as long as
-# the pane -- means nothing for an agent started there after it. jq runs only
-# when some agent carries the token at all.
+# Whether any Claude agent's turn ended on a question asked in prose (ASKING),
+# which herdr itself sees as plain `done`. jq runs only when some agent
+# carries the $asked token at all.
 #   asked    reads AGENTS
 asked() {
     [[ "$AGENTS" == *'"asked":"asked"'* ]] && (( HAVE_JQ )) || return 1
-    jq -e 'any(.result.agents[]?; .agent == "claude" and .tokens.asked == "asked"
-               and (.agent_status == "done" or .agent_status == "idle"))' \
-        <<<"$AGENTS" >/dev/null 2>&1
+    jq -e "any(.result.agents[]?; $ASKING)" <<<"$AGENTS" >/dev/null 2>&1
 }
 
 # The most urgent state among a session's agents. Sets STATE, and AGENTS to
@@ -179,8 +188,9 @@ query() {
     fi
 }
 
-# Renames a session's tabs after their agents, and reports Codex names back as
-# $session, from the AGENTS query just read. Only what differs is sent.
+# Renames a session's tabs after their agents, and reports Codex and Claude
+# names back as $session for the sidebar, from the AGENTS query just read.
+# Only what differs is sent.
 #   name_tabs <session>
 name_tabs() {
     local tabs kind id name

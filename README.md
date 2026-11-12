@@ -250,7 +250,10 @@ changes. So `home/.tmux/herdr-status.sh` (see tmux below) renames tabs on the
 pass it already makes once a second. That only happens while herdr is open in
 a tmux pane, and needs `jq`. Each name comes from a different place:
 
-- **Claude:** its terminal title.
+- **Claude:** its terminal title. The script also reports it as `$session`,
+  with an invisible zero-width space in front while the agent's turn has ended
+  on a question, and the sidebar shows that name in red (see tmux below):
+  herdr can colour a name only by its own text. The tab keeps the plain name.
 - **OpenCode:** it titles the terminal `OC | ` and the session title cut to
   40 characters. Instead, the CLI plugin
   `config/opencode/plugins/herdr-session/tui.ts` reports the whole title over
@@ -272,8 +275,8 @@ agents without `TMUX_PANE`, so their hooks cannot reach tmux;
 paints each tmux pane showing that session through the shared renderer.
 `~/.tmux.conf` starts it. herdr has no state for a question asked in prose, so
 inside herdr Claude's hooks (`config/.claude/hooks/tmux-status.sh`) report one
-as the pane token `$asked`, which the poller reads and the agent's sidebar row
-shows as a red "asked". prefix-`u` lands on a waiting herdr window, and herdr's
+as the pane token `$asked`, which the poller reads; herdr's sidebar then shows
+that agent's name in red. prefix-`u` lands on a waiting herdr window, and herdr's
 sidebar shows which agent it is. Resurrect reruns the
 client (`herdr` or `herdr --session <name>`), which reattaches to herdr's server
 or starts it, and herdr resumes its own agents.

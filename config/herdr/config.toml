@@ -40,22 +40,25 @@ sidebar_collapsed_mode = "hidden"
 status_indicators = "symbols"
 
 # The second line of an agent's row is its session name alone, the name
-# ~/.tmux/herdr-status.sh also gives the agent's tab. Claude Code sets its
-# terminal title to the /rename name (before a rename, an auto-generated
-# topic). OpenCode titles the terminal "OC | " and the session title cut to 40
-# characters, so the herdr-session plugin in ~/.config/opencode/plugins reports
-# the whole title as the pane token $session. Codex's title ends in its thread
-# id; herdr-status.sh reports the name before it as $session. The first line
-# leaves the tab out: its label is that same name.
+# ~/.tmux/herdr-status.sh also gives the agent's tab. OpenCode titles the
+# terminal "OC | " and the session title cut to 40 characters, so the
+# herdr-session plugin in ~/.config/opencode/plugins reports the whole title as
+# the pane token $session. Codex's title ends in its thread id; herdr-status.sh
+# reports the name before it as $session. The first line leaves the tab out:
+# its label is that same name.
 #
-# A Claude row also shows a red "asked" after the state icon while that agent's
-# turn has ended on a question, from the pane token $asked its hooks report
-# (~/.config/.claude/hooks/tmux-status.sh); herdr itself calls that turn done.
-# Unreported, the token takes its separator with it.
+# Claude's $session comes from herdr-status.sh too: its terminal title, the
+# /rename name (before a rename, an auto-generated topic), with a zero-width
+# space (U+200B) in front while that agent's turn has ended on a question.
+# That is the pane token $asked its hooks report
+# (~/.config/.claude/hooks/tmux-status.sh); herdr itself calls the turn done.
+# A token can only be coloured by its own text, so the mark is in the name,
+# where it takes no room, and the rule below turns the line red. The name only
+# updates while herdr is open in a tmux pane, where that script runs.
 [ui.sidebar.agents.rows_by_agent]
 claude = [
-  ["state_icon", { token = "$asked", fg = "#f7768e", bold = true }, "machine", "workspace"],
-  ["terminal_title_stripped"],
+  ["state_icon", "machine", "workspace"],
+  [{ token = "$session", rules = [{ starts_with = "\u200B", fg = "#f7768e", bold = true }] }],
 ]
 codex = [
   ["state_icon", "machine", "workspace"],
