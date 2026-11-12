@@ -9,13 +9,17 @@
 # TMUX_PANE set to each tmux pane showing that session -- the same way the
 # OpenClaw bridge drives it:
 #
-#   any agent blocked   -> blocked   red, static: a dialog is waiting on you
-#   any agent working   -> working   the spinner
-#   otherwise           -> idle      plain
+#   any agent blocked, or   -> blocked   red, static: something is waiting on you
+#     a Claude turn ended
+#     on a question
+#   any agent working       -> working   the spinner
+#   otherwise               -> idle      plain
 #
 # herdr's `done` (a turn finished that you have not looked at yet) stays plain
-# on purpose, like a Claude tab whose turn has ended: only a dialog reddens the
-# tab. herdr's own sidebar still marks which agents are done.
+# on purpose, like a Claude tab whose turn has ended: only a dialog or a
+# question reddens the tab. herdr has no state for a question asked in prose,
+# so Claude's hooks report one as the pane token $asked (see `asked`). herdr's
+# own sidebar still marks which agents are done.
 #
 # On the same pass, each herdr tab with an agent in it is renamed after the
 # first agent there that has a name -- the name herdr's sidebar shows for it:
@@ -139,6 +143,21 @@ client_session() {
     [[ -n "$SESSION" ]]
 }
 
+# Whether a Claude agent's turn ended on a question asked in prose, which herdr
+# itself sees as plain `done`: Claude's hooks report it as the pane token
+# $asked (tmux-status.sh, report_asked). Only a Claude agent that is not
+# working counts: a token a hook failed to clear cannot outlast the next turn,
+# and one a killed Claude left on its pane -- pane metadata lives as long as
+# the pane -- means nothing for an agent started there after it. jq runs only
+# when some agent carries the token at all.
+#   asked    reads AGENTS
+asked() {
+    [[ "$AGENTS" == *'"asked":"asked"'* ]] && (( HAVE_JQ )) || return 1
+    jq -e 'any(.result.agents[]?; .agent == "claude" and .tokens.asked == "asked"
+               and (.agent_status == "done" or .agent_status == "idle"))' \
+        <<<"$AGENTS" >/dev/null 2>&1
+}
+
 # The most urgent state among a session's agents. Sets STATE, and AGENTS to
 # the agent list for name_tabs. Fails when the session's server cannot be
 # asked, so a hiccup leaves the tab as it was instead of flashing it plain.
@@ -151,7 +170,7 @@ query() {
     STATE=''
     AGENTS="$(hd "$1" agent list 2>/dev/null)" || return 1
     [[ "$AGENTS" == *'"type":"agent_list"'* ]] || return 1
-    if [[ "$AGENTS" == *'"agent_status":"blocked"'* ]]; then
+    if [[ "$AGENTS" == *'"agent_status":"blocked"'* ]] || asked; then
         STATE=blocked
     elif [[ "$AGENTS" == *'"agent_status":"working"'* ]]; then
         STATE=working

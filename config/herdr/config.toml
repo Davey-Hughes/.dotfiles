@@ -47,9 +47,14 @@ status_indicators = "symbols"
 # the whole title as the pane token $session. Codex's title ends in its thread
 # id; herdr-status.sh reports the name before it as $session. The first line
 # leaves the tab out: its label is that same name.
+#
+# A Claude row also shows a red "asked" after the state icon while that agent's
+# turn has ended on a question, from the pane token $asked its hooks report
+# (~/.config/.claude/hooks/tmux-status.sh); herdr itself calls that turn done.
+# Unreported, the token takes its separator with it.
 [ui.sidebar.agents.rows_by_agent]
 claude = [
-  ["state_icon", "machine", "workspace"],
+  ["state_icon", { token = "$asked", fg = "#f7768e", bold = true }, "machine", "workspace"],
   ["terminal_title_stripped"],
 ]
 codex = [

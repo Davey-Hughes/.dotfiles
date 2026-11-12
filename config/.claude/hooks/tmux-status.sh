@@ -35,6 +35,8 @@
 # in the TUI and calls this whenever the state of the session on screen changes.
 # herdr's is ~/.tmux/herdr-status.sh, which polls herdr for its agents and
 # paints the tmux pane running herdr with the most urgent of their states.
+# Inside herdr, where there is no tmux pane, Claude's hooks report a turn that
+# ended on a question to herdr instead (report_asked), for that poller to read.
 #
 # Never exits non-zero: a PreToolUse hook returning 2 would block the tool call.
 #
@@ -168,6 +170,33 @@ asked_question() {
            | map(gsub("\\s+$"; "")) | map(select(length > 0)) | (last // "")
            | sub("[\\s*_)\\]\"]+$"; "") | endswith("?")' \
         <<<"$HOOK_JSON" >/dev/null 2>&1
+}
+
+# Inside herdr there is no tmux pane to paint: herdr starts its agents without
+# TMUX_PANE, and ~/.tmux/herdr-status.sh paints the tmux pane running herdr
+# from herdr's own view of its agents. herdr sees a dialog itself, but a turn
+# that ended on a question asked in prose is plain `done` to it, so this tells
+# herdr instead, as the pane token $asked: set on Stop when the turn ended on a
+# question, cleared by anything that means the session moved on -- the same
+# life as @cc_asked. herdr-status.sh reddens the tab for it, and the sidebar row
+# in ~/.config/herdr/config.toml shows it. About a millisecond a call.
+#   report_asked <verb>
+report_asked() {
+    local -a call=(pane report-metadata "$HERDR_PANE_ID" --source dotfiles:tmux-status)
+    case "$1" in
+        idle)
+            read_hook_input
+            if asked_question; then
+                call+=(--token asked=asked)
+            else
+                call+=(--clear-token asked)
+            fi
+            ;;
+        working|reset|off) call+=(--clear-token asked) ;;
+        *) return 0 ;;   # dialogs herdr sees for itself; the rest is tmux's
+    esac
+    herdr "${call[@]}" </dev/null >/dev/null 2>&1
+    return 0
 }
 
 # Returns 0 when it spawned a ticker, 1 when one was already live.
@@ -420,6 +449,14 @@ case "${1:-}" in
     name)   run_name "${2:-}";   exit 0 ;;
     names)  run_names;           exit 0 ;;
 esac
+
+# A Claude agent inside herdr. Not Codex, OpenCode or OpenClaw: Codex runs its
+# hooks in a shared daemon whose HERDR_PANE_ID may be any pane's.
+if [[ -z "${TMUX_PANE:-}" && -n "${HERDR_PANE_ID:-}" &&
+      -z "${TMUX_STATUS_CODEX:-}${TMUX_STATUS_OPENCODE:-}${TMUX_STATUS_OPENCLAW:-}" ]]; then
+    report_asked "${1:-}"
+    exit 0
+fi
 
 PANE="${TMUX_PANE:-}"
 [[ -z "$PANE" ]] && exit 0

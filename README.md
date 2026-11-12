@@ -264,13 +264,17 @@ herdr socket. The renaming is covered in `tests/test-herdr-tmux.py`.
 ### tmux
 
 A tmux window running herdr gets the same activity glyph as a Claude window:
-red when any agent in that herdr session has a dialog up, the spinner while
-any is working, plain otherwise. herdr's "done" (finished, not looked at yet)
-stays plain. herdr starts its agents without `TMUX_PANE`, so their hooks cannot
-reach tmux; `home/.tmux/herdr-status.sh` polls `herdr agent list` once a
-second instead and paints each tmux pane showing that session through the
-shared renderer. `~/.tmux.conf` starts it. prefix-`u` lands on a waiting herdr
-window, and herdr's sidebar shows which agent it is. Resurrect reruns the
+red when any agent in that herdr session has a dialog up or, for Claude, ended
+its turn on a question, the spinner while any is working, plain otherwise.
+herdr's "done" (finished, not looked at yet) stays plain. herdr starts its
+agents without `TMUX_PANE`, so their hooks cannot reach tmux;
+`home/.tmux/herdr-status.sh` polls `herdr agent list` once a second instead and
+paints each tmux pane showing that session through the shared renderer.
+`~/.tmux.conf` starts it. herdr has no state for a question asked in prose, so
+inside herdr Claude's hooks (`config/.claude/hooks/tmux-status.sh`) report one
+as the pane token `$asked`, which the poller reads and the agent's sidebar row
+shows as a red "asked". prefix-`u` lands on a waiting herdr window, and herdr's
+sidebar shows which agent it is. Resurrect reruns the
 client (`herdr` or `herdr --session <name>`), which reattaches to herdr's server
 or starts it, and herdr resumes its own agents.
 `python3 tests/test-herdr-tmux.py` checks it against a private tmux server and a

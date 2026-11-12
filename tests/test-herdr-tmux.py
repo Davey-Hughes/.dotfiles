@@ -188,6 +188,46 @@ class HerdrBridgeTests(unittest.TestCase):
         self.bridge_pass()
         self.assertEqual(self.option(pane, '@cc_state'), 'idle')
 
+    # --- a turn that ended on a question (the $asked token) ----------------------
+
+    def asked(self, status):
+        return {'agent': 'claude', 'agent_status': status, 'tokens': {'asked': 'asked'}}
+
+    def test_a_turn_that_ended_on_a_question_turns_the_tab_red(self):
+        pane = self.pane('herdr')
+        self.listing('default', self.asked('done'))
+        self.bridge_pass()
+        self.assertEqual(self.option(pane, '@cc_state'), 'blocked')
+        self.assertIn(BLOCK_RED, self.option(pane, '@cc_icon'))
+
+    def test_a_question_outranks_a_working_agent(self):
+        pane = self.pane('herdr')
+        self.listing('default', {'agent': 'claude', 'agent_status': 'working'},
+                     self.asked('idle'))
+        self.bridge_pass()
+        self.assertEqual(self.option(pane, '@cc_state'), 'blocked')
+
+    def test_a_question_already_answered_does_not_redden_a_working_agent(self):
+        pane = self.pane('herdr')
+        self.listing('default', self.asked('working'))
+        self.bridge_pass()
+        self.assertEqual(self.option(pane, '@cc_state'), 'working')
+
+    def test_a_token_left_behind_for_another_agent_is_ignored(self):
+        # Pane metadata outlives the agent: a Claude killed with $asked set
+        # leaves it on the pane for whatever runs there next.
+        pane = self.pane('herdr')
+        self.listing('default', {**self.asked('idle'), 'agent': 'codex'})
+        self.bridge_pass()
+        self.assertEqual(self.option(pane, '@cc_state'), 'idle')
+
+    def test_asked_spelled_in_a_title_is_not_a_question(self):
+        pane = self.pane('herdr')
+        self.listing('default', {'agent': 'claude', 'agent_status': 'done',
+                                 'terminal_title': '"asked":"asked"'})
+        self.bridge_pass()
+        self.assertEqual(self.option(pane, '@cc_state'), 'idle')
+
     # --- which session a pane shows --------------------------------------------
 
     def test_each_pane_follows_its_own_session(self):
@@ -344,6 +384,85 @@ class HerdrBridgeTests(unittest.TestCase):
         os.killpg(ticker.pid, signal.SIGKILL)
         ticker.wait()
         self.assertEqual(self.option(pane, '@cc_state'), 'working')
+
+
+@unittest.skipUnless(shutil.which('bash') and shutil.which('jq') and shutil.which('tmux'),
+                     'needs bash, jq and tmux')
+class HookInsideHerdrTests(unittest.TestCase):
+    """Claude's hooks inside herdr report a turn that ended on a question.
+
+    herdr starts its agents without TMUX_PANE, so tmux-status.sh has no tmux
+    pane to paint there. Instead it reports the pane token $asked to herdr,
+    which herdr-status.sh reads and herdr's sidebar shows.
+    """
+    REPORT = ['default', 'pane', 'report-metadata', 'w1:p1', '--source', 'dotfiles:tmux-status']
+    QUESTION = 'Tests pass.\n\n**Which approach do you want?**'
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix='herdr-hook-'))
+        self.bin = self.dir / 'bin'
+        self.bin.mkdir()
+        cli = self.bin / 'herdr'
+        cli.write_text(CLI_STUB)
+        cli.chmod(0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def hook(self, verb, event, **env_extra):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('TMUX', 'TMUX_PANE')
+               and not k.startswith(('HERDR_', 'TMUX_STATUS_'))}
+        env.update(PATH=f'{self.bin}:{env.get("PATH", "/usr/bin:/bin")}',
+                   HERDR_STUB=str(self.dir), HERDR_ENV='1', HERDR_PANE_ID='w1:p1',
+                   XDG_RUNTIME_DIR=str(self.dir), **env_extra)
+        result = subprocess.run(['bash', str(STATUS), verb], input=json.dumps(event),
+                                env=env, capture_output=True, text=True, timeout=20)
+        self.assertEqual((result.returncode, result.stdout), (0, ''))
+
+    def stop(self, message, **env_extra):
+        self.hook('idle', {'hook_event_name': 'Stop', 'last_assistant_message': message},
+                  **env_extra)
+
+    def calls(self):
+        log = self.dir / 'calls.jsonl'
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def test_a_turn_that_ends_on_a_question_reports_asked(self):
+        self.stop(self.QUESTION)
+        self.assertEqual(self.calls(), [self.REPORT + ['--token', 'asked=asked']])
+
+    def test_a_turn_that_ends_on_a_statement_clears_asked(self):
+        self.stop('All tests pass.')
+        self.assertEqual(self.calls(), [self.REPORT + ['--clear-token', 'asked']])
+
+    def test_moving_on_clears_asked(self):
+        self.hook('working', {'hook_event_name': 'UserPromptSubmit'})
+        self.hook('working', {'hook_event_name': 'PreToolUse', 'tool_name': 'Bash'})
+        self.hook('reset', {'hook_event_name': 'SessionStart'})
+        self.hook('off', {'hook_event_name': 'SessionEnd'})
+        self.assertEqual(self.calls(), [self.REPORT + ['--clear-token', 'asked']] * 4)
+
+    def test_dialogs_are_left_to_herdr(self):
+        self.hook('blocked', {'hook_event_name': 'PermissionRequest'})
+        self.assertEqual(self.calls(), [])
+
+    def test_other_assistants_do_not_report(self):
+        # Codex runs its hooks in one daemon whose HERDR_PANE_ID may be any
+        # pane's; OpenCode and OpenClaw paint tmux through their own adapters.
+        for adapter in ('TMUX_STATUS_CODEX', 'TMUX_STATUS_OPENCODE', 'TMUX_STATUS_OPENCLAW'):
+            self.stop(self.QUESTION, **{adapter: '1'})
+        self.assertEqual(self.calls(), [])
+
+    def test_verbs_tmux_runs_do_not_report(self):
+        # A tmux server started inside herdr hands HERDR_PANE_ID to its jobs.
+        for verb in ('next', 'name', 'names'):
+            self.hook(verb, {}, TMUX=f'{self.dir}/no-server,0,0')
+        self.assertEqual(self.calls(), [])
+
+    def test_a_hook_in_a_tmux_pane_leaves_herdr_alone(self):
+        self.stop(self.QUESTION, TMUX_PANE='%0', TMUX=f'{self.dir}/no-server,0,0')
+        self.assertEqual(self.calls(), [])
 
 
 if __name__ == '__main__':
