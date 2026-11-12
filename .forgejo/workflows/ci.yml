@@ -73,6 +73,10 @@ jobs:
       # A stand-in herdr CLI; needs tmux and jq, from the first step.
       - name: herdr agent states and tab names in tmux
         run: python3 tests/test-herdr-tmux.py
+      # Runs the override through a real herdr, which is in the AUR and not
+      # in this image, so here it skips. run-all.sh runs it where herdr is.
+      - name: herdr's Claude detection override
+        run: python3 tests/test-herdr-detection.py
       # ...and the verdicts it DID produce, for commands that really ran. The
       # suite asserts what somebody thought to write down; this replays a
       # snapshot of real ones, and it is what caught every regression in the

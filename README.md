@@ -234,7 +234,27 @@ renderer and the save hook against a fake tmux.
 ## herdr
 
 `config/herdr/config.toml` stows into `~/.config/herdr`, where herdr also keeps
-its sockets, logs and session state, so only that file is tracked.
+its sockets, logs and session state, so only that file and
+`config/herdr/agent-detection/` are tracked.
+
+### Background agents
+
+herdr decides whether a Claude agent is working by reading its screen. Its own
+rules call a Claude session idle as soon as the prompt is back, even while a
+background subagent that session started is still running, so the sidebar
+marks it done (✓) while the work goes on (herdr
+[#5004](https://github.com/herdrdev/herdr/issues/5004)).
+`config/herdr/agent-detection/claude.toml` is herdr's Claude manifest plus one
+rule: a pane stays working while Claude Code lists a running agent (`◯`) under
+its footer. Background shells and monitors alone still read idle, as herdr
+intends, so a dev server left running does not keep a pane working for good.
+
+The override replaces herdr's Claude manifest whole, so herdr's own updates to
+it stop applying while the file exists. `herdr server agent-manifests` shows the
+version herdr has fetched since. Reload an edit with
+`herdr server reload-agent-manifests`. `python3 tests/test-herdr-detection.py`
+runs the rule through herdr itself, and fails once herdr's own rules catch this
+case, at which point the file should go.
 
 ### Tab and session names
 

@@ -46,8 +46,10 @@ STOW_FAILED=0
 # `herdr` is here because herdr keeps its sockets, logs and session state
 # (session.json, session-snapshots/, and saved pane contents when
 # experimental.pane_history is on) in $XDG_CONFIG_HOME/herdr. Only config.toml
-# links in; `herdr config reset-keys` edits it through the link and writes its
-# backup beside the link, outside this repo.
+# and agent-detection/ link in; `herdr config reset-keys` edits config.toml
+# through the link and writes its backup beside the link, outside this repo.
+# agent-detection/ holds only overrides you write yourself (herdr keeps the
+# ones it fetches under $XDG_STATE_HOME), so it folds.
 #
 # tests/test-install.sh asserts every entry below comes out a real directory on
 # a fresh machine, so this list is the single source of truth for the invariant.

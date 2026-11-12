@@ -93,9 +93,10 @@ config/opencode/plugins/*
 
 # herdr: sockets, logs and session state (session.json, session-snapshots/,
 # and session-history.json, which holds saved pane contents) live beside
-# config.toml. Only the hand-written config is tracked.
+# config.toml. Only the hand-written config and detection overrides are tracked.
 config/herdr/*
 !config/herdr/config.toml
+!config/herdr/agent-detection/
 
 # OpenClaw's systemd user units are machine-local: the node's names this
 # machine's Gateway. They still live here so install.sh stows them; the README

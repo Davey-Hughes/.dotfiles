@@ -44,6 +44,7 @@ run_suite "opencode-tmux"  python3 tests/test-opencode-tmux.py
 run_suite "opencode-herdr" python3 tests/test-opencode-herdr.py
 run_suite "claude-tmux"    python3 tests/test-claude-tmux.py
 run_suite "herdr-tmux"     python3 tests/test-herdr-tmux.py
+run_suite "herdr-detection" python3 tests/test-herdr-detection.py
 run_suite "tracked-files"  "$HERE/test-tracked-files.sh"
 run_suite "kde-config"     python3 "$HERE/test-kde-config.py"
 run_suite "docs"           "$HERE/test-docs.sh"
