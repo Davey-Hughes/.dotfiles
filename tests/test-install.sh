@@ -162,6 +162,7 @@ resolves_into_repo "$FAKE/.tmux.conf"              "home/.tmux.conf"
 resolves_into_repo "$FAKE/.config/starship.toml"   "config/starship.toml"
 resolves_into_repo "$FAKE/.config/fish/config.fish" "config/fish/config.fish"
 resolves_into_repo "$FAKE/.config/git/ignore"      "config/git/ignore"
+resolves_into_repo "$FAKE/.config/herdr/config.toml" "config/herdr/config.toml"
 
 section "the conflicting file was preserved, not clobbered"
 backup=$(find "$FAKE/.dotfiles-backup" -name '.zshrc' -type f 2>/dev/null | head -1)
@@ -185,7 +186,7 @@ section "stow folded nothing that other software writes into"
 # behaviour, this decides what the repo will accept, and only this can fail a
 # build. Adding a directory means adding it in both places.
 expect_home=(.local/bin .local/share/applications .tmux/plugins)
-expect_config=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw opencode/plugins)
+expect_config=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw opencode/plugins herdr)
 before=$FAILURES
 unfold_targets=()
 for d in "${expect_home[@]}";   do unfold_targets+=("$FAKE/$d"); done

@@ -43,10 +43,16 @@ STOW_FAILED=0
 # into $XDG_CONFIG_HOME/systemd/user/*.wants/; folded, every unit anyone ever
 # enables would be created inside this repo.
 #
+# `herdr` is here because herdr keeps its sockets, logs and session state
+# (session.json, session-snapshots/, and saved pane contents when
+# experimental.pane_history is on) in $XDG_CONFIG_HOME/herdr. Only config.toml
+# links in; `herdr config reset-keys` edits it through the link and writes its
+# backup beside the link, outside this repo.
+#
 # tests/test-install.sh asserts every entry below comes out a real directory on
 # a fresh machine, so this list is the single source of truth for the invariant.
 UNFOLD_HOME=(.local/bin .local/share/applications .tmux/plugins)
-UNFOLD_CONFIG=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw opencode/plugins)
+UNFOLD_CONFIG=(.claude fish git systemd/user codex/skills codex/themes codex/hooks openclaw opencode/plugins herdr)
 
 # Reads one field from /etc/os-release. Parsed, not sourced: os-release is shell
 # syntax, so sourcing it executes whatever the distro put there and drags ~20
