@@ -228,6 +228,12 @@ if [ -f "$FAKE/.config/git/config" ] && ! [ -L "$FAKE/.config/git/config" ]; the
 else
   fail "git_settings did not write ~/.config/git/config"
 fi
+hooks_path=$(git -C "$FAKE/.dotfiles" config --get core.hooksPath)
+if [ "$hooks_path" = ".githooks" ]; then
+  ok "the checkout runs its own hooks from .githooks"
+else
+  fail "core.hooksPath is '$hooks_path', expected .githooks -- the gitleaks pre-commit hook would never run"
+fi
 # Compared against the post-overlay baseline, so a locally dirty tree does not
 # read as install.sh having written into its own checkout.
 if [ "$(git -C "$FAKE/.dotfiles" status --porcelain)" = "$fixture_status" ]; then

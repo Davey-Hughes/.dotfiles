@@ -156,6 +156,12 @@ jobs:
           done
           gitleaks dir "$T" --no-banner --redact --exit-code 1
           rm -rf "${T:?}"
+      # The step above sees the tree as it ends up, not how it got there: a
+      # secret committed and then deleted later in the same push passes it, yet
+      # stays readable in history for good. fetch-depth: 0 on the checkout is
+      # what gives this step the history; --all reads every fetched branch.
+      - name: No secrets anywhere in history
+        run: gitleaks git . --log-opts=--all --no-banner --redact --exit-code 1
       # Deliberately the FIRST of the repo's own checks and its own step: it is
       # the only failure here that a later commit cannot undo.
       - name: Nothing sensitive is tracked

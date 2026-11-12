@@ -328,6 +328,10 @@ git_settings() {
     # KDE's live files now stay outside Git. Retire the old clone-local filter;
     # preserve its sidecar in XDG state as a possible recovery source.
     git -C "$DOTFDIR" config --remove-section filter.kde-wallpaper 2>/dev/null || true
+
+    # This repo's own hooks: .githooks/pre-commit runs gitleaks over staged
+    # changes, so a secret is caught before it is committed, not after a push.
+    git -C "$DOTFDIR" config core.hooksPath .githooks 2>/dev/null || true
   else
     echo "git not installed" 2>&1
   fi

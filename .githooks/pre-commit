@@ -1,0 +1,11 @@
+#!/bin/sh
+# Secret scan of the changes about to be committed. CI runs gitleaks as well,
+# but only after a push, when a secret is already on the forge and in its
+# history. install.sh points core.hooksPath here; `git commit --no-verify`
+# skips the scan for one commit.
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed, so staged changes were not scanned for secrets" >&2
+  exit 0
+fi
+# Quiet on a clean commit; on a finding, --verbose names the file and line.
+exec gitleaks git --pre-commit --staged --redact --no-banner --verbose --log-level warn .

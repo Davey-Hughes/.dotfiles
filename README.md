@@ -321,5 +321,11 @@ build here, so the checks cover the three ways a dotfiles repo actually breaks:
 A checker that is not installed locally (`fish`, `shellcheck`, PyYAML) prints
 `skip`; in CI the same absence is a hard failure, so nothing goes unchecked there.
 
+Secrets are scanned with gitleaks in two places. CI scans the tracked tree and
+every commit in history. Locally, `install.sh` sets `core.hooksPath` to
+`.githooks/`, whose `pre-commit` scans staged changes before the commit exists,
+since CI only sees a secret after it has been pushed. The hook needs gitleaks on
+`PATH` and warns rather than blocks when it is missing.
+
 ## ZSH
 The custom ZSH theme included is originally based on the `bira`, `gnzh`, `phil!`'s, and `nanotech` themes.
