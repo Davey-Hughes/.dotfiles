@@ -245,7 +245,9 @@ stays plain. herdr starts its agents without `TMUX_PANE`, so their hooks cannot
 reach tmux; `home/.tmux/herdr-status.sh` polls `herdr agent list` once a
 second instead and paints each tmux pane showing that session through the
 shared renderer. `~/.tmux.conf` starts it. prefix-`u` lands on a waiting herdr
-window, and herdr's sidebar shows which agent it is.
+window, and herdr's sidebar shows which agent it is. Resurrect reruns the
+client (`herdr` or `herdr --session <name>`), which reattaches to herdr's server
+or starts it, and herdr resumes its own agents.
 `python3 tests/test-herdr-tmux.py` checks it against a private tmux server and a
 stand-in herdr CLI.
 
