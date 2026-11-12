@@ -137,6 +137,7 @@ must_ignore=(
   "os/arch/config/ksmserverrc"
   "os/endeavour/config/ksmserverrc"
   "os/endeavour/kde/config/ksmserverrc"
+  "os/endeavour/config/plasma-org.kde.plasma.desktop-appletsrc"
   ".claude/settings.local.json"
 )
 section "tripwire: .gitignore still covers the sensitive paths"

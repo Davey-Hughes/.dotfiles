@@ -128,6 +128,11 @@ config/.gemini/antigravity-cli/*
 os/*/config/ksmserverrc
 os/*/kde/config/ksmserverrc
 
+# A raw desktop-appletsrc left at the old layer path, beside the ksmserverrc
+# above. Its wallpaper entry embeds a Google Drive path with the account's email
+# address; the tracked copy is the scrubbed snapshot under os/*/kde/config/.
+os/*/config/plasma-org.kde.plasma.desktop-appletsrc
+
 # install.sh generates the global git config per-machine into
 # $XDG_CONFIG_HOME/git/config -- this directory once stowed. That is machine
 # state; only `ignore` next to it belongs to the repo.
