@@ -11,7 +11,7 @@
   "permissions": {
     "defaultMode": "auto"
   },
-  "model": "opus[1m]",
+  "model": "opus",
   "hooks": {
     "PreToolUse": [
       {
@@ -187,10 +187,11 @@
   "skipWorkflowUsageWarning": true,
   "theme": "custom:tokyonight",
   "editorMode": "vim",
+  "switchModelsOnFlag": false,
   "showMessageTimestamps": true,
+  "remoteControlAtStartup": true,
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
-  "remoteControlAtStartup": true,
   "autoMode": {
     "environment": []
   }
