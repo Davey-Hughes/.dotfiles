@@ -237,16 +237,16 @@ class HerdrBridgeTests(unittest.TestCase):
 
     def test_each_pane_follows_its_own_session(self):
         plain = self.pane('herdr')
-        named = self.pane('herdr', '--session', 'beaver')
+        named = self.pane('herdr', '--session', 'beta')
         attached = self.pane('herdr', 'session', 'attach', 'gamma')
         self.agents('default', 'blocked')
-        self.agents('beaver', 'working')
+        self.agents('beta', 'working')
         self.agents('gamma', 'idle')
         self.bridge_pass()
         self.assertEqual(self.option(plain, '@cc_state'), 'blocked')
         self.assertEqual(self.option(named, '@cc_state'), 'working')
         self.assertEqual(self.option(attached, '@cc_state'), 'idle')
-        self.assertEqual(self.option(named, '@herdr_session'), 'beaver')
+        self.assertEqual(self.option(named, '@herdr_session'), 'beta')
 
     def test_a_remote_client_is_left_alone(self):
         pane = self.pane('herdr', '--remote', 'somehost')
@@ -369,10 +369,10 @@ class HerdrBridgeTests(unittest.TestCase):
         self.assertEqual(self.calls(), [['default', *REPORT, '--clear-token', 'session']])
 
     def test_a_named_session_is_renamed_through_its_own_server(self):
-        self.pane('herdr', '--session', 'beaver')
-        self.listing('beaver', self.claude('zink'), tabs=[('w1:t1', '1')])
+        self.pane('herdr', '--session', 'beta')
+        self.listing('beta', self.claude('zink'), tabs=[('w1:t1', '1')])
         self.bridge_pass()
-        self.assertEqual(self.calls('tab'), [['beaver', 'tab', 'rename', 'w1:t1', 'zink']])
+        self.assertEqual(self.calls('tab'), [['beta', 'tab', 'rename', 'w1:t1', 'zink']])
 
     # --- herdr's sidebar name for Claude ($session) ------------------------------
 

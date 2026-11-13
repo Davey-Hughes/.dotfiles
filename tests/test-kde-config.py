@@ -292,7 +292,7 @@ class KdeConfigTests(unittest.TestCase):
         self.put(self.snapshots, "kwinrc", "[Desktops]\nNumber=4\n")
         self.put(self.legacy, "kwinrc", "[Desktops]\nNumber=2\n")
         self.put(self.legacy, "kate/local-state", "do not fold this directory\n")
-        self.put(self.legacy, "ff-route/rules.conf", "keep stowing other desktop files\n")
+        self.put(self.legacy, "ci-runner/README.md", "keep stowing other desktop files\n")
         shutil.copy2(ROOT / "os/endeavour/config/.stow-local-ignore", self.legacy)
         self.run_command("install")
         result = subprocess.run(["stow", "-d", str(self.legacy.parent), "-t", str(self.live), "config"],
@@ -300,7 +300,7 @@ class KdeConfigTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.live / "kwinrc").is_symlink())
         self.assertFalse((self.live / "kate").exists())
-        self.assertTrue((self.live / "ff-route/rules.conf").is_file())
+        self.assertTrue((self.live / "ci-runner/README.md").is_file())
 
 
 if __name__ == "__main__":

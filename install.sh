@@ -71,7 +71,7 @@ os_release_field() {
 #
 # `arch` is the common denominator for every Arch-derived machine (paru,
 # MangoHud) -- nothing in it may assume a particular box. Per-machine trees sit
-# beside it: `endeavour` (the desktop: KDE Plasma, ff-route, CI runner) and
+# beside it: `endeavour` (the desktop: KDE Plasma, CI runner) and
 # `steamdeck`. Those two are disjoint by construction, NOT layered: stow treats
 # two packages claiming one path as a conflict, not an override, so a later
 # layer cannot shadow a file an earlier one already linked.

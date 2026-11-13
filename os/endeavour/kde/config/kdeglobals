@@ -133,7 +133,7 @@ ForegroundPositive=39,174,96
 ForegroundVisited=155,89,182
 
 [General]
-BrowserApplication=ff-route.desktop
+BrowserApplication=firefox-developer-edition.desktop
 TerminalApplication=/usr/bin/ghostty --gtk-single-instance=true
 TerminalService=com.mitchellh.ghostty.desktop
 
