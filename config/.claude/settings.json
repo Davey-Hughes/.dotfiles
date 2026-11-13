@@ -186,6 +186,10 @@
   "tui": "fullscreen",
   "skipWorkflowUsageWarning": true,
   "theme": "custom:tokyonight",
+  "statusLine": {
+    "type": "command",
+    "command": "$HOME/.config/.claude/hooks/statusline.sh"
+  },
   "editorMode": "vim",
   "switchModelsOnFlag": false,
   "showMessageTimestamps": true,
