@@ -159,6 +159,10 @@
       }
     ]
   },
+  "statusLine": {
+    "type": "command",
+    "command": "$HOME/.config/.claude/hooks/statusline.sh"
+  },
   "enabledPlugins": {
     "frontend-design@claude-plugins-official": true,
     "context7@claude-plugins-official": true,
@@ -169,7 +173,6 @@
     "code-simplifier@claude-plugins-official": true,
     "claude-md-management@claude-plugins-official": true,
     "security-guidance@claude-plugins-official": true,
-    "pyright-lsp@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
     "clangd-lsp@claude-plugins-official": true,
     "superpowers@superpowers-marketplace": true
@@ -187,16 +190,15 @@
   "modelSettings": {
     "claude-opus-5-5": {
       "effortLevel": "xhigh"
+    },
+    "claude-fable-5-2": {
+      "effortLevel": "high"
     }
   },
   "awaySummaryEnabled": false,
   "tui": "fullscreen",
   "skipWorkflowUsageWarning": true,
   "theme": "custom:tokyonight",
-  "statusLine": {
-    "type": "command",
-    "command": "$HOME/.config/.claude/hooks/statusline.sh"
-  },
   "editorMode": "vim",
   "switchModelsOnFlag": false,
   "showMessageTimestamps": true,
