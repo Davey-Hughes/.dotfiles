@@ -256,6 +256,23 @@ version herdr has fetched since. Reload an edit with
 runs the rule through herdr itself, and fails once herdr's own rules catch this
 case, at which point the file should go.
 
+OpenCode has the same problem by another route. herdr does not read an
+OpenCode screen: its OpenCode plugin reports the state. OpenCode 2 runs
+subagents in the background, and the plugin calls the pane idle as soon as the
+parent's turn ends, with a subagent still running (herdr
+[#4511](https://github.com/herdrdev/herdr/issues/4511)). A rule cannot fix
+that, and herdr ignores state reports from any other source, so
+`config/opencode/herdr-tui-session.js` is herdr's plugin with a patch, stowed
+over the copy herdr installed. The pane stays working while any session under
+the one on screen is running, and for two seconds after the last one ends,
+while the parent takes up its result. Background shells alone still read idle.
+`herdr integration install opencode` writes through the link, so an
+integration update shows up as a diff to redo the patch on.
+`python3 tests/test-opencode-herdr-state.py` drives the plugin against a
+stand-in OpenCode and herdr. Where herdr is installed, it also fails once herdr
+ships a newer integration than the one patched, or once herdr's own copy
+handles this case.
+
 ### Tab and session names
 
 Each herdr tab with an agent in it is named after that agent's session, and is

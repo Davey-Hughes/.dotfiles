@@ -42,6 +42,7 @@ run_suite "codex-guard"    python3 tests/test-codex-guard.py
 run_suite "openclaw-tmux"  python3 tests/test-openclaw-tmux.py
 run_suite "opencode-tmux"  python3 tests/test-opencode-tmux.py
 run_suite "opencode-herdr" python3 tests/test-opencode-herdr.py
+run_suite "opencode-herdr-state" python3 tests/test-opencode-herdr-state.py
 run_suite "claude-tmux"    python3 tests/test-claude-tmux.py
 run_suite "herdr-tmux"     python3 tests/test-herdr-tmux.py
 run_suite "herdr-detection" python3 tests/test-herdr-detection.py

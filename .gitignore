@@ -87,6 +87,10 @@ config/opencode/*
 !config/opencode/skills/
 !config/opencode/plugins/
 !config/opencode/themes/
+# herdr's OpenCode TUI integration, patched (see the file). `herdr integration
+# install opencode` rewrites it through the stow link, so an integration update
+# shows up here as a diff.
+!config/opencode/herdr-tui-session.js
 config/opencode/plugins/*
 !config/opencode/plugins/tmux-status/
 !config/opencode/plugins/herdr-session/

@@ -70,6 +70,10 @@ jobs:
         run: python3 tests/test-opencode-tmux.py
       - name: OpenCode session names in herdr
         run: python3 tests/test-opencode-herdr.py
+      # Drives the patched herdr plugin through node. The tests that compare
+      # it with herdr's own copy need a real herdr and skip here.
+      - name: OpenCode subagents keep a herdr pane working
+        run: python3 tests/test-opencode-herdr-state.py
       # A stand-in herdr CLI; needs tmux and jq, from the first step.
       - name: herdr agent states and tab names in tmux
         run: python3 tests/test-herdr-tmux.py
