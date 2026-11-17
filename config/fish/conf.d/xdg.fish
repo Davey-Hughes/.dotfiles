@@ -91,10 +91,8 @@ if test -d $XDG_CONFIG_HOME/.claude
     set -q CLAUDE_CONFIG_DIR; or set -gx CLAUDE_CONFIG_DIR $XDG_CONFIG_HOME/.claude
 end
 
-# antigravity (gemini cli) — config dir under XDG. Unguarded, unlike Claude
-# above: the CLI creates the directory itself when it is missing, so pointing at
-# a not-yet-existing path costs nothing.
-set -q ANTIGRAVITY_CONFIG_DIR; or set -gx ANTIGRAVITY_CONFIG_DIR $XDG_CONFIG_HOME/.gemini/antigravity-cli
+# antigravity (agy) — no variable moves its ~/.gemini; the wrapper
+# os/arch/home/.local/bin/agy passes its --gemini_dir flag instead.
 
 # android — the SDK, plus the tools' user dir (AVDs, adb keys, caches) that
 # would otherwise sit in ~/Android/Sdk and ~/.android.

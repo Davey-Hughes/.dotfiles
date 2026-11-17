@@ -177,5 +177,3 @@ if status is-interactive
 
     source $__fish_config_dir/fzf-tokyonight.fish
 end
-
-set -gx ANTIGRAVITY_CONFIG_DIR "$XDG_CONFIG_HOME/.gemini/antigravity-cli"

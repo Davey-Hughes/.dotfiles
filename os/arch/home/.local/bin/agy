@@ -1,0 +1,7 @@
+#!/bin/sh
+# agy keeps all its state in ~/.gemini. No setting or environment variable
+# moves it (ANTIGRAVITY_CONFIG_DIR never existed in any release), but its
+# undocumented --gemini_dir flag does: it takes an absolute path and must come
+# before any subcommand. If a release drops the flag, agy refuses to start with
+# "flags provided but not defined"; remove this wrapper then.
+exec /usr/bin/agy --gemini_dir="${XDG_CONFIG_HOME:-$HOME/.config}/.gemini" "$@"

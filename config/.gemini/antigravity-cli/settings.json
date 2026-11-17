@@ -1,11 +1,13 @@
 {
   "colorScheme": "tokyo night",
-  "enableTelemetry": false,
-  "model": "Gemini 3.1 Pro (High)",
+  "model": "Claude Opus 5.5 (High)",
   "permissions": {
     "allow": [
       "command(git add)",
-      "command(git commit)"
+      "command(git commit)",
+      "command(pacman -Qi makemkv 2\u003e/dev/null)",
+      "command(git clone)",
+      "command(git -c color.ui=never diff fd72bb6 1c9860c --stat)"
     ]
   },
   "trustedWorkspaces": [
@@ -13,6 +15,10 @@
     "/home/davey/projects/ws-sim",
     "/home/davey/projects/ws-sim/frontend",
     "/home/davey/.dotfiles",
-    "/home/davey/temp"
+    "/home/davey/temp",
+    "/home/davey/.vim",
+    "/home/davey/projects/vuetorrent",
+    "/home/davey/projects/paru",
+    "/home/davey/projects/emu/eden-libretro"
   ]
 }

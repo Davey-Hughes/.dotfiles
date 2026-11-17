@@ -95,14 +95,15 @@ export OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$XDG_CONFIG_HOME/openclaw/o
 export OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$XDG_DATA_HOME/openclaw}"
 export OPENCLAW_INCLUDE_ROOTS="${OPENCLAW_INCLUDE_ROOTS:-$HOME/.dotfiles/config/openclaw}"
 
-# Claude Code / Antigravity — point their config dirs at the stowed XDG copies
-# (mirrors config/fish/conf.d/xdg.fish so bash & zsh behave the same as fish).
-# Claude is guarded on the dir existing so a machine without the stowed config
-# keeps using ~/.claude instead of pointing at an empty dir.
+# Claude Code — point its config dir at the stowed XDG copy (mirrors
+# config/fish/conf.d/xdg.fish so bash & zsh behave the same as fish). Guarded on
+# the dir existing so a machine without the stowed config keeps using ~/.claude
+# instead of pointing at an empty dir.
 if [ -d "$XDG_CONFIG_HOME/.claude" ]; then
   export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$XDG_CONFIG_HOME/.claude}"
 fi
-export ANTIGRAVITY_CONFIG_DIR="${ANTIGRAVITY_CONFIG_DIR:-$XDG_CONFIG_HOME/.gemini/antigravity-cli}"
+# antigravity (agy) — no variable moves its ~/.gemini; the wrapper
+# os/arch/home/.local/bin/agy passes its --gemini_dir flag instead.
 
 # android — the SDK, plus the tools' user dir (AVDs, adb keys, caches) that
 # would otherwise sit in ~/Android/Sdk and ~/.android. Set unconditionally,
