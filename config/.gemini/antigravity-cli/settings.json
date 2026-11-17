@@ -10,6 +10,10 @@
       "command(git -c color.ui=never diff fd72bb6 1c9860c --stat)"
     ]
   },
+  "title": {
+    "type": "command",
+    "command": "sh \"${XDG_CONFIG_HOME:-$HOME/.config}/.gemini/antigravity-cli/hooks/title.sh\""
+  },
   "trustedWorkspaces": [
     "/home/davey/projects/plaintextesports",
     "/home/davey/projects/ws-sim",

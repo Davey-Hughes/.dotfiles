@@ -277,8 +277,9 @@ handles this case.
 
 Each herdr tab with an agent in it is named after that agent's session, and is
 renamed whenever the session is. For Claude Code that is the `/rename` name, or
-before one the topic it makes up. For OpenCode it is the session title, and for
-Codex the chat name. A tab you rename by hand is renamed back, and a tab
+before one the topic it makes up. For OpenCode it is the session title, for
+Codex the chat name, and for agy the conversation's name, which `/rename`
+changes. A tab you rename by hand is renamed back, and a tab
 without a named agent keeps its label. The same name is the second line of the
 agent's row in herdr's sidebar (`rows_by_agent` in the config).
 
@@ -297,6 +298,13 @@ a tmux pane, and needs `jq`. Each name comes from a different place:
   herdr's socket as the pane token `$session`.
 - **Codex:** its title ends in the thread id, which tmux also drops from window
   names. The script drops it too and reports the rest as `$session`.
+- **agy:** its terminal title, which agy leaves alone unless told what to put
+  there. `"title"` in agy's `settings.json` runs
+  `config/.gemini/antigravity-cli/hooks/title.sh`, which prints the
+  conversation's name, or `agy` before it has one. A conversation resumed
+  with `--conversation` or `/resume` reaches the script without its name, so
+  the script then looks the name up in agy's `conversation_summaries.db`,
+  which needs `sqlite3`.
 
 `python3 tests/test-opencode-herdr.py` checks the plugin against a stand-in
 herdr socket. The renaming is covered in `tests/test-herdr-tmux.py`.

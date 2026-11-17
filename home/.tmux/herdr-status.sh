@@ -30,6 +30,9 @@
 #              ~/.config/opencode/plugins reports as the pane token $session
 #   codex      its terminal title without the thread id ~/.tmux.conf strips
 #              from window names; nothing while the title is only the id
+#   agy        its terminal title: the conversation's name, which
+#              ~/.config/.gemini/antigravity-cli/hooks/title.sh sets, or "agy"
+#              before it has one
 #
 # A tab renamed by hand is renamed back on the next pass; tabs without a named
 # agent keep their label. Codex runs its hooks in a shared daemon that cannot
@@ -88,7 +91,7 @@ readonly ASKING='.agent == "claude" and .tokens.asked == "asked"
 readonly NAMES="def asking: $ASKING;"'
 def tidy: gsub("[[:cntrl:]]"; " ") | gsub("^ +| +$"; "");
 def name:
-  if .agent == "claude" then .terminal_title_stripped // ""
+  if .agent == "claude" or .agent == "agy" then .terminal_title_stripped // ""
   elif .agent == "opencode" then .tokens.session // ""
   elif .agent == "codex" then
     (.terminal_title_stripped // "")

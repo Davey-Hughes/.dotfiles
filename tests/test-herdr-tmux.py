@@ -368,6 +368,17 @@ class HerdrBridgeTests(unittest.TestCase):
         self.bridge_pass()
         self.assertEqual(self.calls(), [['default', *REPORT, '--clear-token', 'session']])
 
+    def test_agy_names_its_tab_with_its_terminal_title(self):
+        # The title its title.sh sets; the sidebar reads it there itself, so
+        # nothing is reported back.
+        self.pane('herdr')
+        self.listing('default', {'agent': 'agy', 'terminal_title': 'Port the save manager',
+                                 'terminal_title_stripped': 'Port the save manager'},
+                     tabs=[('w1:t1', '1')])
+        self.bridge_pass()
+        self.assertEqual(self.calls(),
+                         [['default', 'tab', 'rename', 'w1:t1', 'Port the save manager']])
+
     def test_a_named_session_is_renamed_through_its_own_server(self):
         self.pane('herdr', '--session', 'beta')
         self.listing('beta', self.claude('zink'), tabs=[('w1:t1', '1')])

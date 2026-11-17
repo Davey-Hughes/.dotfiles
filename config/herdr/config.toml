@@ -55,6 +55,11 @@ status_indicators = "symbols"
 # A token can only be coloured by its own text, so the mark is in the name,
 # where it takes no room, and the rule below turns the line red. The name only
 # updates while herdr is open in a tmux pane, where that script runs.
+#
+# agy has no title of its own, so
+# ~/.config/.gemini/antigravity-cli/hooks/title.sh gives it one: the
+# conversation's name, or "agy" before it has one. Its row reads that title
+# directly, with no script in between.
 [ui.sidebar.agents.rows_by_agent]
 claude = [
   ["state_icon", "machine", "workspace"],
@@ -67,6 +72,10 @@ codex = [
 opencode = [
   ["state_icon", "machine", "workspace"],
   ["$session"],
+]
+agy = [
+  ["state_icon", "machine", "workspace"],
+  ["terminal_title_stripped"],
 ]
 
 # No notifications for now: no pop-ups and no sounds.
