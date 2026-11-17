@@ -175,13 +175,21 @@
     "security-guidance@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
     "clangd-lsp@claude-plugins-official": true,
-    "superpowers@superpowers-marketplace": true
+    "superpowers@superpowers-marketplace": true,
+    "crafting-effective-readmes@joshthomas-agent-skills": true,
+    "writing@joshthomas-agent-skills": true
   },
   "extraKnownMarketplaces": {
     "superpowers-marketplace": {
       "source": {
         "source": "github",
         "repo": "obra/superpowers-marketplace"
+      }
+    },
+    "joshthomas-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "joshuadavidthomas/agent-skills"
       }
     }
   },
