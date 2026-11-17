@@ -98,12 +98,12 @@ class HerdrBridgeTests(unittest.TestCase):
         env['HERDR_STUB'] = str(self.stub)
         return env
 
-    def pane(self, name, *args):
+    def pane(self, name, *args, cwd=None):
         """A pane whose process is called `name`, with `args` on its command line.
 
         A copy of bash under that name, so it accepts any trailing arguments
         (they become $0, $1...) and stays up; the `; :` keeps bash from
-        exec'ing sleep in its place.
+        exec'ing sleep in its place. It runs in `cwd` if given.
         """
         program = self.dir / 'clients' / name
         program.parent.mkdir(exist_ok=True)
@@ -111,12 +111,14 @@ class HerdrBridgeTests(unittest.TestCase):
             shutil.copyfile(shutil.which('bash'), program)
             program.chmod(0o755)
         command = [str(program), '-c', 'sleep 120; :', *args]
+        where = ['-c', str(cwd)] if cwd else []
         if not self.started:
-            self.tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'test', *command)
+            self.tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'test', *where, *command)
             self.started = True
             pane = self.tmux('display-message', '-p', '-t', 'test', '#{pane_id}')
         else:
-            pane = self.tmux('new-window', '-d', '-P', '-F', '#{pane_id}', '-t', 'test', *command)
+            pane = self.tmux('new-window', '-d', '-P', '-F', '#{pane_id}', '-t', 'test',
+                             *where, *command)
         for _ in range(30):
             if self.tmux('display-message', '-p', '-t', pane, '#{pane_current_command}') == name:
                 return pane
@@ -496,6 +498,43 @@ class HerdrBridgeTests(unittest.TestCase):
         here.mkdir()
         self.focus('default', here)
         self.assertEqual(self.split(pane), self.option(pane, 'pane_current_path'))
+
+    # --- a new tmux window from a herdr pane (--window) ------------------------------
+
+    def window(self, pane):
+        """Open a window from `pane` the way ~/.tmux.conf does; the pane in it."""
+        before = set(self.tmux('list-panes', '-a', '-F', '#{pane_id}').split())
+        subprocess.run(['bash', str(BRIDGE), '--window', pane, 'sleep 60'],
+                       env=self.env(), check=True, capture_output=True, timeout=20)
+        new = set(self.tmux('list-panes', '-a', '-F', '#{pane_id}').split()) - before
+        self.assertEqual(len(new), 1, 'one new pane')
+        new = new.pop()
+        self.assertNotEqual(self.option(new, 'window_id'), self.option(pane, 'window_id'),
+                            'in a window of its own')
+        return new
+
+    def test_a_new_window_opens_where_the_herdr_pane_in_focus_is(self):
+        pane = self.pane('herdr')
+        here = self.dir / 'project'
+        here.mkdir()
+        self.focus('default', here)
+        self.assertEqual(self.option(self.window(pane), 'pane_current_path'), str(here))
+
+    def test_a_new_window_opens_in_front_in_the_herdr_pane_s_session(self):
+        pane = self.pane('herdr')
+        # Newer, so a new-window that names no session would land here.
+        self.tmux('new-session', '-d', '-s', 'other', 'sleep', '120')
+        self.focus('default', self.dir)
+        new = self.window(pane)
+        self.assertEqual(self.option(new, 'session_name'), 'test')
+        self.assertEqual(self.option(new, 'window_active'), '1')
+
+    def test_a_new_window_herdr_cannot_answer_opens_where_the_tmux_pane_is(self):
+        self.pane('fish')   # the session starts somewhere else
+        there = self.dir / 'there'
+        there.mkdir()
+        pane = self.pane('herdr', cwd=there)   # no pane list: the server is down
+        self.assertEqual(self.option(self.window(pane), 'pane_current_path'), str(there))
 
 
 @unittest.skipUnless(shutil.which('bash') and shutil.which('jq') and shutil.which('tmux'),

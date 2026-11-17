@@ -54,19 +54,20 @@
 # for. It is how a pane is recognised after herdr quits and leaves a shell
 # there, so its state can be dropped.
 #
-# --split makes a tmux split from a pane running herdr open where you are in
-# herdr: in the directory of the herdr pane in focus there, rather than where
-# the herdr client was started. ~/.tmux.conf routes its split keys here for
-# such a pane. Where herdr cannot be asked, the split opens in the tmux pane's
-# own directory.
+# --split and --window make a tmux split or new window from a pane running
+# herdr open where you are in herdr: in the directory of the herdr pane in
+# focus there, rather than where the herdr client was started. ~/.tmux.conf
+# routes its split and new-window keys here for such a pane. Where herdr
+# cannot be asked, they open in the tmux pane's own directory.
 #
 # Linux only: the session a client shows is read from /proc. Elsewhere --split
-# still splits, from the tmux pane's directory.
+# and --window still open one, from the tmux pane's directory.
 #
 #   herdr-status.sh          spawn the detached loop (idempotent); ~/.tmux.conf runs this
 #   herdr-status.sh --run    internal: the loop itself
 #   herdr-status.sh --once   one pass, no lock (tests)
 #   herdr-status.sh --split <tmux pane> [split-window flags...]
+#   herdr-status.sh --window <tmux pane> [new-window flags...]
 
 set -uo pipefail
 
@@ -300,16 +301,34 @@ focused_dir() {
     [[ "$DIR" == /* && -d "$DIR" ]]
 }
 
-# Splits a tmux pane running herdr, opening the new pane in focused_dir, or in
-# the tmux pane's own directory where there is none.
+# Where something opened from a tmux pane running herdr starts: focused_dir,
+# or the tmux pane's own directory where there is none. Sets DIR, and SID to
+# the tmux session the pane is in.
+#   here <tmux pane>
+here() {
+    local pid cwd
+    IFS='|' read -r pid SID cwd < <(tmux display-message -p -t "$1" \
+        '#{pane_pid}|#{session_id}|#{pane_current_path}' 2>/dev/null)
+    focused_dir "${pid:-}" || DIR="${cwd:-}"
+}
+
+# Splits a tmux pane running herdr, opening the new pane where `here` says.
 #   split <tmux pane> [split-window flags...]
 split() {
-    local pane="${1:?}" pid cwd
+    local pane="${1:?}"
     shift
-    IFS='|' read -r pid cwd < <(tmux display-message -p -t "$pane" \
-        '#{pane_pid}|#{pane_current_path}' 2>/dev/null)
-    focused_dir "${pid:-}" || DIR="${cwd:-}"
+    here "$pane"
     tmux split-window -t "$pane" ${DIR:+-c "$DIR"} "$@"
+}
+
+# Opens a tmux window from a pane running herdr, where `here` says, in the
+# pane's session at the next free index, as `new-window` does on its own.
+#   window <tmux pane> [new-window flags...]
+window() {
+    local pane="${1:?}"
+    shift
+    here "$pane"
+    tmux new-window ${SID:+-t "$SID:"} ${DIR:+-c "$DIR"} "$@"
 }
 
 run_loop() {
@@ -337,12 +356,11 @@ HAVE_JQ=0
 command -v jq >/dev/null 2>&1 && HAVE_JQ=1
 readonly HAVE_JQ
 
-# A split key has to split, whatever is missing below.
-if [[ "${1:-}" == --split ]]; then
-    shift
-    split "$@"
-    exit
-fi
+# A split or new-window key has to open one, whatever is missing below.
+case "${1:-}" in
+    --split)  shift; split "$@"; exit ;;
+    --window) shift; window "$@"; exit ;;
+esac
 
 [[ -d /proc/self ]] || exit 0
 command -v tmux >/dev/null 2>&1 || exit 0
