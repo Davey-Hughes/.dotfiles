@@ -301,6 +301,18 @@ a tmux pane, and needs `jq`. Each name comes from a different place:
 `python3 tests/test-opencode-herdr.py` checks the plugin against a stand-in
 herdr socket. The renaming is covered in `tests/test-herdr-tmux.py`.
 
+### agy's hook
+
+herdr's own integration for agy is a `PreInvocation` hook that tells herdr
+which conversation a pane holds, so herdr can resume it. herdr installs it
+into `~/.gemini/config`, but the `agy` wrapper keeps agy in
+`~/.config/.gemini`. So both shell environment files set
+`ANTIGRAVITY_CLI_CONFIG_DIR`, which only herdr reads, to
+`~/.config/.gemini/config`, where `herdr integration install antigravity-cli`
+then writes and `herdr integration status` looks. They set it only where that
+directory exists. agy makes it on first run, so open a new shell before
+installing.
+
 ### tmux
 
 A tmux window running herdr gets the same activity glyph as a Claude window:

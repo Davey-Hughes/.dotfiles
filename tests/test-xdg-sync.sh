@@ -39,6 +39,8 @@ exempt() { # exempt <var> <sh|fish|conf> -> reason on stdout, or empty
     # be expressed here, and an unconditional value would break exactly the
     # machines the guard is for.
     CLAUDE_CONFIG_DIR:conf) echo "systemd environment.d cannot express the dir-exists guard" ;;
+    # The same guard, on the dir agy makes only where its wrapper runs it.
+    ANTIGRAVITY_CLI_CONFIG_DIR:conf) echo "systemd environment.d cannot express the dir-exists guard" ;;
     *) echo "" ;;
   esac
 }
