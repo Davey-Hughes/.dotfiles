@@ -31,10 +31,11 @@ REPORT = ['pane', 'report-metadata', 'w1:p1', '--source', 'dotfiles:herdr-status
 # space, which herdr keeps and a sidebar rule turns red, but nobody sees.
 MARK = chr(0x200B)
 
-# Prints $HERDR_STUB/<session>.json for `herdr [--session NAME] agent list`
-# and <session>.tabs.json for `tab list`, and fails when there is no such
-# file, the way an unreachable server does. Tab renames and metadata reports
-# are appended to calls.jsonl, one JSON array of [session, *args] per call.
+# Prints $HERDR_STUB/<session>.json for `herdr [--session NAME] agent list`,
+# <session>.tabs.json for `tab list` and <session>.panes.json for `pane list`,
+# and fails when there is no such file, the way an unreachable server does.
+# Tab renames and metadata reports are appended to calls.jsonl, one JSON array
+# of [session, *args] per call.
 CLI_STUB = '''#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
@@ -51,6 +52,11 @@ if args == ['agent', 'list']:
     show(f'{session}.json')
 elif args == ['tab', 'list']:
     show(f'{session}.tabs.json')
+elif args == ['pane', 'list']:
+    if (stub / f'{session}.hang').exists():
+        import time
+        time.sleep(30)
+    show(f'{session}.panes.json')
 elif args[:2] in (['tab', 'rename'], ['pane', 'report-metadata']):
     with open(stub / 'calls.jsonl', 'a') as log:
         log.write(json.dumps([session, *args]) + chr(10))
@@ -432,6 +438,64 @@ class HerdrBridgeTests(unittest.TestCase):
         os.killpg(ticker.pid, signal.SIGKILL)
         ticker.wait()
         self.assertEqual(self.option(pane, '@cc_state'), 'working')
+
+    # --- a tmux split from a herdr pane (--split) -----------------------------------
+
+    def focus(self, session, cwd, foreground_cwd=None):
+        """What `herdr pane list` prints: a pane in focus at `cwd`, and one not."""
+        other = self.dir / 'elsewhere'
+        other.mkdir(exist_ok=True)
+        panes = [{'pane_id': 'w1:p1', 'focused': False, 'cwd': str(other)},
+                 {'pane_id': 'w1:p2', 'focused': True, 'cwd': str(cwd),
+                  'foreground_cwd': str(foreground_cwd or cwd)}]
+        (self.stub / f'{session}.panes.json').write_text(json.dumps(
+            {'id': 'cli:pane:list', 'result': {'panes': panes, 'type': 'pane_list'}},
+            separators=(',', ':')))
+
+    def split(self, pane, *flags):
+        """Split `pane` the way ~/.tmux.conf does; the new pane's directory."""
+        before = set(self.tmux('list-panes', '-a', '-F', '#{pane_id}').split())
+        subprocess.run(['bash', str(BRIDGE), '--split', pane, *flags, 'sleep 60'],
+                       env=self.env(), check=True, capture_output=True, timeout=20)
+        new = set(self.tmux('list-panes', '-a', '-F', '#{pane_id}').split()) - before
+        self.assertEqual(len(new), 1, 'one new pane')
+        return self.option(new.pop(), 'pane_current_path')
+
+    def test_a_split_opens_where_the_herdr_pane_in_focus_is(self):
+        pane = self.pane('herdr')
+        here = self.dir / 'project'
+        here.mkdir()
+        self.focus('default', here)
+        self.assertEqual(self.split(pane, '-h'), str(here))
+
+    def test_a_split_takes_the_shell_directory_over_what_runs_in_it(self):
+        pane = self.pane('herdr', '--session', 'beta')
+        shell, build = self.dir / 'project', self.dir / 'project-build'
+        shell.mkdir()
+        build.mkdir()
+        self.focus('beta', shell, foreground_cwd=build)
+        self.assertEqual(self.split(pane, '-v'), str(shell))
+
+    def test_a_split_herdr_cannot_answer_opens_where_the_tmux_pane_is(self):
+        pane = self.pane('herdr')   # no pane list: the server is down
+        self.assertEqual(self.split(pane), self.option(pane, 'pane_current_path'))
+
+    def test_a_split_does_not_wait_on_a_herdr_that_never_answers(self):
+        pane = self.pane('herdr')
+        here = self.dir / 'project'
+        here.mkdir()
+        self.focus('default', here)
+        (self.stub / 'default.hang').touch()
+        started = time.monotonic()
+        self.assertEqual(self.split(pane), self.option(pane, 'pane_current_path'))
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_a_split_from_a_remote_client_opens_where_the_tmux_pane_is(self):
+        pane = self.pane('herdr', '--remote', 'box')
+        here = self.dir / 'project'
+        here.mkdir()
+        self.focus('default', here)
+        self.assertEqual(self.split(pane), self.option(pane, 'pane_current_path'))
 
 
 @unittest.skipUnless(shutil.which('bash') and shutil.which('jq') and shutil.which('tmux'),

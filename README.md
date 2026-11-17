@@ -340,6 +340,12 @@ or starts it, and herdr resumes its own agents.
 `python3 tests/test-herdr-tmux.py` checks it against a private tmux server and a
 stand-in herdr CLI.
 
+A tmux split made from a pane running herdr (prefix `v`, `s`, `"` or `%`)
+opens in the directory of the herdr pane in focus there, not where herdr was
+started. The keys run `herdr-status.sh --split`, which asks herdr for that
+pane's shell directory, and opens the split in the tmux pane's own directory
+when herdr cannot be asked. The same test file covers it.
+
 ## KDE Plasma (desktop only)
 
 KDE Plasma settings (theme, shortcuts, panels, Dolphin/Konsole/Kate) are curated

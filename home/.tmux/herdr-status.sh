@@ -54,11 +54,19 @@
 # for. It is how a pane is recognised after herdr quits and leaves a shell
 # there, so its state can be dropped.
 #
-# Linux only: the session a client shows is read from /proc.
+# --split makes a tmux split from a pane running herdr open where you are in
+# herdr: in the directory of the herdr pane in focus there, rather than where
+# the herdr client was started. ~/.tmux.conf routes its split keys here for
+# such a pane. Where herdr cannot be asked, the split opens in the tmux pane's
+# own directory.
+#
+# Linux only: the session a client shows is read from /proc. Elsewhere --split
+# still splits, from the tmux pane's directory.
 #
 #   herdr-status.sh          spawn the detached loop (idempotent); ~/.tmux.conf runs this
 #   herdr-status.sh --run    internal: the loop itself
 #   herdr-status.sh --once   one pass, no lock (tests)
+#   herdr-status.sh --split <tmux pane> [split-window flags...]
 
 set -uo pipefail
 
@@ -271,6 +279,39 @@ pass() {
     return 0
 }
 
+# The directory of the herdr pane in focus in the session a tmux pane shows:
+# its shell's, which herdr reports as `cwd`, rather than that of whatever is
+# running in it (`foreground_cwd`). Sets DIR. Fails when herdr cannot be
+# asked: no /proc, herdr or jq, a client attached to another machine, or a
+# server that is down or takes over two seconds to answer -- tmux takes no
+# keys while a split key waits on this.
+#   focused_dir <pane_pid>
+focused_dir() {
+    local panes
+    local -a cli=(timeout 2 herdr)
+    DIR=''
+    [[ -d /proc/self ]] && (( HAVE_JQ )) || return 1
+    command -v herdr >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 || return 1
+    client_session "$1" || return 1
+    [[ "$SESSION" == default ]] || cli+=(--session "$SESSION")
+    panes="$("${cli[@]}" pane list 2>/dev/null)" || return 1
+    DIR="$(jq -r 'first(.result.panes[]? | select(.focused)
+        | .cwd // .foreground_cwd // empty)' <<<"$panes" 2>/dev/null)"
+    [[ "$DIR" == /* && -d "$DIR" ]]
+}
+
+# Splits a tmux pane running herdr, opening the new pane in focused_dir, or in
+# the tmux pane's own directory where there is none.
+#   split <tmux pane> [split-window flags...]
+split() {
+    local pane="${1:?}" pid cwd
+    shift
+    IFS='|' read -r pid cwd < <(tmux display-message -p -t "$pane" \
+        '#{pane_pid}|#{pane_current_path}' 2>/dev/null)
+    focused_dir "${pid:-}" || DIR="${cwd:-}"
+    tmux split-window -t "$pane" ${DIR:+-c "$DIR"} "$@"
+}
+
 run_loop() {
     exec 9>"$LOCK" || return 0
     flock -n 9 || return 0   # a loop is already live
@@ -292,12 +333,20 @@ run_loop() {
 
 # ---------------------------------------------------------------------------
 
-[[ -d /proc/self ]] || exit 0
-command -v tmux >/dev/null 2>&1 || exit 0
-command -v herdr >/dev/null 2>&1 || exit 0
 HAVE_JQ=0
 command -v jq >/dev/null 2>&1 && HAVE_JQ=1
 readonly HAVE_JQ
+
+# A split key has to split, whatever is missing below.
+if [[ "${1:-}" == --split ]]; then
+    shift
+    split "$@"
+    exit
+fi
+
+[[ -d /proc/self ]] || exit 0
+command -v tmux >/dev/null 2>&1 || exit 0
+command -v herdr >/dev/null 2>&1 || exit 0
 
 case "${1:-}" in
     --run)  run_loop ;;
