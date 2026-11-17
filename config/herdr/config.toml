@@ -8,6 +8,20 @@ onboarding = false
 name = "tokyo-night"
 auto_switch = false
 
+# herdr's tokyo-night is the Night variant, and Ghostty runs tokyonight-moon,
+# whose background (#222436) is a shade off herdr's active row (#232636):
+# the focused space and agent rows were invisible.
+[theme.custom]
+# Active space and focused agent rows: tmux's current-window purple (#9d7cd8)
+# blended 45% into the background. The full purple would hide the dim second
+# line and the red "asked" name, and herdr has no text colors for that row only.
+active_row_bg = "#594c7f"
+# The navigate-mode cursor, Moon's selection blue as in Ghostty, so it stays
+# apart from the purple active row.
+selection_bg = "#2d3f76"
+# Muted text, the agents' second line among it, readable on the purple row.
+overlay0 = "#828bb8"
+
 [update]
 # herdr comes from the package manager (herdr-bin on Arch). `herdr update` is
 # only for herdr's own installer, so there is nothing for this check to act on.
