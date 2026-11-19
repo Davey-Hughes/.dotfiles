@@ -20,3 +20,7 @@ cursor-style = block
 cursor-style-blink = false
 
 window-decoration = none
+
+# Ghostty binds ctrl+enter to toggle_fullscreen by default on Linux; it
+# kept firing by accident.
+keybind = ctrl+enter=unbind
