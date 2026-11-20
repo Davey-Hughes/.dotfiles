@@ -44,6 +44,16 @@ previous_agent = "prefix+p"
 next_tab = ""
 previous_tab = ""
 
+# prefix+u schedules a nudge for the agent under the popup: `nudge -a` reads
+# the pane from the popup's HERDR_ACTIVE_PANE_ID, and holds the popup open
+# with "Press any key to close" so its confirmation stays on screen.
+[[keys.command]]
+key = "prefix+u"
+type = "popup"
+command = "nudge -a"
+width = "60%"
+height = "40%"
+
 [ui]
 # The tab row, "+" button included, shows only once a workspace has a second
 # tab (prefix+c).
